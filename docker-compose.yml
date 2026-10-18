@@ -1,0 +1,113 @@
+# PulseWatch: app + MariaDB. Optional profiles: "split" (separate worker), "probe" (remote probe agent).
+#   docker compose up -d                       app + database
+#   PW_ROLE=api docker compose --profile split up -d     api and worker as separate containers
+#   docker compose --profile probe up -d       probe agent (needs PW_PROBE_TOKEN)
+x-app-env: &app-env
+  PW_DB_HOST: mariadb
+  PW_DB_PORT: 3306
+  PW_DB_NAME: ${PW_DB_NAME:-pulsewatch}
+  PW_DB_USER: ${PW_DB_USER:-pulsewatch}
+  PW_DB_PASSWORD: ${PW_DB_PASSWORD:?Set PW_DB_PASSWORD in .env (see .env.example)}
+  PW_SECRET_KEY: ${PW_SECRET_KEY:-}
+  PW_BASE_URL: ${PW_BASE_URL:-http://localhost:3000}
+  PW_TRUST_PROXY: ${PW_TRUST_PROXY:-false}
+  PW_LOG_LEVEL: ${PW_LOG_LEVEL:-info}
+  PW_SSRF_MODE: ${PW_SSRF_MODE:-allow-private}
+  PW_SSRF_ALLOW: ${PW_SSRF_ALLOW:-}
+  PW_SSRF_DENY: ${PW_SSRF_DENY:-}
+  PW_METRICS_TOKEN: ${PW_METRICS_TOKEN:-}
+  PW_SMTP_HOST: ${PW_SMTP_HOST:-}
+  PW_SMTP_PORT: ${PW_SMTP_PORT:-587}
+  PW_SMTP_USER: ${PW_SMTP_USER:-}
+  PW_SMTP_PASS: ${PW_SMTP_PASS:-}
+  PW_SMTP_FROM: ${PW_SMTP_FROM:-PulseWatch <pulsewatch@localhost>}
+  PW_SMTP_SECURE: ${PW_SMTP_SECURE:-false}
+  PW_DEADMAN_URL: ${PW_DEADMAN_URL:-}
+  PW_DEMO: ${PW_DEMO:-false}
+  PW_DEMO_PASSWORD: ${PW_DEMO_PASSWORD:-}
+  PW_MAX_CONCURRENCY: ${PW_MAX_CONCURRENCY:-200}
+  PW_RETENTION_RAW_DAYS: ${PW_RETENTION_RAW_DAYS:-14}
+  PW_OTEL_EXPORTER_OTLP_ENDPOINT: ${PW_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+
+services:
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${PW_DB_NAME:-pulsewatch}
+      MARIADB_USER: ${PW_DB_USER:-pulsewatch}
+      MARIADB_PASSWORD: ${PW_DB_PASSWORD:?Set PW_DB_PASSWORD in .env (see .env.example)}
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+      MARIADB_AUTO_UPGRADE: "1"
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--innodb-buffer-pool-size=${PW_DB_BUFFER_POOL:-256M}"]
+    volumes:
+      - db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    security_opt: ["no-new-privileges:true"]
+
+  app:
+    build: .
+    image: ${PW_IMAGE:-pulsewatch/app:latest}
+    restart: unless-stopped
+    depends_on:
+      mariadb: { condition: service_healthy }
+    environment:
+      <<: *app-env
+      PW_ROLE: ${PW_ROLE:-all}
+    ports:
+      - "${PW_PUBLIC_PORT:-3000}:3000"
+    volumes:
+      - data:/data
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    cap_add: [NET_RAW] # ICMP ping monitors
+    security_opt: ["no-new-privileges:true"]
+
+  # Only with --profile split and PW_ROLE=api: runs the scheduler, rollups and notifications.
+  worker:
+    profiles: ["split"]
+    image: ${PW_IMAGE:-pulsewatch/app:latest}
+    restart: unless-stopped
+    depends_on:
+      mariadb: { condition: service_healthy }
+      app: { condition: service_healthy }
+    environment:
+      <<: *app-env
+      PW_ROLE: worker
+    volumes:
+      - data:/data
+    healthcheck: { disable: true }
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    security_opt: ["no-new-privileges:true"]
+
+  # Remote probe: run it on another network (copy this service to a compose file on that host).
+  probe:
+    profiles: ["probe"]
+    build:
+      context: .
+      dockerfile: Dockerfile.probe
+    image: ${PW_PROBE_IMAGE:-pulsewatch/probe:latest}
+    restart: unless-stopped
+    environment:
+      PW_SERVER_URL: ${PW_SERVER_URL:-http://app:3000}
+      PW_PROBE_TOKEN: ${PW_PROBE_TOKEN:-} # create a probe in the UI first
+      PW_PROBE_ALLOW_INSECURE: ${PW_PROBE_ALLOW_INSECURE:-false}
+      PW_PROBE_SSRF_MODE: ${PW_PROBE_SSRF_MODE:-allow-private}
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  db:
+  data:

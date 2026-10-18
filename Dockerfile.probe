@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+# Small image for the remote probe agent: one self-contained bundle, no database access.
+
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY brand.json tsconfig.json ./
+COPY scripts scripts
+COPY src src
+RUN node -e "require('esbuild')" && node scripts/build.mjs --skip-web
+
+FROM node:22-alpine AS runtime
+RUN apk add --no-cache iputils tini \
+ && addgroup -S -g 10001 probe && adduser -S -u 10001 -G probe probe
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build /app/dist/probe/main.js ./main.js
+USER 10001:10001
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "main.js"]

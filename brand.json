@@ -1,0 +1,6 @@
+{
+  "name": "PulseWatch",
+  "vendor": "PD-Codes",
+  "license": "GPL-3.0-only",
+  "tagline": "Self-hosted uptime and status monitoring"
+}
