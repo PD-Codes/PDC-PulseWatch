@@ -8,10 +8,11 @@ export const setCsrf = (t: string) => { csrf = t; };
 
 export async function api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
   const isForm = typeof FormData !== 'undefined' && body instanceof FormData;
+  const isBlob = typeof Blob !== 'undefined' && body instanceof Blob; // sent as is (streamed from disk by the browser)
   const res = await fetch(path, {
     method, credentials: 'same-origin',
-    headers: { ...(body !== undefined && !isForm ? { 'content-type': 'application/json' } : {}), ...(method !== 'GET' && csrf ? { 'x-csrf-token': csrf } : {}) },
-    body: body === undefined ? undefined : isForm ? (body as FormData) : JSON.stringify(body),
+    headers: { ...(isBlob ? { 'content-type': 'application/octet-stream' } : body !== undefined && !isForm ? { 'content-type': 'application/json' } : {}), ...(method !== 'GET' && csrf ? { 'x-csrf-token': csrf } : {}) },
+    body: body === undefined ? undefined : isForm || isBlob ? (body as FormData | Blob) : JSON.stringify(body),
   });
   const text = await res.text();
   let data: any = text;

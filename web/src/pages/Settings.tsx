@@ -6,7 +6,7 @@ import { CertsTab } from '../components/CertsTab';
 import { DefaultsTab } from '../components/DefaultsTab';
 import { CopyButton, EMAIL_RE, FieldsForm, splitList } from '../components/settingsParts';
 import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
-import { del, download, errorMessage, get, post, put, qs } from '../lib/api';
+import { ApiError, del, download, errorMessage, get, post, put, qs } from '../lib/api';
 import { useMeta } from '../lib/auth';
 import { useT } from '../lib/i18n';
 import type { FieldDef } from '../../../src/core/types';
@@ -240,6 +240,50 @@ function ImportCard({ title, intro, endpoint, accept }: { title: string; intro: 
   );
 }
 
+/** Uptime Kuma 1.x/2.x: database file upload or live API login, both previewed first and applied from the preview. */
+function KumaCard() {
+  const t = useT(); const toast = useToast();
+  const [mode, setMode] = useState<'db' | 'api'>('db');
+  const [file, setFile] = useState<File | null>(null);
+  const [f, setF] = useState({ url: '', username: '', password: '', token: '' });
+  const [needToken, setNeedToken] = useState(false);
+  const [report, setReport] = useState<(Report & { previewId?: string }) | null>(null);
+  const preview = useMutation({
+    mutationFn: () => (mode === 'db' ? post<Report & { previewId: string }>('/api/import/kuma-db', file) : post<Report & { previewId: string }>('/api/import/kuma-api', { ...f, token: f.token || undefined })),
+    onSuccess: (r) => { setReport(r); setNeedToken(false); toast(t('settings.backup.dryDone')); },
+    onError: (e) => { setReport(null); if (e instanceof ApiError && e.code === 'token_required') { setNeedToken(true); toast(t('settings.kuma.tokenNeeded'), 'error'); } else toast(errorMessage(e), 'error'); },
+  });
+  const apply = useMutation({
+    mutationFn: () => post<Report>('/api/import/kuma-apply', { previewId: report!.previewId }),
+    onSuccess: (r) => { setReport(r); toast(t('settings.backup.applied')); }, onError: (e) => toast(errorMessage(e), 'error'),
+  });
+  const canPreview = mode === 'db' ? !!file : !!(f.url && f.username && f.password);
+  const clean = !!report?.dryRun && report.errors.length === 0 && !!report.previewId;
+  return (
+    <Card>
+      <CardHeader title={t('settings.kuma.title')} subtitle={t('settings.kuma.intro')} />
+      <div className="space-y-4 p-4">
+        <Field label={t('settings.kuma.source')}>{(id) => <Select id={id} value={mode} onChange={(e) => { setMode(e.target.value as 'db' | 'api'); setReport(null); }}><option value="db">{t('settings.kuma.db')}</option><option value="api">{t('settings.kuma.api')}</option></Select>}</Field>
+        {mode === 'db' ? (
+          <Field label={t('settings.kuma.dbFile')} hint={t('settings.kuma.dbHint')}>{(id) => <input id={id} type="file" accept=".db,.sqlite,.sqlite3,application/octet-stream" className="input" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setReport(null); }} />}</Field>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label={t('settings.kuma.url')} className="sm:col-span-2" hint={t('settings.kuma.urlHint')}>{(id) => <Input id={id} type="url" placeholder="https://kuma.example.com" value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} />}</Field>
+            <Field label={t('settings.kuma.username')}>{(id) => <Input id={id} autoComplete="off" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} />}</Field>
+            <Field label={t('settings.kuma.password')}>{(id) => <Input id={id} type="password" autoComplete="off" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />}</Field>
+            {needToken && <Field label={t('settings.kuma.token')}>{(id) => <Input id={id} inputMode="numeric" autoComplete="one-time-code" maxLength={8} value={f.token} onChange={(e) => setF({ ...f, token: e.target.value })} />}</Field>}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button disabled={!canPreview} loading={preview.isPending} onClick={() => preview.mutate()}>{t('settings.backup.dryRun')}</Button>
+          <Button variant="primary" disabled={!clean || !report?.dryRun} loading={apply.isPending} onClick={() => apply.mutate()}><Upload className="h-4 w-4" />{t('settings.backup.apply')}</Button>
+        </div>
+        {report && <ReportView report={report} />}
+      </div>
+    </Card>
+  );
+}
+
 function ReportView({ report }: { report: Report }) {
   const t = useT();
   const rows = SECTIONS.filter((s) => report.counts[s] && (report.counts[s].created || report.counts[s].updated));
@@ -273,6 +317,7 @@ function BackupTab() {
         </div>
       </Card>
       <ImportCard title={t('settings.backup.import')} intro={t('settings.backup.importIntro')} endpoint="/api/config/import" accept=".yaml,.yml,.json,application/json" />
+      <KumaCard />
       <ImportCard title={t('settings.backup.kuma')} intro={t('settings.backup.kumaIntro')} endpoint="/api/import/kuma" accept=".json,application/json" />
       <Card>
         <CardHeader title={t('settings.backup.dbTitle')} subtitle={t('settings.backup.dbBody')} />

@@ -367,6 +367,7 @@ export function convertKuma(raw: unknown): { doc: ConfigDoc; warnings: string[] 
       notifications: Object.entries(asObj(m.notificationIDList)).filter(([, on]) => on).map(([id]) => chName.get(id)).filter(Boolean).map((channel) => ({ channel, events: ['down', 'up'] })),
     });
   }
-  if (list(src.maintenanceList).length) warnings.push('Maintenance windows are not part of Uptime Kuma backups and were not imported.');
+  if (list(src.maintenanceList).length) warnings.push(`${list(src.maintenanceList).length} Uptime Kuma maintenance window(s) were not imported, recreate them under Maintenance.`);
+  if (list(src.statusPageList).length) warnings.push(`${list(src.statusPageList).length} Uptime Kuma status page(s) were not imported, recreate them under Status pages.`);
   return { doc: { version: 1, groups, tags: [...tags].map(([name, color]) => ({ name, color })), channels, monitors }, warnings };
 }

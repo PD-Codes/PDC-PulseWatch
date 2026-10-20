@@ -17,6 +17,12 @@ export const en = {
   'settings.tab.defaults': 'Defaults',
   'settings.defaults.title': 'Defaults for new monitors', 'settings.defaults.intro': 'Pre-fill the new-monitor form and apply when an API call or import leaves a value out. Existing monitors are not changed.',
   'settings.defaults.range': '{min}–{max}, built-in: {std}', 'settings.defaults.reset': 'Reset to built-in', 'settings.defaults.resetBody': 'All defaults return to their built-in values.', 'settings.defaults.resetDone': 'Defaults reset',
+  'settings.kuma.title': 'Import from Uptime Kuma 1.x / 2.x',
+  'settings.kuma.intro': 'Reads monitors, groups, tags and notification channels. Nothing is written until you apply the preview. Maintenance windows, status pages and history are not imported.',
+  'settings.kuma.source': 'Source', 'settings.kuma.db': 'Database file (kuma.db)', 'settings.kuma.api': 'Running Kuma (API login)',
+  'settings.kuma.dbFile': 'kuma.db', 'settings.kuma.dbHint': 'Usually data/kuma.db of the Kuma container. Copy it while Kuma is stopped, or together with its -wal file, to get the latest changes. Large files are fine, only the configuration tables are read. A Kuma on MariaDB: use the API login.',
+  'settings.kuma.url': 'Kuma URL', 'settings.kuma.urlHint': 'Must be reachable from this server. Your login is used once and not stored.',
+  'settings.kuma.username': 'Username', 'settings.kuma.password': 'Password', 'settings.kuma.token': 'Two-factor code', 'settings.kuma.tokenNeeded': 'This account uses two-factor authentication. Enter the current code and preview again.',
 };
 export const de = {
   'statuspages.f.historyDays': 'Länge der Historie', 'statuspages.f.historyDaysOpt': '{n} Tage',
@@ -36,4 +42,10 @@ export const de = {
   'settings.tab.defaults': 'Standardwerte',
   'settings.defaults.title': 'Standardwerte für neue Monitore', 'settings.defaults.intro': 'Füllen das Formular für neue Monitore vor und gelten, wenn ein API-Aufruf oder Import einen Wert weglässt. Bestehende Monitore bleiben unverändert.',
   'settings.defaults.range': '{min}–{max}, eingebaut: {std}', 'settings.defaults.reset': 'Auf eingebaute Werte zurücksetzen', 'settings.defaults.resetBody': 'Alle Standardwerte kehren auf die eingebauten Werte zurück.', 'settings.defaults.resetDone': 'Standardwerte zurückgesetzt',
+  'settings.kuma.title': 'Aus Uptime Kuma 1.x / 2.x importieren',
+  'settings.kuma.intro': 'Liest Monitore, Gruppen, Tags und Benachrichtigungskanäle. Es wird erst geschrieben, wenn du die Vorschau übernimmst. Wartungsfenster, Status-Seiten und Verlauf werden nicht importiert.',
+  'settings.kuma.source': 'Quelle', 'settings.kuma.db': 'Datenbankdatei (kuma.db)', 'settings.kuma.api': 'Laufendes Kuma (API-Login)',
+  'settings.kuma.dbFile': 'kuma.db', 'settings.kuma.dbHint': 'Meist data/kuma.db des Kuma-Containers. Am besten bei gestopptem Kuma kopieren oder zusammen mit der -wal-Datei, damit die letzten Änderungen dabei sind. Große Dateien sind kein Problem, gelesen werden nur die Konfigurationstabellen. Kuma auf MariaDB: den API-Login nutzen.',
+  'settings.kuma.url': 'Kuma-URL', 'settings.kuma.urlHint': 'Muss von diesem Server erreichbar sein. Der Login wird einmal benutzt und nicht gespeichert.',
+  'settings.kuma.username': 'Benutzername', 'settings.kuma.password': 'Passwort', 'settings.kuma.token': 'Zwei-Faktor-Code', 'settings.kuma.tokenNeeded': 'Dieses Konto nutzt Zwei-Faktor-Authentifizierung. Aktuellen Code eingeben und die Vorschau erneut starten.',
 };

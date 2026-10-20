@@ -1,7 +1,13 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import YAML from 'yaml';
 import { writeAudit } from '../auth/access';
+import { config } from '../config';
+import { KumaLoginError, kumaFromApi, kumaFromSqlite } from '../kuma-source';
 import { convertKuma, exportConfig, importConfig, type ConfigDoc } from '../portability';
 
 export async function configRoutes(app: FastifyInstance) {
@@ -26,7 +32,7 @@ export async function configRoutes(app: FastifyInstance) {
     return report;
   });
 
-  app.post('/api/import/kuma', { ...admin, bodyLimit: 20 * 1024 * 1024, schema: { tags: ['config'], summary: 'Import an Uptime Kuma 1.x backup JSON', body: Type.Object({ content: Type.String({ maxLength: 20_000_000 }), dryRun: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
+  app.post('/api/import/kuma', { ...admin, bodyLimit: 20 * 1024 * 1024, schema: { tags: ['config'], summary: 'Import an Uptime Kuma 1.x backup JSON (2.x: see /api/import/kuma-db and /api/import/kuma-api)', body: Type.Object({ content: Type.String({ maxLength: 20_000_000 }), dryRun: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
     const b = req.body as { content: string; dryRun?: boolean };
     let raw: unknown;
     try { raw = JSON.parse(b.content); } catch { return reply.code(400).send({ error: 'validation', message: 'The file is not valid JSON' }); }
@@ -34,6 +40,57 @@ export async function configRoutes(app: FastifyInstance) {
     const report = await importConfig(ctx, doc, req.user!.id, !!b.dryRun);
     report.warnings.unshift(...warnings);
     if (!b.dryRun) await writeAudit(ctx, req.user, 'config.kuma_imported', { type: 'config' }, { counts: report.counts, errors: report.errors.length }, req.ip);
+    return report;
+  });
+  /* Kuma 2.x: both sources convert to a document, keep it for a few minutes and let the admin apply exactly that preview. */
+  const previews = new Map<string, { doc: ConfigDoc; userId: number; expires: number }>();
+  const preview = async (raw: Parameters<typeof convertKuma>[0], userId: number) => {
+    const { doc, warnings } = convertKuma(raw);
+    const report = await importConfig(ctx, doc, userId, true);
+    report.warnings.unshift(...warnings);
+    for (const [k, v] of previews) if (v.expires < Date.now()) previews.delete(k);
+    if (previews.size >= 5) previews.delete(previews.keys().next().value!); // shortcut: in-memory and per process, a restart or another instance forgets the preview and the admin simply repeats it
+    const previewId = randomUUID();
+    previews.set(previewId, { doc, userId, expires: Date.now() + 15 * 60_000 });
+    return { ...report, previewId };
+  };
+  const tmpDir = path.join(config.dataDir, 'import-tmp');
+  const MAX_DB = 4 * 1024 ** 3;
+
+  // The database is streamed to disk (it can be gigabytes of heartbeats) and opened read-only.
+  app.addContentTypeParser('application/octet-stream', (_req, payload, done) => {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const file = path.join(tmpDir, `kuma-${randomUUID()}.db`);
+    let size = 0;
+    payload.on('data', (c: Buffer) => { size += c.length; if (size > MAX_DB) payload.destroy(new Error('The file is too large')); });
+    pipeline(payload, fs.createWriteStream(file)).then(() => done(null, file), (e) => { fs.rm(file, { force: true }, () => {}); done(e); });
+  });
+
+  app.post('/api/import/kuma-db', { ...admin, bodyLimit: MAX_DB, config: { rateLimit: { max: 5, timeWindow: '1 minute' } }, schema: { tags: ['config'], summary: 'Preview an import from an Uptime Kuma 1.x/2.x SQLite file (raw body)' } }, async (req, reply) => {
+    const file = req.body as string;
+    try { return await preview(await kumaFromSqlite(file), req.user!.id); }
+    catch (e) { return reply.code(400).send({ error: 'validation', message: `Could not read the database: ${(e as Error).message}` }); }
+    finally { fs.rm(file, { force: true }, () => {}); }
+  });
+
+  app.post('/api/import/kuma-api', {
+    ...admin, config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
+    schema: { tags: ['config'], summary: 'Preview an import from a running Uptime Kuma (Socket.IO login)', body: Type.Object({ url: Type.String({ maxLength: 2000 }), username: Type.String({ minLength: 1, maxLength: 200 }), password: Type.String({ minLength: 1, maxLength: 500 }), token: Type.Optional(Type.String({ maxLength: 20 })) }) },
+  }, async (req, reply) => {
+    try { return await preview(await kumaFromApi(req.body as any, ctx.guard), req.user!.id); }
+    catch (e) {
+      if (e instanceof KumaLoginError) return reply.code(e.tokenRequired ? 401 : 400).send({ error: e.tokenRequired ? 'token_required' : 'validation', message: e.message });
+      return reply.code(400).send({ error: 'validation', message: (e as Error).message });
+    }
+  });
+
+  app.post('/api/import/kuma-apply', { ...admin, schema: { tags: ['config'], summary: 'Apply a previously previewed Kuma import', body: Type.Object({ previewId: Type.String({ maxLength: 64 }) }) } }, async (req, reply) => {
+    const id = (req.body as { previewId: string }).previewId;
+    const p = previews.get(id);
+    if (!p || p.userId !== req.user!.id || p.expires < Date.now()) return reply.code(404).send({ error: 'not_found', message: 'The preview expired. Run it again.' });
+    previews.delete(id);
+    const report = await importConfig(ctx, p.doc, req.user!.id, false);
+    await writeAudit(ctx, req.user, 'config.kuma_imported', { type: 'config' }, { counts: report.counts, errors: report.errors.length }, req.ip);
     return report;
   });
 }

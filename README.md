@@ -257,7 +257,14 @@ Migrations run automatically at startup under a database lock, so several replic
 
 ## Importing from Uptime Kuma
 
-In Uptime Kuma 1.x open **Settings > Backup > Export** (JSON). In PulseWatch go to **Settings > Backup**, use the *Import from Uptime Kuma* card, upload the file and run a **dry run** first. The importer converts monitors (including nested groups), tags and notification channels, reports what it skipped (unsupported monitor types are listed as warnings; maintenance windows and status pages are not imported) and merges by name, so it is safe to run twice. Credentials contained in the backup are re-encrypted with your key.
+**Kuma 2.x has no backup export, so two other sources are supported** (**Settings > Backup > Import from Uptime Kuma 1.x / 2.x**):
+
+- **Database file:** upload `data/kuma.db` (SQLite, Kuma 1.x or 2.x). It is streamed to `PW_DATA_DIR/import-tmp`, opened read-only and deleted right after; only the configuration tables are read, so a multi-gigabyte heartbeat history is fine. Copy the file while Kuma is stopped (or together with its `-wal` file).
+- **Live API:** enter the URL, username and password of a running Kuma (and the two-factor code if the account has one). PulseWatch logs in over Kuma's Socket.IO API once, reads the lists Kuma pushes and logs out; the login is not stored. A Kuma that runs on MariaDB can only be imported this way.
+
+Both show a **preview** (what would be created or updated, plus warnings) and write nothing until you press apply; the preview is kept in memory for 15 minutes.
+
+For a Kuma 1.x backup JSON use the second card on the same page: The importer converts monitors (including nested groups), tags and notification channels, reports what it skipped (unsupported monitor types are listed as warnings; maintenance windows and status pages are not imported) and merges by name, so it is safe to run twice. Credentials contained in the backup are re-encrypted with your key.
 
 ## Config as code
 
@@ -324,6 +331,6 @@ These numbers measure the scheduler, database writes and rollup bookkeeping. Rea
 - OIDC, LDAP and passkeys are covered by code review and unit-level checks only; they have not been tested against live Keycloak/Entra ID/OpenLDAP servers or real authenticators. Try them on a staging instance first.
 - Probe-only monitors are evaluated on the monitor's schedule, not at the instant a probe reports.
 - Tracing exports one flat span per check (no parent/child context propagation).
-- Kuma import targets the 1.x backup format; Kuma 2.x exports are not covered.
+- The Kuma 2.x import (database file and API) is covered by tests with a generated SQLite file and a fake Socket.IO server that follows Kuma's protocol as documented, not by a real Kuma 2.x instance. Monitor types PulseWatch has no runner for (SNMP, RabbitMQ, real browser, ...), maintenance windows, status pages and history are not imported.
 - Two status-page widgets are simple by design: components cannot be reordered across sections by drag and drop, and the kiosk page skips paused monitors.
 - Only MariaDB 11 is supported (MySQL may work but is not tested).
