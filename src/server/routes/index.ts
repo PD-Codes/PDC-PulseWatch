@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { config } from '../config';
 import { registerDemoRoutes } from '../demo';
 import { adminRoutes } from './admin';
+import { caCertRoutes } from './ca-certs';
 import { configRoutes } from './config';
 import { authExtRoutes } from './auth-ext';
 import { insightRoutes } from './insights';
@@ -22,6 +23,7 @@ export async function registerAllRoutes(app: FastifyInstance): Promise<void> {
   await statusPageRoutes(app);
   await adminRoutes(app);
   await configRoutes(app);
+  await caCertRoutes(app);
   await reportRoutes(app);
   await insightRoutes(app);
   if (config.demo) registerDemoRoutes(app);

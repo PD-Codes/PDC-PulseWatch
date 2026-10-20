@@ -26,7 +26,7 @@ export async function reportRoutes(app: FastifyInstance) {
 
   /* scheduled reports */
   const body = Type.Object({
-    name: Type.String({ minLength: 1, maxLength: 128 }), scopeType: Scope, scopeId: Type.Optional(Type.Union([Type.Integer(), Type.Null()])), rangeDays: Type.Integer({ minimum: 1, maximum: 730 }),
+    name: Type.String({ minLength: 1, maxLength: 128 }), scopeType: Scope, scopeId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), rangeDays: Type.Integer({ minimum: 1, maximum: 730 }),
     cronExpr: Type.String({ maxLength: 64 }), timezone: Type.Optional(Type.String({ maxLength: 64 })), recipients: Type.Array(Type.String({ format: 'email' }), { minItems: 1, maxItems: 50 }), format: Type.Union([Type.Literal('pdf'), Type.Literal('csv')]), enabled: Type.Optional(Type.Boolean()),
   });
   const shape = (s: any) => ({ id: s.id, name: s.name, scopeType: s.scope_type, scopeId: s.scope_id, rangeDays: s.range_days, cronExpr: s.cron_expr, timezone: s.timezone, recipients: s.recipients.split(','), format: s.format, enabled: !!s.enabled, lastRunAt: s.last_run_at });

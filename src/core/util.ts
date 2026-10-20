@@ -10,12 +10,12 @@ const TLS_CODES = new Set([
 ]);
 
 /** Map any thrown value to a CheckError so runners can report a precise failure mode. */
-export function toCheckError(err: unknown, phase?: string): CheckError {
+export function toCheckError(err: unknown, phase?: string, target?: { host: string; port: number; servername?: string }): CheckError {
   if (err instanceof CheckError) return err;
   const e = err as NodeJS.ErrnoException & { name?: string };
   const code = e?.code ?? '';
   const msg = e?.message ?? String(err);
-  const d = phase ? { phase, code } : { code };
+  const d = { ...(phase ? { phase, code } : { code }), ...(target ?? {}) };
   if (code === 'PW_BLOCKED') return new CheckError('blocked', msg, d);
   if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'EAI_FAIL' || code === 'ENODATA' || code === 'ENOTIMP' || code === 'ESERVFAIL' || code === 'EBADNAME')
     return new CheckError('dns', `DNS lookup failed: ${msg}`, d);

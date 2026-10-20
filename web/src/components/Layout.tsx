@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Activity, AlertTriangle, Bell, BookOpen, ChartNoAxesCombined, ClipboardList, Command, FolderTree, Globe, LayoutDashboard, LogOut, MapPin, Menu, Monitor, Moon, ScrollText, Settings, Sun, SunMoon, Users, Wrench, X } from 'lucide-react';
+import { Activity, AlertTriangle, Bell, BookOpen, ChartNoAxesCombined, ClipboardList, Command, FolderTree, Globe, LayoutDashboard, LogOut, MapPin, Menu, Monitor, Moon, Plus, ScrollText, Settings, Sun, SunMoon, Users, Wrench, X } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { get, type MonitorItem } from '../lib/api';
@@ -11,7 +11,7 @@ import { CommandPalette } from './CommandPalette';
 import { ShortcutsHelp, useShortcuts } from './Shortcuts';
 import { cx } from './ui';
 
-interface Item { to: string; label: string; icon: ReactNode; role?: 'editor' | 'admin'; end?: boolean }
+interface Item { to: string; label: string; icon: ReactNode; role?: 'editor' | 'admin'; end?: boolean; badge?: number }
 
 export function Layout() {
   const t = useT();
@@ -30,9 +30,25 @@ export function Layout() {
   // the monitor list powers the dashboard, the palette and live updates, so it is loaded once here
   useQuery({ queryKey: ['monitors'], queryFn: () => get<MonitorItem[]>('/api/monitors'), staleTime: 30_000 });
 
+  // open and not yet acknowledged incidents; the SSE stream invalidates the 'incidents' key on every change
+  const openIncidents = useQuery({ queryKey: ['incidents', 'open-count'], queryFn: () => get<{ count: number }>('/api/incidents/open-count'), staleTime: 30_000 }).data?.count ?? 0;
+  useEffect(() => {
+    const el = document.querySelector('title');
+    if (!el) return;
+    const apply = () => {
+      const base = document.title.replace(/^\(\d+\) /, '');
+      const want = openIncidents ? `(${openIncidents}) ${base}` : base;
+      if (document.title !== want) document.title = want;
+    };
+    apply();
+    const mo = new MutationObserver(apply);
+    mo.observe(el, { childList: true, characterData: true, subtree: true });
+    return () => mo.disconnect();
+  }, [openIncidents]);
+
   const main: Item[] = [
     { to: '/', label: t('nav.dashboard'), icon: <LayoutDashboard className="h-4 w-4" />, end: true },
-    { to: '/incidents', label: t('nav.incidents'), icon: <AlertTriangle className="h-4 w-4" /> },
+    { to: '/incidents', label: t('nav.incidents'), icon: <AlertTriangle className="h-4 w-4" />, badge: openIncidents },
     { to: '/maintenance', label: t('nav.maintenance'), icon: <Wrench className="h-4 w-4" /> },
     { to: '/status-pages', label: t('nav.statusPages'), icon: <Globe className="h-4 w-4" /> },
     { to: '/insights', label: t('nav.insights'), icon: <ChartNoAxesCombined className="h-4 w-4" /> },
@@ -50,6 +66,7 @@ export function Layout() {
   const link = (i: Item) => (
     <NavLink key={i.to} to={i.to} end={i.end} className={({ isActive }) => cx('flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition', isActive ? 'bg-brand-50 text-brand-700 dark:bg-brand-700/20 dark:text-brand-100' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800')}>
       {i.icon}{i.label}
+      {!!i.badge && <span className="ml-auto rounded-full bg-red-600 px-1.5 py-0.5 text-xs font-semibold leading-none text-white" aria-label={t('nav.openIncidents', { n: i.badge })}>{i.badge > 99 ? '99+' : i.badge}</span>}
     </NavLink>
   );
   const ThemeIcon = theme.pref === 'system' ? SunMoon : theme.dark ? Moon : Sun;
@@ -93,6 +110,7 @@ export function Layout() {
             <Command className="h-4 w-4 shrink-0" /><span className="truncate">{t('topbar.search')}</span><span className="kbd ml-auto hidden sm:inline">Ctrl K</span>
           </button>
           <div className="ml-auto flex items-center gap-1">
+            {can('editor') && <NavLink to="/monitors/new" className="btn btn-primary btn-sm no-underline" title={t('topbar.addMonitor')} aria-label={t('topbar.addMonitor')}><Plus className="h-4 w-4" /></NavLink>}
             <span className={cx('hidden items-center gap-1.5 rounded-full px-2 py-1 text-xs sm:inline-flex', connected ? 'text-emerald-600' : 'text-amber-600')} role="status"><Activity className="h-3.5 w-3.5" />{connected ? t('topbar.live') : t('topbar.offline')}</span>
             <button type="button" className="btn btn-ghost btn-sm" onClick={cycleTheme} title={`${t('topbar.theme')}: ${t(`theme.${theme.pref}`)}`} aria-label={`${t('topbar.theme')}: ${t(`theme.${theme.pref}`)}`}><ThemeIcon className="h-4 w-4" /></button>
             <NavLink to="/profile" className="ml-1 flex h-8 w-8 items-center justify-center rounded-full bg-brand-600 text-sm font-semibold text-white" aria-label={t('nav.profile')} title={user?.displayName}>{(user?.displayName ?? '?').slice(0, 1).toUpperCase()}</NavLink>

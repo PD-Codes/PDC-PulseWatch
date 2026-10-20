@@ -51,3 +51,31 @@ test('serves the public status page without a session', async ({ browser }) => {
   await expect(page.getByText('Marketing site')).toBeVisible();
   await ctx.close();
 });
+
+test('opens a monitor from anywhere on its card and pauses it from the card', async ({ page }) => {
+  await login(page);
+  const card = page.locator('.card').filter({ hasText: 'Core router' }).first();
+  await page.getByRole('button', { name: /^Pause: Core router/ }).click();
+  await expect(page.getByRole('button', { name: /^Resume: Core router/ })).toBeVisible();
+  await page.getByRole('button', { name: /^Resume: Core router/ }).click();
+  await expect(page.getByRole('button', { name: /^Pause: Core router/ })).toBeVisible();
+  const box = (await card.boundingBox())!;
+  await card.click({ position: { x: 16, y: box.height - 8 } });
+  await expect(page).toHaveURL(/\/monitors\/\d+$/);
+});
+
+test('adds several monitors at once with a live preview and creates a group inline', async ({ page }) => {
+  await login(page);
+  await page.goto('/monitors/new');
+  await page.getByRole('button', { name: 'New group' }).click();
+  await page.getByLabel('Group name').fill('e2e group');
+  await page.getByRole('button', { name: 'Create group' }).click();
+  await expect(page.getByLabel('Group', { exact: true })).toHaveValue(/\d+/);
+  await page.getByRole('switch', { name: 'Add several monitors at once' }).click();
+  await page.getByLabel('Targets').fill('Bulk One | https://one.example.com\nBulk Two | https://two.example.com\nBulk One | https://dup.example.com');
+  await expect(page.getByText('duplicate in list')).toBeVisible();
+  await page.getByRole('button', { name: 'Create 3 monitors' }).first().click();
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  await expect(page.getByText('Bulk Two').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /^e2e group/ })).toBeVisible();
+});

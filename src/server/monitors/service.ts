@@ -3,6 +3,7 @@ import { sql } from 'kysely';
 import { getRunner, maskSecrets, restoreSecrets, validateConfig } from '../../core';
 import type { Ctx } from '../context';
 import { parseJson } from '../db';
+import { monitorDefaults } from './defaults';
 import { encryptConfig, parseMonitor, type Monitor } from './model';
 
 export interface MonitorInput {
@@ -56,14 +57,15 @@ export async function saveMonitor(ctx: Ctx, input: MonitorInput, userId: number 
   const v = validateConfig(runner, config);
   errors.push(...v.errors);
 
-  const intervalS = num(input.intervalS ?? existing?.intervalS, 60, 5, 86400, 'Interval', errors);
-  const timeoutS = num(input.timeoutS ?? existing?.timeoutS, 10, 1, 300, 'Timeout', errors);
+  const d = await monitorDefaults(ctx);
+  const intervalS = num(input.intervalS ?? existing?.intervalS, d.intervalS, 5, 86400, 'Interval', errors);
+  const timeoutS = num(input.timeoutS ?? existing?.timeoutS, d.timeoutS, 1, 300, 'Timeout', errors);
   const row = {
     name, type: runner.type, group_id: input.groupId === undefined ? existing?.groupId ?? null : input.groupId, description: input.description === undefined ? existing?.description ?? null : input.description,
     config: JSON.stringify(encryptConfig(runner, v.config)), interval_s: intervalS, timeout_s: timeoutS,
-    retries: num(input.retries ?? existing?.retries, 0, 0, 20, 'Retries', errors), retry_interval_s: num(input.retryIntervalS ?? existing?.retryIntervalS, 20, 5, 3600, 'Retry interval', errors),
-    up_threshold: num(input.upThreshold ?? existing?.upThreshold, 1, 1, 20, 'Up threshold', errors), down_threshold: num(input.downThreshold ?? existing?.downThreshold, 1, 1, 20, 'Down threshold', errors),
-    flap_window: num(input.flapWindow ?? existing?.flapWindow, 10, 4, 60, 'Flap window', errors), flap_threshold: num(input.flapThreshold ?? existing?.flapThreshold, 6, 0, 60, 'Flap threshold', errors),
+    retries: num(input.retries ?? existing?.retries, d.retries, 0, 20, 'Retries', errors), retry_interval_s: num(input.retryIntervalS ?? existing?.retryIntervalS, d.retryIntervalS, 5, 3600, 'Retry interval', errors),
+    up_threshold: num(input.upThreshold ?? existing?.upThreshold, d.upThreshold, 1, 20, 'Up threshold', errors), down_threshold: num(input.downThreshold ?? existing?.downThreshold, d.downThreshold, 1, 20, 'Down threshold', errors),
+    flap_window: num(input.flapWindow ?? existing?.flapWindow, d.flapWindow, 4, 60, 'Flap window', errors), flap_threshold: num(input.flapThreshold ?? existing?.flapThreshold, d.flapThreshold, 0, 60, 'Flap threshold', errors),
     active: (input.active ?? existing?.active ?? true) ? 1 : 0, public_badge: (input.publicBadge ?? existing?.publicBadge ?? false) ? 1 : 0,
   };
   let locations = input.locations === undefined ? existing?.locations ?? null : input.locations;

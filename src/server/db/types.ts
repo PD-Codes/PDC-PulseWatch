@@ -9,7 +9,7 @@ type Id = Generated<number>;
 
 export interface UsersTable {
   id: Id; username: string; email: string | null; display_name: string; password_hash: string | null;
-  role: Generated<'admin' | 'editor' | 'viewer'>; scope_restricted: Flag; auth_source: Generated<'local' | 'oidc' | 'ldap'>;
+  role: Generated<'admin' | 'editor' | 'viewer'>; scope_restricted: Flag; auth_source: Generated<'local' | 'oidc' | 'ldap' | 'saml'>;
   external_id: string | null; locale: string | null; theme: Generated<'light' | 'dark' | 'system'>;
   totp_secret_enc: string | null; totp_enabled: Flag; totp_recovery: string | null; is_active: Flag;
   failed_logins: Generated<number>; locked_until: NTs; created_at: Ts; last_login_at: NTs;
@@ -24,7 +24,7 @@ export interface ApiTokensTable {
 export interface PasskeysTable {
   id: Id; user_id: number; credential_id: string; public_key: string; counter: Generated<number>; transports: string | null; name: string; created_at: Ts;
 }
-export interface AuthProvidersTable { id: Id; kind: 'oidc' | 'ldap'; name: string; config_enc: string; enabled: Flag; created_at: Ts }
+export interface AuthProvidersTable { id: Id; kind: 'oidc' | 'ldap' | 'saml'; name: string; config_enc: string; enabled: Flag; created_at: Ts }
 export interface SettingsTable { key: string; value: string; updated_at: Ts }
 export interface AuditLogTable {
   id: Generated<number>; ts: Ts; user_id: number | null; actor: string; action: string; entity_type: string | null; entity_id: string | null; ip: string | null; details: string | null;
@@ -80,7 +80,7 @@ export interface MaintenanceWindowsTable {
 export interface MaintenanceTargetsTable { window_id: number; target_type: 'monitor' | 'group' | 'tag'; target_id: number }
 export interface StatusPagesTable {
   id: Id; slug: string; title: string; description: string | null; domain: string | null; is_public: Flag; password_hash: string | null; sso_required: Flag;
-  branding: string | null; custom_css: string | null; show_history: Flag; created_at: Ts;
+  branding: string | null; custom_css: string | null; show_history: Flag; history_days: Generated<number>; created_at: Ts;
 }
 export interface StatusPageSectionsTable { id: Id; page_id: number; name: string; sort: Generated<number> }
 export interface StatusPageComponentsTable { id: Id; page_id: number; section_id: number | null; monitor_id: number; display_name: string | null; sort: Generated<number> }
@@ -102,6 +102,10 @@ export interface ReportSchedulesTable {
   timezone: Generated<string>; recipients: string; format: Generated<'pdf' | 'csv'>; enabled: Flag; last_run_at: NTs; created_by: number | null; created_at: Ts;
 }
 
+export interface CaCertsTable {
+  id: Id; name: string; pem: string; subject: string; issuer: string; fingerprint256: string; valid_from: Ts; valid_to: Ts; created_by: number | null; created_at: Ts;
+}
+
 export interface DB {
   users: UsersTable; sessions: SessionsTable; api_tokens: ApiTokensTable; passkeys: PasskeysTable; auth_providers: AuthProvidersTable;
   settings: SettingsTable; audit_log: AuditLogTable; monitor_groups: MonitorGroupsTable; permission_grants: PermissionGrantsTable;
@@ -113,7 +117,7 @@ export interface DB {
   status_page_announcements: StatusPageAnnouncementsTable; status_page_subscribers: StatusPageSubscribersTable;
   notification_templates: NotificationTemplatesTable; notification_channels: NotificationChannelsTable; escalation_policies: EscalationPoliciesTable;
   monitor_notifications: MonitorNotificationsTable; notification_deliveries: NotificationDeliveriesTable; escalation_runs: EscalationRunsTable;
-  report_schedules: ReportSchedulesTable;
+  report_schedules: ReportSchedulesTable; ca_certs: CaCertsTable;
 }
 
 export type { ColumnType };

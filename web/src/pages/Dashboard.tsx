@@ -5,6 +5,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Badge, Button, Card, CardHeader, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Skeleton, cx, useConfirm, useToast } from '../components/ui';
 import { displayStatus, HeartbeatBar, Sparkline, StatusBadge, StatusDot, uptimeTone, type DisplayStatus } from '../components/status';
 import { ApiError, del, errorMessage, get, post, type Group, type MonitorItem, type Tag } from '../lib/api';
+import { BulkEditModal } from '../components/BulkEdit';
 import { useAuth } from '../lib/auth';
 import { fmtMs, fmtPct, relTime } from '../lib/format';
 import { useT } from '../lib/i18n';
@@ -99,6 +100,18 @@ export default function Dashboard() {
     onSuccess: (r: { affected: number }) => { toast(t('dashboard.bulkDone', { n: r.affected })); setSel(new Set()); void qc.invalidateQueries({ queryKey: ['monitors'] }); },
     onError: (e) => toast(errorMessage(e), 'error'),
   });
+  /** Optimistic single-monitor pause/resume from the card; rolls back on error. */
+  const quick = useMutation({
+    mutationFn: ({ id, pause }: { id: number; pause: boolean }) => post(`/api/monitors/${id}/${pause ? 'pause' : 'resume'}`),
+    onMutate: async ({ id, pause }) => {
+      await qc.cancelQueries({ queryKey: ['monitors'] });
+      const prev = qc.getQueryData<MonitorItem[]>(['monitors']);
+      qc.setQueryData<MonitorItem[]>(['monitors'], (old) => old?.map((m) => (m.id === id ? { ...m, active: !pause } : m)));
+      return { prev };
+    },
+    onError: (e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(['monitors'], ctx.prev); toast(errorMessage(e), 'error'); },
+    onSettled: () => void qc.invalidateQueries({ queryKey: ['monitors'] }),
+  });
   const delView = useMutation({ mutationFn: (id: number) => del(`/api/views/${id}`), onSuccess: () => void qc.invalidateQueries({ queryKey: ['views'] }) });
 
   const toggle = (id: number) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
@@ -149,9 +162,10 @@ export default function Dashboard() {
       </div>
       {views.data?.some((v) => v.own) && <div className="mb-3 flex flex-wrap gap-2 text-xs text-slate-500">{views.data.filter((v) => v.own).map((v) => <span key={v.id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 dark:bg-slate-800"><button type="button" onClick={() => setF({ ...EMPTY, ...v.filters, tag: tagToId(v.filters.tag, tags.data) })} className="hover:underline">{v.name}</button><button type="button" aria-label={t('common.delete')} onClick={() => delView.mutate(v.id)}><X className="h-3 w-3" /></button></span>)}</div>}
 
-      {sel.size > 0 && (
+      {(sel.size > 0 || selecting) && (
         <div className="sticky top-14 z-20 mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-brand-300 bg-brand-50 px-3 py-2 text-sm dark:border-brand-700 dark:bg-brand-700/20" role="toolbar" aria-label={t('dashboard.bulk')}>
           <span className="font-medium">{t('dashboard.selected', { n: sel.size })}</span>
+          {sel.size < filtered.length && <Button size="sm" variant="ghost" onClick={() => setSel(new Set(filtered.map((m) => m.id)))}>{t('dashboard.selectAll', { n: filtered.length })}</Button>}
           <Button size="sm" onClick={() => bulk.mutate({ action: 'pause' })}><Pause className="h-4 w-4" />{t('monitors.pause')}</Button>
           <Button size="sm" onClick={() => bulk.mutate({ action: 'resume' })}><Play className="h-4 w-4" />{t('monitors.resume')}</Button>
           <Button size="sm" onClick={() => setBulkEdit(true)}>{t('dashboard.editSettings')}</Button>
@@ -174,8 +188,8 @@ export default function Dashboard() {
                   </button>
                 )}
                 {!isCollapsed && s.items.length > 0 && (mode === 'grid'
-                  ? <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">{s.items.map((m) => <MonitorCard key={m.id} m={m} selecting={selecting} selected={sel.has(m.id)} onToggle={() => toggle(m.id)} />)}</div>
-                  : <Card className="divide-y divide-slate-100 dark:divide-slate-800">{s.items.map((m) => <MonitorRow key={m.id} m={m} selecting={selecting} selected={sel.has(m.id)} onToggle={() => toggle(m.id)} />)}</Card>)}
+                  ? <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">{s.items.map((m) => <MonitorCard key={m.id} m={m} selecting={selecting} selected={sel.has(m.id)} onToggle={() => toggle(m.id)} onQuick={editor ? (pause) => quick.mutate({ id: m.id, pause }) : undefined} />)}</div>
+                  : <Card className="divide-y divide-slate-100 dark:divide-slate-800">{s.items.map((m) => <MonitorRow key={m.id} m={m} selecting={selecting} selected={sel.has(m.id)} onToggle={() => toggle(m.id)} onQuick={editor ? (pause) => quick.mutate({ id: m.id, pause }) : undefined} />)}</Card>)}
               </section>
             );
           })}
@@ -184,7 +198,7 @@ export default function Dashboard() {
       </div>
 
       <SaveViewModal open={saveView} onClose={() => setSaveView(false)} filters={f} tags={tags.data} canShare={editor} />
-      <BulkEditModal open={bulkEdit} onClose={() => setBulkEdit(false)} groups={groupList} tags={tags.data ?? []} onSubmit={(patch) => { bulk.mutate({ action: 'patch', patch }); setBulkEdit(false); }} />
+      <BulkEditModal key={bulkEdit ? 'open' : 'closed'} open={bulkEdit} onClose={() => setBulkEdit(false)} count={sel.size} groups={groupList} tags={tags.data ?? []} onSubmit={(patch) => { bulk.mutate({ action: 'patch', patch }); setBulkEdit(false); }} />
     </>
   );
 }
@@ -203,24 +217,37 @@ function Uptimes({ m }: { m: MonitorItem }) {
   );
 }
 
-interface RowProps { m: MonitorItem; selecting: boolean; selected: boolean; onToggle: () => void }
+interface RowProps { m: MonitorItem; selecting: boolean; selected: boolean; onToggle: () => void; onQuick?: (pause: boolean) => void }
 
-function Check({ m, selected, onToggle }: Pick<RowProps, 'm' | 'selected' | 'onToggle'>) {
-  return <input type="checkbox" checked={selected} onChange={onToggle} aria-label={m.name} className="h-4 w-4 rounded border-slate-300 text-brand-600" />;
+/** Pause/resume icon button; sits above the stretched card link. */
+function QuickToggle({ m, onQuick }: { m: MonitorItem; onQuick?: (pause: boolean) => void }) {
+  const t = useT();
+  if (!onQuick) return null;
+  const label = m.active ? t('monitors.pause') : t('monitors.resume');
+  return <button type="button" title={label} aria-label={`${label}: ${m.name}`} onClick={() => onQuick(m.active)} className="relative z-10 rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-slate-100">{m.active ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</button>;
 }
 
-function MonitorCard({ m, selecting, selected, onToggle }: RowProps) {
+/** Name link whose ::after covers the whole (relative) card; while selecting, a click toggles the selection instead of navigating. */
+function CardLink({ m, selecting, onToggle, className }: Pick<RowProps, 'm' | 'selecting' | 'onToggle'> & { className: string }) {
+  return <Link to={`/monitors/${m.id}`} onClick={(e) => { if (selecting) { e.preventDefault(); onToggle(); } }} className={cx(className, 'after:absolute after:inset-0')}>{m.name}</Link>;
+}
+
+function Check({ m, selected, onToggle }: Pick<RowProps, 'm' | 'selected' | 'onToggle'>) {
+  return <input type="checkbox" checked={selected} onChange={onToggle} aria-label={m.name} className="relative z-10 h-4 w-4 rounded border-slate-300 text-brand-600" />;
+}
+
+function MonitorCard({ m, selecting, selected, onToggle, onQuick }: RowProps) {
   const t = useT();
   const s = displayStatus(m);
   return (
-    <Card className={cx('p-4 transition hover:border-brand-400', selected && 'border-brand-500 ring-1 ring-brand-500', s === 'down' && 'border-red-300 dark:border-red-900')}>
+    <Card className={cx('relative cursor-pointer p-4 transition hover:border-brand-400', selected && 'border-brand-500 ring-1 ring-brand-500', s === 'down' && 'border-red-300 dark:border-red-900')}>
       <div className="flex items-start gap-2">
         {selecting && <Check m={m} selected={selected} onToggle={onToggle} />}
         <div className="min-w-0 flex-1">
-          <Link to={`/monitors/${m.id}`} className="block truncate font-medium text-slate-900 no-underline hover:underline dark:text-slate-100">{m.name}</Link>
+          <CardLink m={m} selecting={selecting} onToggle={onToggle} className="block truncate font-medium text-slate-900 no-underline hover:underline dark:text-slate-100" />
           <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500"><span className="font-mono">{m.type}</span>{m.flapping && <Badge tone="amber">{t('monitors.flapping')}</Badge>}{m.anomaly && <Badge tone="violet">{t('monitors.slowdown')}</Badge>}{m.tags.map((x) => <span key={x.id} className="rounded px-1.5 py-0.5 text-[11px] text-white" style={{ background: x.color }}>{x.name}</span>)}</div>
         </div>
-        <StatusBadge status={s} />
+        <StatusBadge status={s} /><QuickToggle m={m} onQuick={onQuick} />
       </div>
       <div className="mt-3 flex items-center gap-3"><HeartbeatBar beats={m.recent} count={32} className="flex-1" /><Sparkline beats={m.recent} width={72} /></div>
       <div className="mt-2 flex items-center justify-between text-xs text-slate-500"><span>{fmtMs(m.latencyMs)}</span><span title={m.message ?? ''}>{m.lastCheckAt ? relTime(m.lastCheckAt) : t('monitors.noChecks')}</span></div>
@@ -230,16 +257,17 @@ function MonitorCard({ m, selecting, selected, onToggle }: RowProps) {
   );
 }
 
-function MonitorRow({ m, selecting, selected, onToggle }: RowProps) {
+function MonitorRow({ m, selecting, selected, onToggle, onQuick }: RowProps) {
   const s = displayStatus(m);
   return (
-    <div className={cx('flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 sm:flex-nowrap', selected && 'bg-brand-50 dark:bg-brand-700/10')}>
+    <div className={cx('relative flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/40 sm:flex-nowrap', selected && 'bg-brand-50 dark:bg-brand-700/10')}>
       {selecting && <Check m={m} selected={selected} onToggle={onToggle} />}
       <StatusDot status={s} pulse />
-      <Link to={`/monitors/${m.id}`} className="min-w-0 flex-1 truncate font-medium text-slate-900 no-underline hover:underline dark:text-slate-100 sm:w-48 sm:flex-none">{m.name}</Link>
+      <CardLink m={m} selecting={selecting} onToggle={onToggle} className="min-w-0 flex-1 truncate font-medium text-slate-900 no-underline hover:underline dark:text-slate-100 sm:w-48 sm:flex-none" />
       <HeartbeatBar beats={m.recent} count={30} className="hidden flex-1 md:flex" height="h-5" />
       <span className="w-16 text-right text-xs text-slate-500">{fmtMs(m.latencyMs)}</span>
       <div className="hidden w-52 shrink-0 sm:block"><Uptimes m={m} /></div>
+      <QuickToggle m={m} onQuick={onQuick} />
     </div>
   );
 }
@@ -289,33 +317,6 @@ function SaveViewModal({ open, onClose, filters, tags, canShare }: { open: boole
         <Field label={t('common.name')}>{(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />}</Field>
         {canShare && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={shared} onChange={(e) => setShared(e.target.checked)} />{t('dashboard.shareView')}</label>}
       </form>
-    </Modal>
-  );
-}
-
-function BulkEditModal({ open, onClose, groups, tags, onSubmit }: { open: boolean; onClose: () => void; groups: Group[]; tags: Tag[]; onSubmit: (p: object) => void }) {
-  const t = useT();
-  const [v, setV] = useState({ intervalS: '', timeoutS: '', retries: '', group: '', addTag: '', removeTag: '' });
-  const num = (s: string) => (s === '' ? undefined : Number(s));
-  const submit = () => {
-    const patch: Record<string, unknown> = { intervalS: num(v.intervalS), timeoutS: num(v.timeoutS), retries: num(v.retries) };
-    if (v.group) patch.groupId = v.group === 'none' ? null : Number(v.group);
-    if (v.addTag) patch.addTagIds = [Number(v.addTag)];
-    if (v.removeTag) patch.removeTagIds = [Number(v.removeTag)];
-    onSubmit(Object.fromEntries(Object.entries(patch).filter(([, x]) => x !== undefined)));
-  };
-  const empty = !Object.values(v).some(Boolean);
-  return (
-    <Modal open={open} onClose={onClose} title={t('dashboard.editSettings')} footer={<><Button onClick={onClose}>{t('common.cancel')}</Button><Button variant="primary" disabled={empty} onClick={submit}>{t('common.apply')}</Button></>}>
-      <p className="mb-3 text-sm text-slate-500">{t('dashboard.bulkHint')}</p>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Field label={t('monitors.interval')}>{(id) => <Input id={id} type="number" min={5} max={86400} value={v.intervalS} onChange={(e) => setV({ ...v, intervalS: e.target.value })} />}</Field>
-        <Field label={t('monitors.timeout')}>{(id) => <Input id={id} type="number" min={1} max={300} value={v.timeoutS} onChange={(e) => setV({ ...v, timeoutS: e.target.value })} />}</Field>
-        <Field label={t('monitors.retries')}>{(id) => <Input id={id} type="number" min={0} max={20} value={v.retries} onChange={(e) => setV({ ...v, retries: e.target.value })} />}</Field>
-        <Field label={t('monitors.group')} className="sm:col-span-3">{(id) => <Select id={id} value={v.group} onChange={(e) => setV({ ...v, group: e.target.value })}><option value="">{t('dashboard.keep')}</option><option value="none">{t('monitors.noGroup')}</option>{groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</Select>}</Field>
-        <Field label={t('dashboard.addTag')} className="sm:col-span-3 sm:col-start-1">{(id) => <Select id={id} value={v.addTag} onChange={(e) => setV({ ...v, addTag: e.target.value })}><option value="">{t('dashboard.keep')}</option>{tags.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>}</Field>
-        <Field label={t('dashboard.removeTag')} className="sm:col-span-3">{(id) => <Select id={id} value={v.removeTag} onChange={(e) => setV({ ...v, removeTag: e.target.value })}><option value="">{t('dashboard.keep')}</option>{tags.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>}</Field>
-      </div>
     </Modal>
   );
 }

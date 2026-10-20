@@ -5,6 +5,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import WebSocket from 'ws';
 import { connect } from '../conn';
+import { trustOptions } from '../trust';
 import { jsonCompare, type JsonOp } from '../jsonpath';
 import { CheckError, type CheckResult, type Runner } from '../types';
 import { fail, hrMs, ok, toCheckError } from '../util';
@@ -28,7 +29,7 @@ const websocket: Runner = {
       ctx.guard.assertLiteral(u.hostname.replace(/^\[|\]$/g, ''));
       const t0 = process.hrtime.bigint();
       return await new Promise<CheckResult>((resolve) => {
-        const ws = new WebSocket(c.url, { headers: c.headers, rejectUnauthorized: c.verifyTls !== false, lookup: ctx.guard.lookup as any, handshakeTimeout: ctx.timeoutMs });
+        const ws = new WebSocket(c.url, { headers: c.headers, rejectUnauthorized: c.verifyTls !== false, ...trustOptions(), lookup: ctx.guard.lookup as any, handshakeTimeout: ctx.timeoutMs });
         let connectedAt = 0;
         const done = (r: CheckResult) => { ws.terminate(); resolve(r); };
         ctx.signal.addEventListener('abort', () => done(fail('timeout', 'Timed out waiting for the WebSocket peer')), { once: true });
@@ -69,7 +70,7 @@ const grpc: Runner = {
         const client = http2.connect(`${c.useTls === false ? 'http' : 'https'}://${c.host}:${c.port}`, {
           createConnection: () => c.useTls === false
             ? net.connect({ host: c.host, port: c.port, lookup: ctx.guard.lookup as any })
-            : tls.connect({ host: c.host, port: c.port, servername: net.isIP(c.host) ? undefined : c.host, ALPNProtocols: ['h2'], rejectUnauthorized: c.verifyTls !== false, lookup: ctx.guard.lookup as any }),
+            : tls.connect({ host: c.host, port: c.port, servername: net.isIP(c.host) ? undefined : c.host, ALPNProtocols: ['h2'], rejectUnauthorized: c.verifyTls !== false, ...trustOptions(), lookup: ctx.guard.lookup as any }),
         });
         const done = (r: CheckResult) => { client.destroy(); resolve(r); };
         ctx.signal.addEventListener('abort', () => done(fail('timeout', 'gRPC call timed out')), { once: true });

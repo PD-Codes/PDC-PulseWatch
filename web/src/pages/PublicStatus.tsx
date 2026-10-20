@@ -8,10 +8,10 @@ import { fmtDate, fmtDateTime, fmtPct, relTime } from '../lib/format';
 import { useT } from '../lib/i18n';
 
 type CompStatus = 'operational' | 'outage' | 'degraded' | 'maintenance' | 'unknown';
-interface Comp { monitorId: number; name: string; description: string | null; status: CompStatus; since: string | null; uptime90: number | null; daily: { date: string; uptime: number | null }[] }
+interface Comp { monitorId: number; name: string; description: string | null; status: CompStatus; since: string | null; uptime: number | null; daily: { date: string; uptime: number | null }[] }
 interface Incident { id: number; title: string; status: string; severity: 'minor' | 'major' | 'critical'; startedAt: string; resolvedAt: string | null; updates: { ts: string; kind: string; body: string | null }[] }
 interface Page {
-  slug: string; title: string; description: string | null; branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean;
+  slug: string; title: string; description: string | null; branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number;
   overall: 'operational' | 'partial' | 'outage' | 'degraded' | 'maintenance'; generatedAt: string; sections: { name: string; components: Comp[] }[]; components: Comp[];
   announcements: { id: number; kind: 'info' | 'maintenance' | 'incident'; title: string; body: string | null; startsAt: string; endsAt: string | null }[];
   maintenance: { id: number; name: string; description: string | null; endsAt: string }[]; incidents: Incident[]; recentIncidents: Incident[]; subscribe: { email: boolean };
@@ -27,16 +27,16 @@ const SEVERITY: Record<Incident['severity'], Tone> = { minor: 'amber', major: 'r
 
 const barColor = (u: number | null) => (u == null ? 'bg-slate-200 dark:bg-slate-800' : u >= 99.9 ? 'bg-emerald-500' : u >= 99 ? 'bg-lime-500' : u >= 95 ? 'bg-amber-500' : 'bg-red-500');
 
-function UptimeStrip({ comp }: { comp: Comp }) {
+function UptimeStrip({ comp, days }: { comp: Comp; days: number }) {
   const t = useT();
   return (
-    <div className="flex h-7 items-stretch gap-px" role="img" aria-label={t('public.uptimeStrip', { pct: fmtPct(comp.uptime90) })}>
+    <div className="flex h-7 items-stretch gap-px" role="img" aria-label={t('public.uptimeStrip', { n: days, pct: fmtPct(comp.uptime) })}>
       {comp.daily.map((d) => <span key={d.date} title={`${fmtDate(d.date)}: ${d.uptime == null ? t('public.noData') : fmtPct(d.uptime)}`} className={cx('min-w-px flex-1 rounded-[1px]', barColor(d.uptime))} />)}
     </div>
   );
 }
 
-function Component({ comp, history }: { comp: Comp; history: boolean }) {
+function Component({ comp, history, days }: { comp: Comp; history: boolean; days: number }) {
   const t = useT();
   return (
     <li className="px-4 py-3">
@@ -46,8 +46,8 @@ function Component({ comp, history }: { comp: Comp; history: boolean }) {
       </div>
       {history && comp.daily.length > 0 && (
         <div className="mt-2">
-          <UptimeStrip comp={comp} />
-          <div className="mt-1 flex justify-between text-xs text-slate-500"><span>{t('public.daysAgo', { n: 90 })}</span><span>{t('public.uptime90', { pct: fmtPct(comp.uptime90) })}</span><span>{t('public.today')}</span></div>
+          <UptimeStrip comp={comp} days={days} />
+          <div className="mt-1 flex justify-between text-xs text-slate-500"><span>{t('public.daysAgo', { n: days })}</span><span>{t('public.uptimeValue', { pct: fmtPct(comp.uptime) })}</span><span>{t('public.today')}</span></div>
         </div>
       )}
     </li>
@@ -126,7 +126,7 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
   const list = (comps: Comp[], name?: string) => (
     <section key={name ?? '_'} className="card overflow-hidden">
       {name && <h2 className="border-b border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold dark:border-slate-800 dark:bg-slate-800/50">{name}</h2>}
-      <ul className="divide-y divide-slate-100 dark:divide-slate-800">{comps.map((c) => <Component key={c.monitorId} comp={c} history={page.showHistory} />)}</ul>
+      <ul className="divide-y divide-slate-100 dark:divide-slate-800">{comps.map((c) => <Component key={c.monitorId} comp={c} history={page.showHistory} days={page.historyDays} />)}</ul>
     </section>
   );
 

@@ -5,6 +5,7 @@ import { Scheduler } from './engine/scheduler';
 import { DeadMan } from './jobs/deadman';
 import { Housekeeping } from './jobs/housekeeping';
 import { Tailer } from './jobs/tail';
+import { startCaSync } from './ca-store';
 import { startGuardSync } from './guard-sync';
 import { ReportJobs } from './reports';
 import { createServices } from './services';
@@ -22,6 +23,7 @@ async function main() {
   const servesApi = config.role !== 'worker';
   await ctx.maintenance.start();
   const stopGuardSync = startGuardSync(ctx);
+  const stopCaSync = startCaSync(ctx);
   ctx.notifier.start();
   const scheduler = runsWork ? new Scheduler(ctx) : undefined;
   const housekeeping = runsWork ? new Housekeeping(ctx) : undefined;
@@ -49,7 +51,7 @@ async function main() {
     stopping = true;
     log.info({ sig }, 'shutting down');
     try {
-      stopGuardSync(); deadman.stop(); tailer?.stop(); housekeeping?.stop(); reportJobs?.stop(); ctx.notifier.stop(); ctx.maintenance.stop();
+      stopGuardSync(); stopCaSync(); deadman.stop(); tailer?.stop(); housekeeping?.stop(); reportJobs?.stop(); ctx.notifier.stop(); ctx.maintenance.stop();
       await app?.close();
       await scheduler?.stop();
       await stopTracing();

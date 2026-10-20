@@ -26,6 +26,7 @@
     "@fastify/swagger": "9.9.2",
     "@fastify/swagger-ui": "6.1.2",
     "@fastify/type-provider-typebox": "6.3.0",
+    "@node-saml/node-saml": "5.1.0",
     "@simplewebauthn/browser": "14.0.0",
     "@simplewebauthn/server": "14.0.3",
     "@sinclair/typebox": "0.34.52",
@@ -68,6 +69,7 @@
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vite": "8.3.4",
-    "vitest": "5.0.5"
+    "vitest": "5.0.5",
+    "xml-crypto": "6.4.0"
   }
 }

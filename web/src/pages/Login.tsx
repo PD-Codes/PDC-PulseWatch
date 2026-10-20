@@ -21,7 +21,7 @@ export default function Login() {
   const [needTotp, setNeedTotp] = useState(false);
   const [error, setError] = useState<unknown>(params.get('error') ? new Error(t(`auth.error.${params.get('error')}`)) : null);
   const [busy, setBusy] = useState(false);
-  const providers = useQuery({ queryKey: ['auth-providers'], queryFn: () => get<{ id: number; name: string }[]>('/api/auth/providers/public'), staleTime: 60_000 });
+  const providers = useQuery({ queryKey: ['auth-providers'], queryFn: () => get<{ id: number; kind: 'oidc' | 'saml'; name: string }[]>('/api/auth/providers/public'), staleTime: 60_000 });
   const setup = useQuery({ queryKey: ['setup'], queryFn: () => get<{ needsSetup: boolean }>('/api/setup/status'), staleTime: 60_000 });
   const from = (loc.state as { from?: string } | null)?.from ?? '/';
 
@@ -53,7 +53,7 @@ export default function Login() {
         </form>
         {(providers.data?.length || passkeysSupported()) ? <div className="my-4 flex items-center gap-3 text-xs text-slate-400"><span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />{t('auth.or')}<span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" /></div> : null}
         <div className="space-y-2">
-          {providers.data?.map((p) => <a key={p.id} href={`/api/auth/oidc/${p.id}/start`} className="btn w-full no-underline">{t('auth.sso', { name: p.name })}</a>)}
+          {providers.data?.map((p) => <a key={p.id} href={`/api/auth/${p.kind}/${p.id}/start`} className="btn w-full no-underline">{t('auth.sso', { name: p.name })}</a>)}
           {passkeysSupported() && <Button className="w-full" onClick={withPasskey} disabled={busy}><KeyRound className="h-4 w-4" />{t('auth.passkey')}</Button>}
         </div>
       </div>

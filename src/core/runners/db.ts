@@ -2,6 +2,7 @@ import mysql from 'mysql2/promise';
 import pg from 'pg';
 import { Connection as Tedious, Request as TediousRequest } from 'tedious';
 import { connect } from '../conn';
+import { trustOptions } from '../trust';
 import { CheckError, type FieldDef, type Runner } from '../types';
 import { fail, hrMs, ok, readUntil, toCheckError } from '../util';
 
@@ -39,7 +40,7 @@ const mysqlRunner = (type: string, label: string): Runner => ({
       const t0 = process.hrtime.bigint();
       conn = await mysql.createConnection({
         host: addr, port: c.port, user: c.username, password: c.password, database: c.database || undefined, connectTimeout: ctx.timeoutMs,
-        ssl: c.useTls ? ({ servername: c.host, rejectUnauthorized: c.verifyTls !== false } as any) : undefined,
+        ssl: c.useTls ? ({ servername: c.host, rejectUnauthorized: c.verifyTls !== false, ...trustOptions() } as any) : undefined,
       });
       const [rows] = await conn.query({ sql: c.query || 'SELECT 1', timeout: ctx.timeoutMs, rowsAsArray: true });
       const first = Array.isArray(rows) && Array.isArray(rows[0]) ? (rows[0] as unknown[])[0] : undefined;
@@ -65,7 +66,7 @@ const postgres: Runner = {
       client = new pg.Client({
         host: addr, port: c.port, user: c.username, password: c.password, database: c.database || undefined,
         connectionTimeoutMillis: ctx.timeoutMs, query_timeout: ctx.timeoutMs,
-        ssl: c.useTls ? { servername: c.host, rejectUnauthorized: c.verifyTls !== false } : false,
+        ssl: c.useTls ? { servername: c.host, rejectUnauthorized: c.verifyTls !== false, ...trustOptions() } : false,
       });
       client.on('error', () => {});
       await client.connect();
@@ -93,7 +94,7 @@ const mssql: Runner = {
         const conn = new Tedious({
           server: addr,
           authentication: { type: 'default', options: { userName: c.username, password: c.password } },
-          options: { port: c.port, database: c.database || undefined, encrypt: !!c.useTls, trustServerCertificate: c.verifyTls === false, connectTimeout: ctx.timeoutMs, requestTimeout: ctx.timeoutMs, serverName: c.host, rowCollectionOnRequestCompletion: true },
+          options: { port: c.port, database: c.database || undefined, encrypt: !!c.useTls, trustServerCertificate: c.verifyTls === false, cryptoCredentialsDetails: trustOptions(), connectTimeout: ctx.timeoutMs, requestTimeout: ctx.timeoutMs, serverName: c.host, rowCollectionOnRequestCompletion: true },
         });
         const stop = () => conn.close();
         ctx.signal.addEventListener('abort', () => { stop(); reject(new CheckError('timeout', 'Timed out')); }, { once: true });
@@ -169,7 +170,7 @@ const mongo: Runner = {
       client = new MongoClient(`mongodb://${c.host}:${c.port ?? 27017}`, {
         auth: c.username ? { username: c.username, password: c.password } : undefined,
         authSource: c.database || 'admin', serverSelectionTimeoutMS: ctx.timeoutMs, connectTimeoutMS: ctx.timeoutMs, socketTimeoutMS: ctx.timeoutMs,
-        tls: !!c.useTls, tlsAllowInvalidCertificates: c.useTls && c.verifyTls === false, directConnection: true,
+        tls: !!c.useTls, tlsAllowInvalidCertificates: c.useTls && c.verifyTls === false, directConnection: true, ...trustOptions(),
       });
       await client.db(c.database || 'admin').command({ ping: 1 });
       return ok(hrMs(t0), { message: 'ping OK' });

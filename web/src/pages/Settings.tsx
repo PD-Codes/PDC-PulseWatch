@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Download, KeyRound, Pencil, Plus, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { CertsTab } from '../components/CertsTab';
+import { DefaultsTab } from '../components/DefaultsTab';
 import { CopyButton, EMAIL_RE, FieldsForm, splitList } from '../components/settingsParts';
 import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
 import { del, download, errorMessage, get, post, put, qs } from '../lib/api';
@@ -9,7 +11,7 @@ import { useMeta } from '../lib/auth';
 import { useT } from '../lib/i18n';
 import type { FieldDef } from '../../../src/core/types';
 
-const TABS = ['network', 'digest', 'auth', 'backup', 'about'] as const;
+const TABS = ['network', 'defaults', 'certificates', 'digest', 'auth', 'backup', 'about'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings() {
@@ -24,6 +26,8 @@ export default function Settings() {
         <Tabs tabs={TABS.map((id) => ({ id, label: t(`settings.tab.${id}`) }))} value={tab} onChange={(v) => setSp({ tab: v }, { replace: true })} />
       </div>
       {tab === 'network' && <NetworkTab />}
+      {tab === 'defaults' && <DefaultsTab />}
+      {tab === 'certificates' && <CertsTab />}
       {tab === 'digest' && <DigestTab />}
       {tab === 'auth' && <AuthTab />}
       {tab === 'backup' && <BackupTab />}
@@ -131,9 +135,9 @@ function DigestTab() {
 
 /* ---------------- authentication providers ---------------- */
 
-interface Provider { id: number; kind: 'oidc' | 'ldap'; name: string; enabled: boolean; config: Record<string, any> }
-interface Providers { items: Provider[]; redirectUri: string; fields: { oidc: FieldDef[]; ldap: FieldDef[] } }
-interface Draft { id?: number; kind: 'oidc' | 'ldap'; name: string; enabled: boolean; config: Record<string, any> }
+interface Provider { id: number; kind: 'oidc' | 'ldap' | 'saml'; name: string; enabled: boolean; config: Record<string, any>; urls?: { acs: string; metadata: string; entityId: string } }
+interface Providers { items: Provider[]; redirectUri: string; fields: { oidc: FieldDef[]; ldap: FieldDef[]; saml: FieldDef[] } }
+interface Draft { id?: number; kind: 'oidc' | 'ldap' | 'saml'; name: string; enabled: boolean; config: Record<string, any>; urls?: Provider['urls'] }
 
 const defaults = (fs: FieldDef[]) => Object.fromEntries(fs.filter((f) => f.default !== undefined).map((f) => [f.key, f.default]));
 
@@ -177,10 +181,19 @@ function AuthTab() {
         {draft && (
           <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); save.mutate(draft); }}>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label={t('settings.auth.kind')}>{(id) => <Select id={id} value={draft.kind} disabled={!!draft.id} onChange={(e) => { const kind = e.target.value as Draft['kind']; setDraft({ ...draft, kind, config: defaults(d.fields[kind]) }); }}><option value="oidc">OpenID Connect</option><option value="ldap">LDAP</option></Select>}</Field>
+              <Field label={t('settings.auth.kind')}>{(id) => <Select id={id} value={draft.kind} disabled={!!draft.id} onChange={(e) => { const kind = e.target.value as Draft['kind']; setDraft({ ...draft, kind, config: defaults(d.fields[kind]) }); }}><option value="oidc">OpenID Connect</option><option value="ldap">LDAP</option><option value="saml">{t('settings.auth.saml.kind')}</option></Select>}</Field>
               <Field label={t('common.name')}>{(id) => <Input id={id} required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />}</Field>
             </div>
             {draft.id && fields.some((f) => f.kind === 'secret') && <p className="hint">{t('settings.auth.secretKept')}</p>}
+            {draft.kind === 'saml' && (
+              <div className="space-y-2 rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-800">
+                <div className="label">{t('settings.auth.saml.urls')}</div>
+                {draft.urls ? ([['settings.auth.saml.acs', draft.urls.acs], ['settings.auth.saml.entityId', draft.urls.entityId], ['settings.auth.saml.metadata', draft.urls.metadata]] as const).map(([k, val]) => (
+                  <div key={k}><div className="text-xs text-slate-500">{t(k)}</div><div className="flex flex-wrap items-center gap-2"><code className="break-all rounded bg-slate-100 px-2 py-1 dark:bg-slate-800">{val}</code><CopyButton text={val} /></div></div>
+                )) : <p className="text-slate-500">{t('settings.auth.saml.saveFirst')}</p>}
+                <p className="hint">{t('settings.auth.saml.help')}</p>
+              </div>
+            )}
             <FieldsForm fields={fields} value={draft.config} onChange={(config) => setDraft({ ...draft, config })} />
             <Toggle checked={draft.enabled} onChange={(enabled) => setDraft({ ...draft, enabled })} label={t('common.enabled')} />
           </form>

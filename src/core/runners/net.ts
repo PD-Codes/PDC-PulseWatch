@@ -3,6 +3,7 @@ import dgram from 'node:dgram';
 import dns from 'node:dns';
 import tls from 'node:tls';
 import { connect } from '../conn';
+import { certFacts, tlsMessage } from '../tlsdetail';
 import { CheckError, type CheckResult, type Runner } from '../types';
 import { certExpiryError, fail, hrMs, ok, readUntil, toCheckError } from '../util';
 
@@ -158,13 +159,20 @@ const tlsRunner: Runner = {
         const cert = conn.cert;
         const total = conn.connectMs + (conn.tlsMs ?? 0);
         if (!cert) return fail('tls', 'Peer sent no certificate');
+        const target = { host: c.host as string, port: Number(c.port ?? 443), servername: sni as string };
+        const bad = (code: string | undefined, nameMatches?: boolean, expiring?: boolean) => {
+          const facts = certFacts(cert, target, code, nameMatches);
+          return fail('tls', tlsMessage(facts, { expiring }), { cert, latencyMs: Math.round(total), details: { tls: facts } });
+        };
         if (c.verify !== false) {
-          if (!cert.authorized) return fail('tls', `Certificate not trusted: ${cert.authError}`, { cert, latencyMs: Math.round(total) });
-          const id = tls.checkServerIdentity(sni, (conn.sock as tls.TLSSocket).getPeerCertificate());
-          if (id) return fail('tls', `Certificate does not match ${sni}`, { cert, latencyMs: Math.round(total) });
+          if (!cert.authorized) return bad(String(cert.authError));
+          if (tls.checkServerIdentity(sni, (conn.sock as tls.TLSSocket).getPeerCertificate())) return bad('ERR_TLS_CERT_ALTNAME_INVALID', false);
         }
-        const bad = certExpiryError(cert, c.warnDays);
-        if (bad) return fail(bad.kind, bad.message, { cert, latencyMs: Math.round(total) });
+        const exp = certExpiryError(cert, c.warnDays);
+        if (exp) {
+          const facts = certFacts(cert, target);
+          return fail(exp.kind, tlsMessage(facts, { expiring: true }), { cert, latencyMs: Math.round(total), details: { tls: facts } });
+        }
         return ok(total, { message: `Valid for ${cert.daysLeft} more day(s), issued by ${cert.issuer}`, cert });
       } finally { conn.close(); }
     } catch (e) { const ce = toCheckError(e); return fail(ce.kind, ce.message, { details: ce.details }); }

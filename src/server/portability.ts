@@ -85,7 +85,7 @@ export async function exportConfig(ctx: Ctx, includeSecrets: boolean): Promise<C
       targets: targets.filter((t) => t.window_id === w.id).map((t) => ({ type: t.target_type, name: t.target_type === 'monitor' ? mname.get(t.target_id) : t.target_type === 'group' ? (groups.some((g) => g.id === t.target_id) ? gpath(t.target_id) : undefined) : tname.get(t.target_id) })).filter((t) => t.name),
     })),
     statusPages: pages.map((p) => ({
-      slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), ssoRequired: bool(p.sso_required), branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: bool(p.show_history),
+      slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), ssoRequired: bool(p.sso_required), branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: bool(p.show_history), historyDays: p.history_days,
       sections: sections.filter((s) => s.page_id === p.id).map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name })).filter((c) => c.monitor) })),
       components: comps.filter((c) => c.page_id === p.id && !c.section_id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name })).filter((c) => c.monitor),
     })),
@@ -245,7 +245,7 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
   const pageIds = new Map((await db.selectFrom('status_pages').select(['id', 'slug']).execute()).map((p) => [p.slug, p.id]));
   for (const p of doc.statusPages ?? []) try {
     const id = pageIds.get(p.slug); count('statusPages', !!id);
-    const values = { slug: p.slug, title: p.title, description: p.description ?? null, domain: p.domain ?? null, is_public: p.isPublic === false ? 0 : 1, sso_required: p.ssoRequired ? 1 : 0, branding: JSON.stringify(p.branding ?? {}), custom_css: p.customCss ?? null, show_history: p.showHistory === false ? 0 : 1 };
+    const values = { slug: p.slug, title: p.title, description: p.description ?? null, domain: p.domain ?? null, is_public: p.isPublic === false ? 0 : 1, sso_required: p.ssoRequired ? 1 : 0, branding: JSON.stringify(p.branding ?? {}), custom_css: p.customCss ?? null, show_history: p.showHistory === false ? 0 : 1, history_days: [14, 30, 60, 90, 120, 150, 180].includes(p.historyDays as number) ? (p.historyDays as number) : 90 };
     const comp = (c: any) => { const mid = monitorIds.get(c.monitor); if (!mid) rep.warnings.push(`status page ${p.slug}: monitor "${c.monitor}" not found`); return mid ? { monitor_id: mid, display_name: c.displayName ?? null } : null; };
     await w(() => db.transaction().execute(async (trx) => {
       let pid = id;

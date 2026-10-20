@@ -7,7 +7,7 @@ import { useAuth } from '../lib/auth';
 import { fmtDateTime, relTime } from '../lib/format';
 import { useT } from '../lib/i18n';
 
-interface User { id: number; username: string; displayName: string; email: string | null; role: Role; scopeRestricted: boolean; authSource: 'local' | 'oidc' | 'ldap'; isActive: boolean; totpEnabled: boolean; createdAt: string; lastLoginAt: string | null; locked: boolean }
+interface User { id: number; username: string; displayName: string; email: string | null; role: Role; scopeRestricted: boolean; authSource: 'local' | 'oidc' | 'ldap' | 'saml'; isActive: boolean; totpEnabled: boolean; createdAt: string; lastLoginAt: string | null; locked: boolean }
 interface PageRef { id: number; title: string }
 type Level = 'view' | 'manage';
 const ROLES: Role[] = ['admin', 'editor', 'viewer'];

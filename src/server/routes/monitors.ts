@@ -4,6 +4,7 @@ import { sql } from 'kysely';
 import { getRunner, runners } from '../../core';
 import { accessibleGroupIds, accessibleMonitorIds, canManageMonitor, canWrite, writeAudit } from '../auth/access';
 import { parseJson } from '../db';
+import { BUILT_IN_DEFAULTS, DEFAULT_LIMITS, monitorDefaults, resetMonitorDefaults, saveMonitorDefaults, type MonitorDefaults } from '../monitors/defaults';
 import { parseMonitor } from '../monitors/model';
 import { listMonitors, loadMonitor, monitorDetail, saveMonitor, ValidationError } from '../monitors/service';
 
@@ -117,35 +118,105 @@ export async function monitorRoutes(app: FastifyInstance) {
     return ctx.engine.checkNow(id);
   });
 
+  const ruleBody = Type.Object({ channelId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), policyId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), events: Type.Optional(Type.Array(Type.String())) });
   app.post('/api/monitors/bulk', {
     ...writer,
-    schema: { tags: ['monitors'], summary: 'Bulk actions', body: Type.Object({ ids: Type.Array(Type.Integer(), { minItems: 1, maxItems: 1000 }), action: Type.Union([Type.Literal('pause'), Type.Literal('resume'), Type.Literal('delete'), Type.Literal('patch')]), patch: Type.Optional(Type.Object({
-      intervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 86400 })), timeoutS: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })), retries: Type.Optional(Type.Integer({ minimum: 0, maximum: 20 })),
-      retryIntervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 3600 })), groupId: Type.Optional(Type.Union([Type.Integer(), Type.Null()])), addTagIds: Type.Optional(Type.Array(Type.Integer())), removeTagIds: Type.Optional(Type.Array(Type.Integer())),
-    })) }) },
-  }, async (req) => {
+    schema: {
+      tags: ['monitors'], summary: 'Bulk actions',
+      body: Type.Object({
+        ids: Type.Array(Type.Integer(), { minItems: 1, maxItems: 1000 }),
+        action: Type.Union([Type.Literal('pause'), Type.Literal('resume'), Type.Literal('delete'), Type.Literal('patch')]),
+        patch: Type.Optional(Type.Object({
+          intervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 86400 })), timeoutS: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })), retries: Type.Optional(Type.Integer({ minimum: 0, maximum: 20 })),
+          retryIntervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 3600 })), upThreshold: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })), downThreshold: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
+          flapWindow: Type.Optional(Type.Integer({ minimum: 4, maximum: 60 })), flapThreshold: Type.Optional(Type.Integer({ minimum: 0, maximum: 60 })), publicBadge: Type.Optional(Type.Boolean()),
+          groupId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), addTagIds: Type.Optional(Type.Array(Type.Integer())), removeTagIds: Type.Optional(Type.Array(Type.Integer())),
+          notifications: Type.Optional(Type.Object({ mode: Type.Union([Type.Literal('add'), Type.Literal('replace')]), rules: Type.Array(ruleBody, { maxItems: 20 }) })),
+        })),
+      }),
+    },
+  }, async (req, reply) => {
     const b = req.body as any;
     const allowed = await accessibleMonitorIds(ctx, req.user!, 'manage');
     const ids: number[] = b.ids.filter((i: number) => allowed === null || allowed.includes(i));
     if (!ids.length) return { ok: true, affected: 0 };
+    if (b.action === 'patch' && b.patch?.groupId && !(await canManageGroup(req, b.patch.groupId))) return reply.code(403).send({ error: 'forbidden', message: 'No access to that group' });
     if (b.action === 'pause') await db.updateTable('monitors').set({ active: 0 }).where('id', 'in', ids).execute();
     else if (b.action === 'resume') await db.updateTable('monitors').set({ active: 1, next_run_at: new Date(), attempt: 0 }).where('id', 'in', ids).execute();
     else if (b.action === 'delete') { await db.deleteFrom('monitors').where('id', 'in', ids).execute(); for (const t of ['heartbeats', 'rollups', 'events'] as const) await db.deleteFrom(t).where('monitor_id', 'in', ids).execute(); }
     else {
       const p = b.patch ?? {};
+      const cols: Record<string, string> = { intervalS: 'interval_s', timeoutS: 'timeout_s', retries: 'retries', retryIntervalS: 'retry_interval_s', upThreshold: 'up_threshold', downThreshold: 'down_threshold', flapWindow: 'flap_window', flapThreshold: 'flap_threshold', groupId: 'group_id' };
       const set: Record<string, unknown> = {};
-      if (p.intervalS !== undefined) set.interval_s = p.intervalS;
-      if (p.timeoutS !== undefined) set.timeout_s = p.timeoutS;
-      if (p.retries !== undefined) set.retries = p.retries;
-      if (p.retryIntervalS !== undefined) set.retry_interval_s = p.retryIntervalS;
-      if (p.groupId !== undefined) set.group_id = p.groupId;
+      for (const [k, col] of Object.entries(cols)) if (p[k] !== undefined) set[col] = p[k];
+      if (p.publicBadge !== undefined) set.public_badge = p.publicBadge ? 1 : 0;
       if (Object.keys(set).length) await db.updateTable('monitors').set(set).where('id', 'in', ids).execute();
       if (p.removeTagIds?.length) await db.deleteFrom('monitor_tags').where('monitor_id', 'in', ids).where('tag_id', 'in', p.removeTagIds).execute();
       if (p.addTagIds?.length) await db.insertInto('monitor_tags').values(ids.flatMap((m: number) => p.addTagIds.map((t: number) => ({ monitor_id: m, tag_id: t })))).ignore().execute();
+      const rules = (p.notifications?.rules ?? []).filter((r: any) => r.channelId || r.policyId);
+      if (p.notifications) {
+        if (p.notifications.mode === 'replace') await db.deleteFrom('monitor_notifications').where('monitor_id', 'in', ids).execute();
+        if (rules.length) await db.insertInto('monitor_notifications').values(ids.flatMap((m: number) => rules.map((r: any) => ({ monitor_id: m, channel_id: r.channelId ?? null, policy_id: r.policyId ?? null, events: (r.events?.length ? r.events : ['down', 'up']).join(',') })))).execute();
+      }
     }
     await writeAudit(ctx, req.user, `monitor.bulk_${b.action}`, { type: 'monitor' }, { ids, patch: b.patch }, req.ip);
     ctx.bus.publish({ type: 'config', entity: 'monitor' });
     return { ok: true, affected: ids.length };
+  });
+
+  /** Create many monitors that share every setting except name and address. */
+  app.post('/api/monitors/bulk-create', {
+    ...writer,
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    schema: {
+      tags: ['monitors'], summary: 'Create several monitors from a template plus name/address pairs',
+      body: Type.Object({
+        type: Type.String(), addressKey: Type.String({ minLength: 1, maxLength: 64 }), skipExisting: Type.Optional(Type.Boolean()),
+        template: Type.Object({}, { additionalProperties: true }),
+        items: Type.Array(Type.Object({ name: Type.String({ minLength: 1, maxLength: 255 }), address: Type.String({ minLength: 1, maxLength: 2000 }) }), { minItems: 1, maxItems: 500 }),
+      }),
+    },
+  }, async (req, reply) => {
+    const b = req.body as { type: string; addressKey: string; skipExisting?: boolean; template: Record<string, any>; items: { name: string; address: string }[] };
+    const runner = getRunner(b.type);
+    if (!runner) return reply.code(400).send({ error: 'validation', message: `Unknown monitor type "${b.type}"` });
+    if (!runner.fields.some((f) => f.key === b.addressKey && (f.kind === 'text' || f.kind === 'secret'))) return reply.code(400).send({ error: 'validation', message: `"${b.addressKey}" is not a text field of this monitor type` });
+    if (b.template.groupId && !(await canManageGroup(req, b.template.groupId))) return reply.code(403).send({ error: 'forbidden', message: 'No access to that group' });
+    if (!b.template.groupId && req.user!.scopeRestricted) return reply.code(403).send({ error: 'forbidden', message: 'Restricted users must pick a group' });
+    const existing = new Set((await db.selectFrom('monitors').select('name').execute()).map((r) => r.name.toLowerCase()));
+    const created: { index: number; id: number }[] = [];
+    const skipped: { index: number; reason: string }[] = [];
+    const failed: { index: number; errors: string[] }[] = [];
+    for (const [index, it] of b.items.entries()) {
+      const name = it.name.trim();
+      if (b.skipExisting && existing.has(name.toLowerCase())) { skipped.push({ index, reason: 'A monitor with this name already exists' }); continue; }
+      try {
+        const id = await saveMonitor(ctx, { ...b.template, name, type: b.type, config: { ...(b.template.config ?? {}), [b.addressKey]: it.address.trim() } }, req.user!.id);
+        existing.add(name.toLowerCase());
+        created.push({ index, id });
+      } catch (e) {
+        if (e instanceof ValidationError) failed.push({ index, errors: e.errors }); else throw e;
+      }
+    }
+    await writeAudit(ctx, req.user, 'monitor.bulk_create', { type: 'monitor' }, { type: b.type, created: created.length, skipped: skipped.length, failed: failed.length }, req.ip);
+    if (created.length) ctx.bus.publish({ type: 'config', entity: 'monitor' });
+    return { created, skipped, failed };
+  });
+
+  /** Instance-wide defaults for new monitors (timings and thresholds). */
+  const defaultsBody = Type.Object(Object.fromEntries((Object.keys(DEFAULT_LIMITS) as (keyof typeof DEFAULT_LIMITS)[]).map((k) => [k, Type.Integer({ minimum: DEFAULT_LIMITS[k][0], maximum: DEFAULT_LIMITS[k][1] })])) as any);
+  app.get('/api/settings/monitor-defaults', { ...auth, schema: { tags: ['settings'], summary: 'Defaults for new monitors' } }, async () => ({ defaults: await monitorDefaults(ctx), builtIn: BUILT_IN_DEFAULTS, limits: DEFAULT_LIMITS }));
+  app.put('/api/settings/monitor-defaults', { preHandler: app.requireRole('admin'), schema: { tags: ['settings'], body: defaultsBody } }, async (req, reply) => {
+    const d = req.body as MonitorDefaults;
+    if (d.timeoutS > d.intervalS) return reply.code(400).send({ error: 'validation', message: 'The timeout must not exceed the interval' });
+    await saveMonitorDefaults(ctx, d);
+    await writeAudit(ctx, req.user, 'settings.monitor_defaults', { type: 'settings' }, d as any, req.ip);
+    return { ok: true };
+  });
+  app.delete('/api/settings/monitor-defaults', { preHandler: app.requireRole('admin'), schema: { tags: ['settings'], summary: 'Reset to the built-in defaults' } }, async (req) => {
+    await resetMonitorDefaults(ctx);
+    await writeAudit(ctx, req.user, 'settings.monitor_defaults_reset', { type: 'settings' }, undefined, req.ip);
+    return { ok: true };
   });
 
   /* ------------------------------- history ------------------------------- */
@@ -242,7 +313,7 @@ export async function monitorRoutes(app: FastifyInstance) {
     const all = await db.selectFrom('monitor_groups').selectAll().orderBy('sort').orderBy('name').execute();
     return all.filter((x) => g === null || g.has(x.id)).map((x) => ({ id: x.id, parentId: x.parent_id, name: x.name, description: x.description, sort: x.sort }));
   });
-  const groupBody = Type.Object({ name: Type.String({ minLength: 1, maxLength: 255 }), parentId: Type.Optional(Type.Union([Type.Integer(), Type.Null()])), description: Type.Optional(Type.Union([Type.String(), Type.Null()])), sort: Type.Optional(Type.Integer()) });
+  const groupBody = Type.Object({ name: Type.String({ minLength: 1, maxLength: 255 }), parentId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), description: Type.Optional(Type.Union([Type.String(), Type.Null()])), sort: Type.Optional(Type.Integer()) });
   app.post('/api/groups', { ...writer, schema: { tags: ['monitors'], body: groupBody } }, async (req, reply) => {
     const b = req.body as any;
     if (b.parentId && !(await canManageGroup(req, b.parentId))) return reply.code(403).send({ error: 'forbidden' });

@@ -4,6 +4,7 @@ import zlib from 'node:zlib';
 import type { Readable } from 'node:stream';
 import type { NetGuard } from './guard';
 import { CheckError, type CertInfo } from './types';
+import { trustOptions } from './trust';
 import { certFromSocket, toCheckError } from './util';
 
 export interface HttpOptions {
@@ -85,7 +86,7 @@ function hop(url: URL, method: string, headers: Record<string, string>, body: st
         headers: h,
         agent: false,
         lookup: o.guard.lookup as any,
-        ...(isTls ? { rejectUnauthorized: o.verifyTls !== false, servername: /^[\d.:]+$/.test(url.hostname) ? undefined : url.hostname } : {}),
+        ...(isTls ? { rejectUnauthorized: o.verifyTls !== false, servername: /^[\d.:]+$/.test(url.hostname) ? undefined : url.hostname, ...trustOptions() } : {}),
       },
       (res) => {
         phase = 'body';
@@ -137,7 +138,7 @@ function hop(url: URL, method: string, headers: Record<string, string>, body: st
       s.on('connect', () => { timings.connect = ms(); phase = isTls ? 'tls' : 'request'; });
       s.on('secureConnect', () => { timings.tls = ms(); phase = 'request'; cert = certFromSocket(s as any); });
     });
-    req.on('error', (e) => reject(toCheckError(e, phase)));
+    req.on('error', (e) => reject(toCheckError(e, phase, isTls ? { host: url.hostname.replace(/^\[|\]$/g, ''), port: Number(url.port) || 443 } : undefined)));
     const onAbort = () => req.destroy(Object.assign(new Error('aborted'), { name: 'TimeoutError' }));
     if (o.signal.aborted) onAbort();
     else o.signal.addEventListener('abort', onAbort, { once: true });

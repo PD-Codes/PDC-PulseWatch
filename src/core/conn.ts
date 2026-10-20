@@ -2,6 +2,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import type { NetGuard } from './guard';
 import type { CertInfo } from './types';
+import { trustOptions } from './trust';
 import { bindAbort, certFromSocket, toCheckError } from './util';
 
 export interface Conn {
@@ -31,12 +32,12 @@ export function connect(o: ConnectOptions): Promise<Conn> {
     let connectMs = 0;
     const base = { host: o.host, port: o.port, lookup: o.guard.lookup as any };
     const sock: net.Socket | tls.TLSSocket = o.tls
-      ? tls.connect({ ...base, servername: net.isIP(o.tls.servername ?? o.host) ? undefined : (o.tls.servername ?? o.host), rejectUnauthorized: o.tls.verify })
+      ? tls.connect({ ...base, servername: net.isIP(o.tls.servername ?? o.host) ? undefined : (o.tls.servername ?? o.host), rejectUnauthorized: o.tls.verify, ...trustOptions() })
       : net.connect(base);
     const unbind = bindAbort(sock, o.signal);
     sock.once('lookup', () => { phase = 'connect'; });
     sock.once('connect', () => { connectMs = ms(); phase = o.tls ? 'tls' : 'ready'; });
-    const onErr = (e: Error) => { unbind(); reject(toCheckError(e, phase)); };
+    const onErr = (e: Error) => { unbind(); reject(toCheckError(e, phase, o.tls ? { host: o.host, port: o.port, servername: o.tls.servername } : undefined)); };
     sock.once('error', onErr);
     const ready = () => {
       sock.off('error', onErr);
@@ -56,9 +57,9 @@ export function connect(o: ConnectOptions): Promise<Conn> {
 export function upgradeTls(conn: Conn, host: string, verify: boolean, signal: AbortSignal): Promise<Conn> {
   return new Promise((resolve, reject) => {
     const start = process.hrtime.bigint();
-    const s = tls.connect({ socket: conn.sock as net.Socket, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: verify });
+    const s = tls.connect({ socket: conn.sock as net.Socket, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: verify, ...trustOptions() });
     const unbind = bindAbort(s, signal);
-    s.once('error', (e) => { unbind(); reject(toCheckError(e, 'tls')); });
+    s.once('error', (e) => { unbind(); reject(toCheckError(e, 'tls', { host, port: (conn.sock as net.Socket).remotePort ?? 0 })); });
     s.once('secureConnect', () => {
       s.removeAllListeners('error');
       s.on('error', () => {});

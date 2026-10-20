@@ -5,6 +5,8 @@ import { config } from './config';
 import type { Ctx } from './context';
 import { bool, parseJson } from './db';
 import { mailConfigured, sendSystemMail } from './mail';
+import { describeTarget } from '../core';
+import { parseMonitor } from './monitors/model';
 
 export type Scope = { type: 'all' | 'group' | 'monitor' | 'tag'; id?: number | null };
 export interface SlaRow { monitorId: number; name: string; group: string | null; uptime: number | null; downtimeMin: number; incidents: number; mttrMin: number | null; avgMs: number | null; p95Ms: number | null; checks: number }
@@ -115,21 +117,30 @@ export async function buildDigest(ctx: Ctx): Promise<{ subject: string; text: st
   const { db } = ctx;
   const since = new Date(Date.now() - DAY);
   const [down, opened, resolved, flapping, certs] = await Promise.all([
-    db.selectFrom('monitor_state as s').innerJoin('monitors as m', 'm.id', 's.monitor_id').select(['m.name', 's.status_since', 's.last_message']).where('m.active', '=', 1).where('s.status', '=', 'down').execute(),
+    db.selectFrom('monitor_state as s').innerJoin('monitors as m', 'm.id', 's.monitor_id').select(['m.id', 'm.name', 's.status_since', 's.last_message']).where('m.active', '=', 1).where('s.status', '=', 'down').execute(),
     db.selectFrom('incidents').select(['title', 'started_at']).where('started_at', '>=', since).orderBy('started_at', 'desc').limit(20).execute(),
     db.selectFrom('incidents').select(['title', 'started_at', 'resolved_at']).where('resolved_at', '>=', since).execute(),
     db.selectFrom('monitor_state as s').innerJoin('monitors as m', 'm.id', 's.monitor_id').select('m.name').where('s.flapping', '=', 1).execute(),
-    db.selectFrom('monitor_state as s').innerJoin('monitors as m', 'm.id', 's.monitor_id').select(['m.name', 's.cert_expires_at']).where('s.cert_expires_at', '<', new Date(Date.now() + 14 * DAY)).where('s.cert_expires_at', 'is not', null).execute(),
+    db.selectFrom('monitor_state as s').innerJoin('monitors as m', 'm.id', 's.monitor_id').select(['m.id', 'm.name', 's.cert_expires_at', 's.cert_info', 's.last_message']).where('s.cert_expires_at', '<', new Date(Date.now() + 14 * DAY)).where('s.cert_expires_at', 'is not', null).execute(),
   ]);
   const sla = await buildSla(ctx, { type: 'all' }, 1);
+  const ids = [...new Set([...down, ...certs].map((x) => x.id))];
+  const targets = new Map((ids.length ? await db.selectFrom('monitors').selectAll().where('id', 'in', ids).execute() : []).map((row) => [row.id, describeTarget(parseMonitor(row).config)]));
+  const certLine = (c: (typeof certs)[number]) => {
+    const info = parseJson<{ subject?: string; issuer?: string } | null>(c.cert_info, null);
+    const when = c.cert_expires_at!;
+    const left = Math.floor((when.getTime() - Date.now()) / DAY);
+    return `${c.name}${targets.get(c.id) ? ` [${targets.get(c.id)}]` : ''}: ${left < 0 ? `expired on ${when.toISOString().slice(0, 10)}` : `expires on ${when.toISOString().slice(0, 10)} (in ${left} day(s))`}${info?.subject ? `, subject ${info.subject}` : ''}${info?.issuer ? `, issuer ${info.issuer}` : ''}`;
+  };
   const worst = [...sla.rows].filter((r) => r.uptime != null && r.uptime < 100).sort((a, b) => a.uptime! - b.uptime!).slice(0, 5);
   const lines = [
     `Overall uptime (24h): ${sla.overall ?? 'n/a'}%`,
-    `Monitors down right now: ${down.length}${down.length ? ` (${down.map((d) => d.name).join(', ')})` : ''}`,
+    `Monitors down right now: ${down.length}`,
+    ...down.map((d) => `  - ${d.name}${targets.get(d.id) ? ` [${targets.get(d.id)}]` : ''}: ${d.last_message ?? 'no details'}`),
     `Incidents opened: ${opened.length}, resolved: ${resolved.length}`,
     ...(worst.length ? ['Lowest uptime: ' + worst.map((w) => `${w.name} ${w.uptime}%`).join('; ')] : []),
     ...(flapping.length ? [`Flapping: ${flapping.map((f) => f.name).join(', ')}`] : []),
-    ...(certs.length ? [`Certificates expiring within 14 days: ${certs.map((c) => `${c.name} (${c.cert_expires_at!.toISOString().slice(0, 10)})`).join(', ')}`] : []),
+    ...(certs.length ? ['Certificates expiring within 14 days:', ...certs.map((c) => `  - ${certLine(c)}`)] : []),
   ];
   const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
   return {

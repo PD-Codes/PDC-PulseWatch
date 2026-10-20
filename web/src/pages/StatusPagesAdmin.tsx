@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, ExternalLink, Globe, Lock, Pencil, Plus, Trash2, X 
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
-import { del, errorMessage, get, post, put, type MonitorItem } from '../lib/api';
+import { del, errorMessage, get, post, put, type Group, type MonitorItem } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { fmtDateTime } from '../lib/format';
 import { useT } from '../lib/i18n';
@@ -12,19 +12,20 @@ interface PageRow { id: number; slug: string; title: string; domain: string | nu
 interface Comp { monitorId: number; displayName: string | null }
 interface Full {
   id: number; slug: string; title: string; description: string | null; domain: string | null; isPublic: boolean; hasPassword: boolean; ssoRequired: boolean;
-  branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean;
+  branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number;
   sections: { name: string; components: Comp[] }[]; components: Comp[];
 }
 /** Editor model: group 0 is always the ungrouped list (name === null). */
 interface Grp { name: string | null; items: Comp[] }
 interface Form {
-  slug: string; title: string; description: string; domain: string; isPublic: boolean; ssoRequired: boolean; showHistory: boolean;
+  slug: string; title: string; description: string; domain: string; isPublic: boolean; ssoRequired: boolean; showHistory: boolean; historyDays: number;
   pwMode: 'keep' | 'set' | 'remove'; password: string; logoUrl: string; primaryColor: string; footer: string; customCss: string; groups: Grp[];
 }
+const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180];
 type Tab = 'general' | 'components' | 'appearance' | 'announcements' | 'subscribers';
 
 const toForm = (p?: Full): Form => ({
-  slug: p?.slug ?? '', title: p?.title ?? '', description: p?.description ?? '', domain: p?.domain ?? '', isPublic: p?.isPublic ?? true, ssoRequired: p?.ssoRequired ?? false, showHistory: p?.showHistory ?? true,
+  slug: p?.slug ?? '', title: p?.title ?? '', description: p?.description ?? '', domain: p?.domain ?? '', isPublic: p?.isPublic ?? true, ssoRequired: p?.ssoRequired ?? false, showHistory: p?.showHistory ?? true, historyDays: p?.historyDays ?? 90,
   pwMode: 'keep', password: '', logoUrl: p?.branding.logoUrl ?? '', primaryColor: p?.branding.primaryColor ?? '', footer: p?.branding.footer ?? '', customCss: p?.customCss ?? '',
   groups: [{ name: null, items: p?.components ?? [] }, ...(p?.sections ?? []).map((s) => ({ name: s.name, items: s.components }))],
 });
@@ -104,7 +105,7 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
     mutationFn: () => {
       const comp = (c: Comp) => ({ monitorId: c.monitorId, displayName: c.displayName?.trim() || null });
       const body = {
-        slug: f.slug.trim().toLowerCase(), title: f.title.trim(), description: f.description.trim() || null, domain: f.domain.trim().toLowerCase() || null, isPublic: f.isPublic, ssoRequired: f.ssoRequired, showHistory: f.showHistory,
+        slug: f.slug.trim().toLowerCase(), title: f.title.trim(), description: f.description.trim() || null, domain: f.domain.trim().toLowerCase() || null, isPublic: f.isPublic, ssoRequired: f.ssoRequired, showHistory: f.showHistory, historyDays: f.historyDays,
         ...(f.pwMode === 'set' ? { password: f.password } : f.pwMode === 'remove' ? { password: null } : {}),
         branding: { ...(f.logoUrl.trim() && { logoUrl: f.logoUrl.trim() }), ...(f.primaryColor && { primaryColor: f.primaryColor }), ...(f.footer.trim() && { footer: f.footer.trim() }) },
         customCss: f.customCss.trim() || null,
@@ -145,6 +146,11 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
               <Toggle checked={f.isPublic} onChange={(v) => set('isPublic', v)} label={t('statuspages.f.isPublic')} />
               <Toggle checked={f.ssoRequired} onChange={(v) => set('ssoRequired', v)} label={t('statuspages.f.sso')} />
               <Toggle checked={f.showHistory} onChange={(v) => set('showHistory', v)} label={t('statuspages.f.history')} />
+              {f.showHistory && (
+                <Field label={t('statuspages.f.historyDays')} className="max-w-xs">
+                  {(i) => <Select id={i} value={f.historyDays} onChange={(e) => set('historyDays', Number(e.target.value))}>{HISTORY_DAYS.map((d) => <option key={d} value={d}>{t('statuspages.f.historyDaysOpt', { n: d })}</option>)}</Select>}
+                </Field>
+              )}
             </div>
             <Field label={t('statuspages.f.password')} hint={t('statuspages.f.passwordHint')} className="sm:col-span-2">
               {(i) => (
@@ -189,9 +195,29 @@ function Components({ groups, onChange, monitors, loading, error }: { groups: Gr
   if (loading) return <Loading />;
   if (error) return <ErrorBox error={error} />;
   const all = monitors ?? [];
+  const monGroups = useQuery({ queryKey: ['groups'], queryFn: () => get<Group[]>('/api/groups') });
+  const [pickGroup, setPickGroup] = useState('');
+  const [withSub, setWithSub] = useState(true);
   const used = new Set(groups.flatMap((g) => g.items.map((c) => c.monitorId)));
   const free = all.filter((m) => !used.has(m.id));
   const nameOf = (id: number) => all.find((m) => m.id === id)?.name ?? `#${id}`;
+  // Adds one section per monitor group (optionally with its subgroups), skipping monitors already on the page.
+  const addWholeGroup = () => {
+    const root = Number(pickGroup);
+    const list = monGroups.data ?? [];
+    if (!root) return;
+    const ids = [root];
+    if (withSub) for (let i = 0; i < ids.length; i++) for (const g of list) if (g.parentId === ids[i] && !ids.includes(g.id)) ids.push(g.id);
+    const taken = new Set(used);
+    const added: Grp[] = [];
+    for (const gid of ids) {
+      const items = all.filter((m) => m.groupId === gid && !taken.has(m.id)).map((m) => ({ monitorId: m.id, displayName: null }));
+      items.forEach((c) => taken.add(c.monitorId));
+      if (items.length) added.push({ name: list.find((g) => g.id === gid)?.name ?? `#${gid}`, items });
+    }
+    onChange([...groups, ...added]);
+    setPickGroup('');
+  };
   const patchGroup = (gi: number, fn: (g: Grp) => Grp) => onChange(groups.map((g, i) => (i === gi ? fn(g) : g)));
 
   return (
@@ -228,7 +254,17 @@ function Components({ groups, onChange, monitors, loading, error }: { groups: Gr
           </ul>
         </section>
       ))}
-      <Button onClick={() => onChange([...groups, { name: '', items: [] }])}><Plus className="h-4 w-4" />{t('statuspages.addSection')}</Button>
+      <div className="flex flex-wrap items-end gap-2">
+        <Button onClick={() => onChange([...groups, { name: '', items: [] }])}><Plus className="h-4 w-4" />{t('statuspages.addSection')}</Button>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <Select className="w-auto" aria-label={t('statuspages.addGroup')} value={pickGroup} onChange={(e) => setPickGroup(e.target.value)}>
+            <option value="">{t('statuspages.addGroup')}</option>
+            {monGroups.data?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </Select>
+          <label className="inline-flex items-center gap-1.5 text-sm"><input type="checkbox" checked={withSub} onChange={(e) => setWithSub(e.target.checked)} />{t('statuspages.withSub')}</label>
+          <Button disabled={!pickGroup} onClick={addWholeGroup}><Plus className="h-4 w-4" />{t('statuspages.addGroupBtn')}</Button>
+        </div>
+      </div>
     </div>
   );
 }

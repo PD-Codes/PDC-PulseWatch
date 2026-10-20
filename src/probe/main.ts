@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { DEFAULT_DENY, getRunner, NetGuard } from '../core';
+import { DEFAULT_DENY, getRunner, NetGuard, setExtraCa } from '../core';
 import type { CheckResult } from '../core';
 import { toCheckError } from '../core/util';
 import pkg from '../../package.json';
@@ -67,7 +67,8 @@ async function sync(): Promise<void> {
   if (res.status === 304) return;
   if (res.status === 401) { log('error', 'Server rejected the probe token'); return; }
   if (!res.ok) throw new Error(`jobs request failed with HTTP ${res.status}`);
-  const body = (await res.json()) as { version: string; jobs: Job[] };
+  const body = (await res.json()) as { version: string; jobs: Job[]; ca?: string[] };
+  setExtraCa(body.ca ?? []);
   const seen = new Set<number>();
   for (const j of body.jobs) {
     seen.add(j.id);

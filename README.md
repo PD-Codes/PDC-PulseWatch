@@ -9,6 +9,10 @@ Copyright (c) PD-Codes. Licensed under [GPL-3.0-only](LICENSE). No telemetry, no
 - [Configuration reference](#configuration-reference)
 - [Architecture](#architecture)
 - [Probes (multi-location checks)](#probes-multi-location-checks)
+- [Working with many monitors](#working-with-many-monitors)
+- [Status page history and groups](#status-page-history-and-groups)
+- [Certificates and TLS errors](#certificates-and-tls-errors)
+- [Single sign-on with SAML (Entra ID)](#single-sign-on-with-saml-entra-id)
 - [Backup and restore](#backup-and-restore)
 - [Upgrading](#upgrading)
 - [Importing from Uptime Kuma](#importing-from-uptime-kuma)
@@ -52,7 +56,7 @@ Useful endpoints: `/health` (liveness), `/ready` (database and scheduler), `/met
 
 **Notifications:** email, Telegram, Discord, Slack, Microsoft Teams, ntfy, Gotify, Pushover and templated webhooks (plus a plugin hook, `registerChannelType`). Templates, escalation policies, quiet hours, per-channel test button and a delivery log with retry.
 
-**Security and users:** local accounts, OIDC (Entra ID, Keycloak, Google, ...), LDAP, TOTP, passkeys (WebAuthn), API tokens with scopes, session management, audit log, roles plus per-group and per-status-page permissions.
+**Security and users:** local accounts, OIDC (Entra ID, Keycloak, Google, ...), SAML 2.0 (Entra ID), LDAP, TOTP, passkeys (WebAuthn), API tokens with scopes, session management, audit log, roles plus per-group and per-status-page permissions.
 
 **Data:** raw heartbeats roll up to minute, hour and day aggregates (exact percentiles per minute); raw data lives in daily partitions that are dropped by retention. Charts stay fast over years.
 
@@ -192,6 +196,34 @@ A probe is a small agent (`Dockerfile.probe`, about 60 MB) that runs checks from
 
 Probe results are stored when they arrive. The combined verdict for a monitor is evaluated on its normal schedule (and on "Check now"), so a probe-only monitor reacts within one interval.
 
+## Working with many monitors
+
+- **Dashboard:** a click anywhere on a card or row opens the monitor. The pause/resume button on each card acts at once (and rolls back if the server refuses). *Select* shows checkboxes, *Select all shown* picks everything the current filter lists.
+- **Bulk add:** on *New monitor* switch on *Add several monitors at once*, then paste one target per line (`name | address`, `name; address`, a tab-separated pair from a spreadsheet, or just the address). A live preview marks duplicate names; everything else on the form is shared. Lines that fail validation stay in the box so you can fix and resend them.
+- **Bulk edit:** timings, thresholds, flapping, group, public badge, tags (add/remove) and notification rules (add or replace) for all selected monitors. Fields left on *keep* are not touched.
+- **Defaults:** *Settings > Defaults* sets the timings and thresholds that pre-fill new monitors and apply when an API call or import omits them. Existing monitors are not changed.
+- **Inline group:** the folder button next to *Group* creates a (sub)group without leaving the form.
+- **Incident badge:** the menu shows the number of open incidents nobody has acknowledged; the same number prefixes the browser tab title. The top bar has a **+** button for a new monitor.
+
+## Status page history and groups
+
+Each status page has its own history length (14, 30, 60, 90, 120, 150 or 180 days, default 90). In the editor, *Add a whole group* adds a monitor group, optionally with its subgroups, as sections; monitors already on the page are skipped.
+
+## Certificates and TLS errors
+
+*Settings > Certificates* imports private CA certificates (PEM, paste or file). They are trusted in addition to the built-in roots by HTTP, TLS, SMTP, MQTT, database, WebSocket and gRPC checks, on the server and on remote probes (probes receive them with their job list). Expired and duplicate certificates are skipped and reported. Processes reload the store every 30 seconds.
+
+TLS failures now name what happened: expiry date and days, subject, issuer, host:port, SNI and the Node error code, for example `TLS certificate expired on 2026-01-02 (12 days ago): CN=..., issuer CN=..., host a.example.com:443 (CERT_HAS_EXPIRED)`. The same text appears in heartbeats, logs, down mails and the daily digest, which also lists each failing monitor with its target.
+
+## Single sign-on with SAML (Entra ID)
+
+1. In Entra ID create an *Enterprise application* (non-gallery), open *Single sign-on > SAML*.
+2. In PulseWatch go to *Settings > Authentication*, add a provider of type *SAML 2.0* and save it. The dialog then shows the three values for Entra: *Identifier (entity ID)*, *Reply URL (ACS)* and the metadata URL. Enter identifier and reply URL in Entra.
+3. Copy *Login URL*, *Microsoft Entra Identifier* and the Base64 signing certificate from Entra into the provider and save. Assertions must be signed; unsigned ones are rejected.
+4. Optional: map the groups claim (object IDs) to roles like for OIDC.
+
+Login is service-provider initiated only. The short-lived state cookie is `SameSite=None; Secure`, so the base URL must be https (or localhost); behind a proxy without https the login fails with `state_expired`.
+
 ## Backup and restore
 
 State lives in two places: the **MariaDB database** and the **secret key** (`PW_SECRET_KEY`, or `secret.key` in the `data` volume). Back up both, a database dump without the key cannot be decrypted.
@@ -281,9 +313,14 @@ These numbers measure the scheduler, database writes and rollup bookkeeping. Rea
 - **Command palette and shortcuts:** `Ctrl/Cmd+K` jumps to any monitor or page.
 - **Dead-man's switch:** `PW_DEADMAN_URL` makes PulseWatch ping an external service so you notice when PulseWatch itself is down.
 - **Saved views and flap detection** on the dashboard and per monitor.
+- **Bulk-add preview:** pasted spreadsheet columns are parsed live, duplicates are flagged before anything is created, failed lines stay in the box.
+- **Open-incident count in the tab title,** so a background tab shows `(2) Dashboard`.
+- **Whole-group import for status pages,** including subgroups.
 
 ## Known limitations
 
+- SAML is verified with locally signed assertions (valid and tampered, wrong audience, replay, unsolicited), not against a real Entra ID tenant. IdP-initiated login, metadata-URL import and group overage (more than 150 groups) are not supported.
+- Custom CAs are tested with HTTP and TLS checks against a local server; the database, gRPC and MongoDB drivers only compile with the option. The CA list is re-parsed per connection (`shortcut:` in `src/core/trust.ts`).
 - OIDC, LDAP and passkeys are covered by code review and unit-level checks only; they have not been tested against live Keycloak/Entra ID/OpenLDAP servers or real authenticators. Try them on a staging instance first.
 - Probe-only monitors are evaluated on the monitor's schedule, not at the instant a probe reports.
 - Tracing exports one flat span per check (no parent/child context propagation).

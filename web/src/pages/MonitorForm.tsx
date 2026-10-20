@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2 } from 'lucide-react';
+import { FolderPlus, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button, Card, CardHeader, ErrorBox, Field, Input, Loading, PageHeader, Select, Textarea, Toggle, useToast } from '../components/ui';
 import { initValues, MonitorFields, toConfig, type FieldValue, type FieldValues, type MonitorType } from '../components/MonitorFields';
 import { ApiError, errorMessage, get, post, put, type Group, type MonitorItem, type Tag } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { parseBulk } from '../lib/bulkParse';
 import { useT } from '../lib/i18n';
 
 interface Probe { id: number; name: string; location: string | null; online: boolean; enabled: boolean }
@@ -56,6 +57,37 @@ export default function MonitorForm() {
 
   const runner = types.data?.find((x) => x.type === type);
 
+  // New monitors start from the instance-wide defaults (Settings > Defaults).
+  const defaults = useQuery({ queryKey: ['monitor-defaults'], queryFn: () => get<{ defaults: Record<string, number> }>('/api/settings/monitor-defaults'), enabled: id == null && !clone, staleTime: 0 });
+  const seeded = useRef(false);
+  useEffect(() => {
+    const d = defaults.data?.defaults;
+    if (!d || seeded.current || id != null || clone) return;
+    seeded.current = true;
+    setC((o) => ({ ...o, ...Object.fromEntries(Object.entries(d).map(([k, v]) => [k, String(v)])) }));
+  }, [defaults.data]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Inline "new group": null = closed.
+  const [newGroup, setNewGroup] = useState<{ name: string; parent: string } | null>(null);
+  const addGroup = useMutation({
+    mutationFn: () => post<{ id: number }>('/api/groups', { name: newGroup!.name.trim(), parentId: newGroup!.parent ? Number(newGroup!.parent) : null }),
+    onSuccess: (g) => { void qc.invalidateQueries({ queryKey: ['groups'] }); setC((o) => ({ ...o, groupId: String(g.id) })); setNewGroup(null); },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
+
+  // Bulk add: one name/address per line, everything else shared.
+  const [bulk, setBulk] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const [skipExisting, setSkipExisting] = useState(true);
+  const addressField = runner?.fields.find((f) => f.kind === 'text' && f.required);
+  const bulkLines = useMemo(() => parseBulk(bulkText), [bulkText]);
+  const existingNames = useMemo(() => new Set((monitors.data ?? []).map((m) => m.name.toLowerCase())), [monitors.data]);
+  const lineState = (i: number) => {
+    const n = bulkLines[i]!.name.toLowerCase();
+    if (bulkLines.findIndex((x) => x.name.toLowerCase() === n) !== i) return 'dupList';
+    return existingNames.has(n) ? 'exists' : 'ok';
+  };
+
   // Clone: let the server copy (it keeps stored secrets), then continue in the edit form.
   useEffect(() => {
     if (!clone || cloned.current) return;
@@ -98,6 +130,30 @@ export default function MonitorForm() {
     onError: (e) => setErrors(e instanceof ApiError && Array.isArray(e.body?.errors) && e.body.errors.length ? e.body.errors : [errorMessage(e)]),
   });
 
+  const saveBulk = useMutation({
+    mutationFn: () => {
+      const n = (x: string) => Number(x);
+      const template = {
+        description: c.description.trim() || null, groupId: c.groupId ? n(c.groupId) : null, config: toConfig(runner!.fields.filter((f) => f.key !== addressField!.key), vals),
+        intervalS: n(c.intervalS), timeoutS: n(c.timeoutS), retries: n(c.retries), retryIntervalS: n(c.retryIntervalS), upThreshold: n(c.upThreshold), downThreshold: n(c.downThreshold),
+        flapWindow: n(c.flapWindow), flapThreshold: n(c.flapThreshold), active: c.active, publicBadge: c.publicBadge, quorum: n(c.quorum),
+        locations: locations.length ? locations : null, tagIds, dependsOn: deps, notifications: rules.filter((r) => r.channelId || r.policyId),
+      };
+      return post<{ created: { index: number }[]; skipped: { index: number }[]; failed: { index: number; errors: string[] }[] }>('/api/monitors/bulk-create', {
+        type, addressKey: addressField!.key, skipExisting, template, items: bulkLines.map((l) => ({ name: l.name, address: l.address })),
+      });
+    },
+    onSuccess: (r) => {
+      void qc.invalidateQueries({ queryKey: ['monitors'] });
+      toast(t('monitors.bulk.done', { created: r.created.length, skipped: r.skipped.length, failed: r.failed.length }));
+      if (!r.failed.length) return nav('/');
+      // keep only the failed lines so the user can fix and resend them
+      setBulkText(r.failed.map((f) => bulkLines[f.index]!).map((l) => `${l.name} | ${l.address}`).join('\n'));
+      setErrors(r.failed.map((f) => `${bulkLines[f.index]!.name}: ${f.errors.join('; ')}`));
+    },
+    onError: (e) => setErrors(e instanceof ApiError && Array.isArray(e.body?.errors) && e.body.errors.length ? e.body.errors : [errorMessage(e)]),
+  });
+
   const addTag = useMutation({
     mutationFn: () => post<Tag>('/api/tags', { name: newTag.trim() }),
     onSuccess: (tg) => { setTagIds((x) => [...x, tg.id]); setNewTag(''); void qc.invalidateQueries({ queryKey: ['tags'] }); },
@@ -120,14 +176,14 @@ export default function MonitorForm() {
     <Field label={label} hint={hint}>{(fid) => <Input id={fid} type="number" min={min} max={max} value={c[k] as string} onChange={(e) => set(k, e.target.value as never)} required />}</Field>
   );
   const toggleIn = <T,>(list: T[], x: T) => (list.includes(x) ? list.filter((y) => y !== x) : [...list, x]);
-  const onSubmit = (e: FormEvent) => { e.preventDefault(); setErrors([]); try { save.mutate(); } catch (err) { setErrors([errorMessage(err)]); } };
+  const onSubmit = (e: FormEvent) => { e.preventDefault(); setErrors([]); try { if (bulk) { if (bulkLines.length) saveBulk.mutate(); else setErrors([t('monitors.bulk.empty')]); } else save.mutate(); } catch (err) { setErrors([errorMessage(err)]); } };
   const probeList = probes.data ?? [];
   const isPush = type === 'push';
   const locCount = locations.length;
 
   return (
     <form onSubmit={onSubmit} className="mx-auto max-w-4xl space-y-4">
-      <PageHeader title={id ? t('monitors.form.editTitle') : t('monitors.form.newTitle')} actions={<><Button onClick={() => nav(-1)}>{t('common.cancel')}</Button><Button type="submit" variant="primary" loading={save.isPending}>{t('common.save')}</Button></>} />
+      <PageHeader title={id ? t('monitors.form.editTitle') : t('monitors.form.newTitle')} actions={<><Button onClick={() => nav(-1)}>{t('common.cancel')}</Button><Button type="submit" variant="primary" loading={save.isPending || saveBulk.isPending}>{bulk ? t('monitors.bulk.create', { n: bulkLines.length }) : t('common.save')}</Button></>} />
       {errors.length > 0 && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200"><ul className="list-disc pl-5">{errors.map((x, i) => <li key={i}>{x}</li>)}</ul></div>}
 
       <Card>
@@ -137,8 +193,39 @@ export default function MonitorForm() {
             <Select id={fid} value={type} disabled={id != null} onChange={(e) => setType(e.target.value)}>
               {byCategory.map(([cat, list]) => <optgroup key={cat} label={cat}>{list.map((x) => <option key={x.type} value={x.type}>{x.label}</option>)}</optgroup>)}
             </Select>)}</Field>
-          <Field label={`${t('common.name')} *`}>{(fid) => <Input id={fid} value={c.name} maxLength={255} required onChange={(e) => set('name', e.target.value)} />}</Field>
-          <Field label={t('monitors.group')}>{(fid) => <Select id={fid} value={c.groupId} onChange={(e) => set('groupId', e.target.value)}><option value="">{t('monitors.noGroup')}</option>{groups.data?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</Select>}</Field>
+          {id == null && addressField && (
+            <div className="sm:col-span-2"><Toggle checked={bulk} onChange={setBulk} label={t('monitors.bulk.toggle')} /><p className="hint">{t('monitors.bulk.hint', { field: addressField.label })}</p></div>
+          )}
+          {bulk && addressField && (
+            <div className="space-y-2 sm:col-span-2">
+              <Field label={t('monitors.bulk.targets')} hint={t('monitors.bulk.format')}>{(fid) => <Textarea id={fid} rows={6} spellCheck={false} className="font-mono text-xs" placeholder={'Website | https://example.com\nShop | https://shop.example.com\nmail.example.com'} value={bulkText} onChange={(e) => setBulkText(e.target.value)} />}</Field>
+              {bulkLines.length > 0 && (
+                <div className="max-h-56 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                  <table className="tbl text-xs">
+                    <thead><tr><th>#</th><th>{t('common.name')}</th><th>{addressField.label}</th><th /></tr></thead>
+                    <tbody>{bulkLines.map((l, i) => { const st = lineState(i); return (
+                      <tr key={l.line}><td className="text-slate-400">{l.line}</td><td>{l.name}</td><td className="break-all font-mono">{l.address}</td>
+                        <td className={st === 'ok' ? 'text-emerald-600' : 'text-amber-600'}>{t(`monitors.bulk.state.${st}`)}</td></tr>); })}</tbody>
+                  </table>
+                </div>
+              )}
+              <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={skipExisting} onChange={(e) => setSkipExisting(e.target.checked)} />{t('monitors.bulk.skip')}</label>
+            </div>
+          )}
+          {!bulk && <Field label={`${t('common.name')} *`}>{(fid) => <Input id={fid} value={c.name} maxLength={255} required onChange={(e) => set('name', e.target.value)} />}</Field>}
+          <Field label={t('monitors.group')} className={bulk ? 'sm:col-span-2' : undefined}>{(fid) => (
+            <div className="flex gap-2">
+              <Select id={fid} value={c.groupId} onChange={(e) => set('groupId', e.target.value)}><option value="">{t('monitors.noGroup')}</option>{groups.data?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</Select>
+              <Button type="button" className="shrink-0" title={t('monitors.form.newGroup')} aria-label={t('monitors.form.newGroup')} onClick={() => setNewGroup(newGroup ? null : { name: '', parent: '' })}><FolderPlus className="h-4 w-4" /></Button>
+            </div>)}</Field>
+          {newGroup && (
+            <div className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800 sm:col-span-2 sm:grid-cols-[1fr_1fr_auto]">
+              <Input aria-label={t('monitors.form.newGroupName')} placeholder={t('monitors.form.newGroupName')} maxLength={255} autoFocus value={newGroup.name} onChange={(e) => setNewGroup({ ...newGroup, name: e.target.value })}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (newGroup.name.trim()) addGroup.mutate(); } }} />
+              <Select aria-label={t('monitors.form.newGroupParent')} value={newGroup.parent} onChange={(e) => setNewGroup({ ...newGroup, parent: e.target.value })}><option value="">{t('monitors.form.newGroupTop')}</option>{groups.data?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</Select>
+              <Button type="button" variant="primary" loading={addGroup.isPending} disabled={!newGroup.name.trim()} onClick={() => addGroup.mutate()}>{t('monitors.form.createGroup')}</Button>
+            </div>
+          )}
           <Field label={t('common.description')} className="sm:col-span-2">{(fid) => <Textarea id={fid} rows={2} value={c.description} onChange={(e) => set('description', e.target.value)} />}</Field>
         </div>
       </Card>
@@ -146,7 +233,7 @@ export default function MonitorForm() {
       {runner && runner.fields.length > 0 && (
         <Card>
           <CardHeader title={runner.label} />
-          <div className="p-4"><MonitorFields idPrefix="mf" fields={runner.fields} values={vals} onChange={(k: string, v: FieldValue) => setVals((o) => ({ ...o, [k]: v }))} /></div>
+          <div className="p-4"><MonitorFields idPrefix="mf" fields={bulk && addressField ? runner.fields.filter((f) => f.key !== addressField.key) : runner.fields} values={vals} onChange={(k: string, v: FieldValue) => setVals((o) => ({ ...o, [k]: v }))} /></div>
         </Card>
       )}
 
@@ -215,7 +302,7 @@ export default function MonitorForm() {
         </div>
       </Card>
 
-      <div className="flex justify-end gap-2 pb-6"><Button onClick={() => nav(-1)}>{t('common.cancel')}</Button><Button type="submit" variant="primary" loading={save.isPending}>{t('common.save')}</Button></div>
+      <div className="flex justify-end gap-2 pb-6"><Button onClick={() => nav(-1)}>{t('common.cancel')}</Button><Button type="submit" variant="primary" loading={save.isPending || saveBulk.isPending}>{bulk ? t('monitors.bulk.create', { n: bulkLines.length }) : t('common.save')}</Button></div>
     </form>
   );
 }

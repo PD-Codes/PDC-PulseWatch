@@ -47,6 +47,15 @@ export async function incidentRoutes(app: FastifyInstance) {
     return shape(await s.execute());
   });
 
+  /** Incidents nobody has acknowledged yet (drives the badge in the menu). */
+  app.get('/api/incidents/open-count', { ...auth, schema: { tags: ['incidents'], summary: 'Number of open, unacknowledged incidents' } }, async (req) => {
+    const vis = await visibleFilter(req);
+    if (vis && !vis.length) return { count: 0 };
+    let s = db.selectFrom('incidents').select((eb) => eb.fn.countAll().as('n')).where('status', '=', 'open');
+    if (vis) s = s.where('id', 'in', vis);
+    return { count: Number((await s.executeTakeFirst())?.n ?? 0) };
+  });
+
   /** MTTR / MTTA over a period. */
   app.get('/api/incidents/stats', { ...auth, schema: { tags: ['incidents'], querystring: Type.Object({ days: Type.Optional(Type.Integer({ minimum: 1, maximum: 365 })) }) } }, async (req) => {
     const days = (req.query as any).days ?? 30;
@@ -91,7 +100,7 @@ export async function incidentRoutes(app: FastifyInstance) {
     return { id };
   });
 
-  const bodyPatch = Type.Object({ title: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })), severity: Type.Optional(Type.Union([Type.Literal('minor'), Type.Literal('major'), Type.Literal('critical')])), assigneeId: Type.Optional(Type.Union([Type.Integer(), Type.Null()])), public: Type.Optional(Type.Boolean()), postmortem: Type.Optional(Type.Union([Type.String({ maxLength: 50000 }), Type.Null()])) });
+  const bodyPatch = Type.Object({ title: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })), severity: Type.Optional(Type.Union([Type.Literal('minor'), Type.Literal('major'), Type.Literal('critical')])), assigneeId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), public: Type.Optional(Type.Boolean()), postmortem: Type.Optional(Type.Union([Type.String({ maxLength: 50000 }), Type.Null()])) });
   app.patch('/api/incidents/:id', { ...writer, schema: { tags: ['incidents'], params: Id, body: bodyPatch } }, async (req, reply) => {
     const id = (req.params as any).id; const b = req.body as any;
     const row = await db.selectFrom('incidents').select(['id', 'assignee_id', 'postmortem']).where('id', '=', id).executeTakeFirst();

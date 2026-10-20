@@ -32,7 +32,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     return req.user!.role === 'admin' ? rows.map(shape) : rows.map((c) => ({ id: c.id, name: c.name, type: c.type, active: !!c.active, isDefault: !!c.is_default }));
   });
 
-  const channelBody = Type.Object({ name: Type.String({ minLength: 1, maxLength: 128 }), type: Type.String(), config: Type.Object({}, { additionalProperties: true }), active: Type.Optional(Type.Boolean()), isDefault: Type.Optional(Type.Boolean()), quietHours: quiet, templateId: Type.Optional(Type.Union([Type.Integer(), Type.Null()])) });
+  const channelBody = Type.Object({ name: Type.String({ minLength: 1, maxLength: 128 }), type: Type.String(), config: Type.Object({}, { additionalProperties: true }), active: Type.Optional(Type.Boolean()), isDefault: Type.Optional(Type.Boolean()), quietHours: quiet, templateId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])) });
   const saveChannel = async (req: any, reply: any, id?: number) => {
     const b = req.body;
     if (!channelTypes.has(b.type)) return reply.code(400).send({ error: 'validation', message: `Unknown channel type ${b.type}` });

@@ -1,4 +1,4 @@
-import { getRunner, type CheckResult } from '../../core';
+import { certNotice, getRunner, type CheckResult } from '../../core';
 import { fail, toCheckError } from '../../core/util';
 import { config } from '../config';
 import type { Ctx } from '../context';
@@ -161,7 +161,7 @@ export class Engine {
       else if (!r.ok && overlay === 'none' && st.last_error_kind !== (r.errorKind ?? 'internal')) events.push({ type: 'check_error', kind: r.errorKind, msg: r.message, details: r.details });
       if (overlay === 'suppressed' && st.overlay !== 'suppressed') events.push({ type: 'suppressed', msg: 'Alerts suppressed: a dependency is down' });
       if (o.flapEvent) events.push({ type: o.flapEvent === 'start' ? 'flap_start' : 'flap_stop', msg: o.flapEvent === 'start' ? 'Monitor is flapping, notifications are muted' : 'Monitor is stable again' });
-      if (certAlert !== null) events.push({ type: 'cert_expiry', kind: 'tls_expiry', msg: `Certificate expires in ${certAlert} day(s)` });
+      if (certAlert !== null) events.push({ type: 'cert_expiry', kind: 'tls_expiry', msg: r.cert ? certNotice(r.cert, m.config) : `Certificate expires in ${certAlert} day(s)` });
       for (const e of events) {
         await trx.insertInto('events').values({ monitor_id: m.id, ts: now, type: e.type, from_status: e.from ?? null, to_status: e.to ?? null, error_kind: e.kind ?? null, message: e.msg?.slice(0, 1000) ?? null, details: e.details ? JSON.stringify(e.details).slice(0, 8000) : null }).execute();
       }

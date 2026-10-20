@@ -71,9 +71,10 @@ export async function probeRoutes(app: FastifyInstance) {
   app.get('/api/probe/v1/jobs', { ...popts, schema: { tags: ['probes'], hide: true } }, async (req: any, reply) => {
     const rows = await db.selectFrom('monitors').selectAll().where('active', '=', 1).where('locations', 'is not', null).execute();
     const jobs = rows.map(parseMonitor).filter((m) => m.locations?.includes(req.probe.id)).map((m) => ({ id: m.id, name: m.name, type: m.type, config: m.config, intervalS: m.intervalS, timeoutS: m.timeoutS }));
-    const version = crypto.createHash('sha1').update(JSON.stringify(jobs)).digest('hex');
+    const ca = (await db.selectFrom('ca_certs').select('pem').orderBy('id').execute()).map((r) => r.pem);
+    const version = crypto.createHash('sha1').update(JSON.stringify([jobs, ca])).digest('hex');
     if (req.headers['if-none-match'] === version) return reply.code(304).send();
-    return reply.header('ETag', version).send({ version, jobs });
+    return reply.header('ETag', version).send({ version, jobs, ca });
   });
 
   app.post('/api/probe/v1/results', { ...popts, bodyLimit: 2 * 1024 * 1024, schema: { tags: ['probes'], hide: true, body: Type.Object({ results: Type.Array(Type.Object({ monitorId: Type.Integer(), ts: Type.Optional(Type.String()), ok: Type.Boolean(), latencyMs: Type.Optional(Type.Union([Type.Number(), Type.Null()])), errorKind: Type.Optional(Type.Union([Type.String(), Type.Null()])), message: Type.Optional(Type.Union([Type.String(), Type.Null()])) }), { maxItems: 1000 }) }) } }, async (req: any) => {

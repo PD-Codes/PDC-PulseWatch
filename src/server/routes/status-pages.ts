@@ -13,8 +13,9 @@ const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
 const Slug = Type.Object({ slug: Type.String({ minLength: 1, maxLength: 64 }) });
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const DAY = 86_400_000;
+export const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180] as const;
 
-type Page = { id: number; slug: string; title: string; description: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; show_history: number };
+type Page = { id: number; slug: string; title: string; description: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; show_history: number; history_days: number };
 const unlockCookie = (p: Page) => `pw_sp_${p.id}`;
 const unlockValue = (p: Page) => hmac(`status-unlock:${p.id}:${p.password_hash}`);
 
@@ -38,7 +39,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     domain: Type.Optional(Type.Union([Type.String({ pattern: '^[a-z0-9.-]{3,255}$' }), Type.Null()])),
     isPublic: Type.Boolean(), password: Type.Optional(Type.Union([Type.String({ minLength: 4, maxLength: 200 }), Type.Null()])), ssoRequired: Type.Optional(Type.Boolean()),
     branding: Type.Optional(Type.Object({ logoUrl: Type.Optional(Type.String({ maxLength: 2000 })), primaryColor: Type.Optional(Type.String({ pattern: '^#[0-9a-fA-F]{6}$' })), footer: Type.Optional(Type.String({ maxLength: 500 })) })),
-    customCss: Type.Optional(Type.Union([Type.String({ maxLength: 50_000 }), Type.Null()])), showHistory: Type.Optional(Type.Boolean()),
+    customCss: Type.Optional(Type.Union([Type.String({ maxLength: 50_000 }), Type.Null()])), showHistory: Type.Optional(Type.Boolean()), historyDays: Type.Optional(Type.Union(HISTORY_DAYS.map((d) => Type.Literal(d)))),
     sections: Type.Array(Type.Object({ name: Type.String({ minLength: 1, maxLength: 255 }), components: Type.Array(compBody) }), { maxItems: 50 }),
     components: Type.Optional(Type.Array(compBody)),
   });
@@ -51,7 +52,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const map = (c: typeof comps[number]) => ({ monitorId: c.monitor_id, displayName: c.display_name });
     return {
       id: p.id, slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), hasPassword: !!p.password_hash, ssoRequired: bool(p.sso_required),
-      branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: bool(p.show_history),
+      branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: bool(p.show_history), historyDays: p.history_days,
       sections: sections.map((s) => ({ id: s.id, name: s.name, components: comps.filter((c) => c.section_id === s.id).map(map) })), components: comps.filter((c) => !c.section_id).map(map),
     };
   };
@@ -82,7 +83,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     }
     const values: Record<string, unknown> = {
       slug: b.slug, title: b.title, description: b.description ?? null, domain: b.domain ? String(b.domain).toLowerCase() : null, is_public: b.isPublic ? 1 : 0, sso_required: b.ssoRequired ? 1 : 0,
-      branding: JSON.stringify(b.branding ?? {}), custom_css: b.customCss ?? null, show_history: b.showHistory === false ? 0 : 1,
+      branding: JSON.stringify(b.branding ?? {}), custom_css: b.customCss ?? null, show_history: b.showHistory === false ? 0 : 1, history_days: b.historyDays ?? 90,
     };
     if (b.password === null) values.password_hash = null; else if (typeof b.password === 'string') values.password_hash = await hashPassword(b.password);
     try {
@@ -212,17 +213,17 @@ export async function statusPageRoutes(app: FastifyInstance) {
       .select(['c.section_id', 'c.display_name', 'c.monitor_id', 'm.name', 'm.description', 's.status', 's.overlay', 's.status_since']).where('c.page_id', '=', p.id).orderBy('c.sort').execute();
     const ids = comps.map((c) => c.monitor_id);
     const history = bool(p.show_history);
-    const { since, by } = history ? await dailyUptime(ids, 90) : { since: new Date(), by: new Map() };
+    const { since, by } = history ? await dailyUptime(ids, p.history_days) : { since: new Date(), by: new Map() };
     const shape = (c: typeof comps[number]) => {
       const days = by.get(c.monitor_id) ?? new Map();
       let up = 0, down = 0;
       const daily: { date: string; uptime: number | null }[] = [];
-      if (history) for (let i = 0; i < 90; i++) {
+      if (history) for (let i = 0; i < p.history_days; i++) {
         const k = new Date(since.getTime() + i * DAY).toISOString().slice(0, 10); const d = days.get(k);
         if (d) { up += d.up; down += d.down; }
         daily.push({ date: k, uptime: d && d.up + d.down ? Math.round((d.up / (d.up + d.down)) * 10000) / 100 : null });
       }
-      return { monitorId: c.monitor_id, name: c.display_name || c.name, description: c.description, status: publicStatus(c.status ? { status: c.status, overlay: c.overlay ?? 'none' } : undefined), since: c.status_since, uptime90: history && up + down ? Math.round((up / (up + down)) * 10000) / 100 : null, daily };
+      return { monitorId: c.monitor_id, name: c.display_name || c.name, description: c.description, status: publicStatus(c.status ? { status: c.status, overlay: c.overlay ?? 'none' } : undefined), since: c.status_since, uptime: history && up + down ? Math.round((up / (up + down)) * 10000) / 100 : null, daily };
     };
     const now = new Date();
     const announcements = await db.selectFrom('status_page_announcements').select(['id', 'kind', 'title', 'body', 'starts_at', 'ends_at']).where('page_id', '=', p.id).where('starts_at', '<=', now).where((eb) => eb.or([eb('ends_at', 'is', null), eb('ends_at', '>', now)])).orderBy('starts_at', 'desc').execute();
@@ -231,7 +232,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const all = comps.map((c) => publicStatus(c.status ? { status: c.status, overlay: c.overlay ?? 'none' } : undefined));
     const overall = all.includes('outage') ? (all.every((s) => s === 'outage') ? 'outage' : 'partial') : all.some((s) => s === 'degraded') ? 'degraded' : all.includes('maintenance') ? 'maintenance' : 'operational';
     return {
-      slug: p.slug, title: p.title, description: p.description, branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: history, overall, generatedAt: now,
+      slug: p.slug, title: p.title, description: p.description, branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: history, historyDays: p.history_days, overall, generatedAt: now,
       sections: sections.map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map(shape) })), components: comps.filter((c) => !c.section_id).map(shape),
       announcements: announcements.map((a) => ({ id: a.id, kind: a.kind, title: a.title, body: a.body, startsAt: a.starts_at, endsAt: a.ends_at })), maintenance: maint,
       incidents: incidents.filter((i) => !i.resolvedAt), recentIncidents: incidents.filter((i) => i.resolvedAt),
@@ -259,7 +260,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     if (!p) return;
     if (!bool(p.show_history)) return reply.code(404).send({ error: 'not_found' });
     const ids = (await db.selectFrom('status_page_components').select('monitor_id').where('page_id', '=', p.id).execute()).map((c) => c.monitor_id);
-    return { incidents: ids.length ? await listIncidents(ids, new Date(Date.now() - ((req.query as any).days ?? 90) * DAY)) : [] };
+    return { incidents: ids.length ? await listIncidents(ids, new Date(Date.now() - ((req.query as any).days ?? p.history_days) * DAY)) : [] };
   });
 
   app.get('/api/public/status/:slug/rss', { ...pub, schema: { tags: ['public'], params: Slug } }, async (req, reply) => {

@@ -1,5 +1,5 @@
 import { sql } from 'kysely';
-import type { CheckResult } from '../../core';
+import { certNotice, describeTarget, type CheckResult } from '../../core';
 import { config } from '../config';
 import type { Ctx } from '../context';
 import { decryptJson, encryptJson } from '../crypto';
@@ -52,7 +52,7 @@ export class Notifier {
     return {
       'monitor.name': m.name, 'monitor.type': m.type, 'monitor.id': String(m.id),
       status: i.event === 'up' ? 'UP' : i.event === 'down' ? 'DOWN' : i.event.toUpperCase(),
-      message: r?.message ?? '', errorKind: r?.errorKind ?? '', latency: r?.latencyMs != null ? `${r.latencyMs} ms` : '',
+      message: r?.message ?? '', target: describeTarget(m.config) ?? '', errorKind: r?.errorKind ?? '', latency: r?.latencyMs != null ? `${r.latencyMs} ms` : '',
       url: `${config.baseUrl}/monitors/${m.id}`, time: new Date().toISOString(), 'incident.id': i.incidentId ? String(i.incidentId) : '',
     };
   }
@@ -63,10 +63,10 @@ export class Notifier {
     const name = i.monitor.name;
     let subject: string, text: string;
     switch (i.event) {
-      case 'down': subject = `[DOWN] ${name}`; text = `${name} is down.\nReason: ${v.message || 'unknown'}${v.errorKind ? ` (${v.errorKind})` : ''}\n${v.url}`; break;
+      case 'down': subject = `[DOWN] ${name}`; text = `${name} is down.${v.target ? `\nTarget: ${v.target}` : ''}\nReason: ${v.message || 'unknown'}${v.errorKind ? ` (${v.errorKind})` : ''}\n${v.url}`; break;
       case 'up': subject = `[UP] ${name}`; text = `${name} is back up.${v.latency ? `\nResponse time: ${v.latency}` : ''}\n${v.url}`; break;
       case 'flap': subject = `[FLAPPING] ${name}`; text = `${name} keeps changing state. Alerts are muted until it is stable again.\n${v.url}`; break;
-      case 'cert': subject = `[CERTIFICATE] ${name}`; text = `${v.message}\n${v.url}`; break;
+      case 'cert': subject = `[CERTIFICATE] ${name}`; text = `${i.result?.cert ? certNotice(i.result.cert, i.monitor.config) : v.message}\n${v.url}`; break;
       default: subject = `[TEST] ${name}`; text = `This is a test notification from ${config.brand.name}.\n${v.url}`;
     }
     if (tpl) { subject = render(tpl.subject, { ...v, event: i.event }); text = render(tpl.body, { ...v, event: i.event }); }
