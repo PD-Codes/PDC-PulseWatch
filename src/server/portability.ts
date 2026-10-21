@@ -11,6 +11,11 @@ import type { SsrfSettings } from './guard-sync';
 /** Something in a foreign system (Uptime Kuma) that has no equivalent here; the import preview lists it so nothing disappears silently. */
 export interface Unsupported { kind: string; name: string; reason: string }
 
+/** A tag reference inside a monitor: a plain name, or a name with a value. */
+export type TagRef = string | { name: string; value?: string };
+export const tagRef = (t: unknown): { name: string; value: string } =>
+  typeof t === 'string' ? { name: t, value: '' } : { name: String((t as { name?: unknown } | null)?.name ?? ''), value: String((t as { value?: unknown } | null)?.value ?? '').trim().slice(0, 255) };
+
 /** Portable configuration document. Everything references other entities by name, never by database id. */
 export interface ConfigDoc {
   version: 1; exportedAt?: string;
@@ -83,7 +88,8 @@ export async function exportConfig(ctx: Ctx, includeSecrets: boolean): Promise<C
         name: m.name, type: m.type, group: m.groupId ? gpath(m.groupId) : null, description: m.description, config: runner ? maskCfg(m.type, runner, m.config) : m.config,
         intervalS: m.intervalS, timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold,
         active: m.active, publicBadge: m.publicBadge, quorum: m.quorum, locations: m.locations?.map((l) => (l === 'local' ? 'local' : prname.get(l))).filter(Boolean) ?? null,
-        tags: mtags.filter((t) => t.monitor_id === m.id).map((t) => tname.get(t.tag_id)).filter(Boolean),
+        // a plain tag is exported as its name, a name + value tag as { name, value }
+        tags: mtags.filter((t) => t.monitor_id === m.id && tname.has(t.tag_id)).map((t) => (t.value ? { name: tname.get(t.tag_id)!, value: t.value } : tname.get(t.tag_id)!)),
         dependsOn: deps.filter((d) => d.monitor_id === m.id).map((d) => mname.get(d.depends_on_id)).filter(Boolean),
         notifications: notes.filter((n) => n.monitor_id === m.id).map((n) => ({ channel: n.channel_id ? cname.get(n.channel_id) : null, policy: n.policy_id ? pname.get(n.policy_id) : null, events: n.events.split(',') })),
       };
@@ -198,8 +204,8 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
   const monitorRows = await db.selectFrom('monitors').select(['id', 'name', 'type']).execute();
   const monitorIds = new Map(monitorRows.map((m) => [m.name, m.id]));
   const pending: { id: number; name: string; dependsOn: string[] }[] = [];
-  const tagsByMonitor = new Map<number, number[]>();
-  if (doc.merge) for (const r of await db.selectFrom('monitor_tags').select(['monitor_id', 'tag_id']).execute()) tagsByMonitor.set(r.monitor_id, [...(tagsByMonitor.get(r.monitor_id) ?? []), r.tag_id]);
+  const tagsByMonitor = new Map<number, { tagId: number; value: string }[]>();
+  if (doc.merge) for (const r of await db.selectFrom('monitor_tags').select(['monitor_id', 'tag_id', 'value']).execute()) tagsByMonitor.set(r.monitor_id, [...(tagsByMonitor.get(r.monitor_id) ?? []), { tagId: r.tag_id, value: r.value }]);
   const probeIds = new Map((await db.selectFrom('probes').select(['id', 'name']).execute()).map((p) => [p.name, p.id]));
   for (const m of doc.monitors ?? []) try {
     step('monitors');
@@ -210,15 +216,17 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
     const existing = row ? parseMonitor((await db.selectFrom('monitors').selectAll().where('id', '=', row.id).executeTakeFirstOrThrow())) : undefined;
     const keepGroup = !!existing && (m.group === undefined || (doc.merge && !m.group));
     const groupId = m.group ? await ensureGroup(m.group) ?? null : keepGroup ? undefined : null;
-    const importedTags = (await Promise.all((m.tags ?? []).map((t: string) => ensureTag(t)))) as number[];
-    const tagIdList = existing && doc.merge ? [...new Set([...(tagsByMonitor.get(existing.id) ?? []), ...importedTags])] : importedTags;
+    // one after the other: two values of a new tag must not both try to create it
+    const importedTags: { tagId: number; value: string }[] = [];
+    for (const ref of ((m.tags ?? []) as TagRef[]).map(tagRef)) if (ref.name) { const tagId = await ensureTag(ref.name); if (tagId > 0) importedTags.push({ tagId, value: ref.value }); }
+    const allTags = existing && doc.merge ? [...(tagsByMonitor.get(existing.id) ?? []), ...importedTags] : importedTags;
     const locations = m.locations ? (m.locations as string[]).map((l) => (l === 'local' ? 'local' : probeIds.get(l))).filter((l) => l !== undefined) : null;
     if (m.locations && locations!.length !== m.locations.length) rep.warnings.push(`monitor ${m.name}: some probe locations do not exist here and were dropped`);
     const notifications = (m.notifications ?? []).map((n: any) => ({ channelId: n.channel ? channelIds.get(n.channel) : null, policyId: n.policy ? policyIds.get(n.policy) : null, events: n.events })).filter((n: any) => n.channelId || n.policyId);
     const input = {
       name: m.name, type: m.type, groupId, description: m.description ?? null, config: existing ? m.config ?? {} : stripMasked(runner, m.config ?? {}), intervalS: m.intervalS, timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS,
       upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, active: m.active, publicBadge: m.publicBadge, quorum: locations?.length ? m.quorum : 1,
-      locations: locations as (number | 'local')[] | null, tagIds: tagIdList.filter((t) => t > 0), notifications: existing && doc.merge && !notifications.length ? undefined : notifications.filter((n: any) => (n.channelId ?? 1) > 0 && (n.policyId ?? 1) > 0),
+      locations: locations as (number | 'local')[] | null, tagIds: [...new Set(allTags.filter((t) => !t.value).map((t) => t.tagId))], tagValues: allTags.filter((t) => t.value), notifications: existing && doc.merge && !notifications.length ? undefined : notifications.filter((n: any) => (n.channelId ?? 1) > 0 && (n.policyId ?? 1) > 0),
     };
     if (dryRun) {
       // validate without writing
@@ -334,7 +342,7 @@ export async function describeImport(ctx: Ctx, doc: ConfigDoc): Promise<ImportIt
   const gpath = (id: number, seen = new Set<number>()): string => { const g = groups.find((x) => x.id === id); if (!g || seen.has(id)) return ''; seen.add(id); return (g.parent_id ? `${gpath(g.parent_id, seen)}/` : '') + g.name.replace(/\//g, '-'); };
   const groupExists = new Set(groups.map((g) => gpath(g.id)));
   const groupPaths = new Set([...(doc.groups ?? []).map((g) => g.path), ...(doc.monitors ?? []).map((m) => m.group).filter(Boolean) as string[]].flatMap(ancestors));
-  const tagNames = new Set([...(doc.tags ?? []).map((t) => t.name), ...(doc.monitors ?? []).flatMap((m) => (m.tags ?? []) as string[])]);
+  const tagNames = new Set([...(doc.tags ?? []).map((t) => t.name), ...(doc.monitors ?? []).flatMap((m) => ((m.tags ?? []) as TagRef[]).map((t) => tagRef(t).name))]);
   return {
     groups: [...groupPaths].sort().map((path) => ({ path, exists: groupExists.has(path) })),
     tags: [...tagNames].sort().map((name) => ({ name, exists: tagExists.has(name) })),
@@ -355,7 +363,7 @@ export function filterConfigDoc(doc: ConfigDoc, sel: ImportSelection): ConfigDoc
   const groupSet = sel.groups ? new Set(sel.groups) : null;
   const tagSet = sel.tags ? new Set(sel.tags) : null;
   const nearest = (path: string | null | undefined) => { if (!path || !groupSet) return path ?? null; return ancestors(path).reverse().find((p) => groupSet.has(p)); }; // undefined: no selected group is left, so an existing monitor stays where it is
-  const monitors = only(doc.monitors, sel.monitors, (m) => m.name)?.map((m) => ({ ...m, group: nearest(m.group), tags: tagSet ? ((m.tags ?? []) as string[]).filter((t) => tagSet.has(t)) : m.tags }));
+  const monitors = only(doc.monitors, sel.monitors, (m) => m.name)?.map((m) => ({ ...m, group: nearest(m.group), tags: tagSet ? ((m.tags ?? []) as TagRef[]).filter((t) => tagSet.has(tagRef(t).name)) : m.tags }));
   return { ...doc, groups: only(doc.groups, sel.groups, (g) => g.path), tags: only(doc.tags, sel.tags, (t) => t.name), channels: only(doc.channels, sel.channels, (c) => c.name), monitors, maintenance: only(doc.maintenance, sel.maintenance, (m) => m.name), statusPages: only(doc.statusPages, sel.statusPages, (p) => p.slug) };
 }
 
@@ -777,10 +785,7 @@ export function convertKuma(raw: unknown): { doc: ConfigDoc; warnings: string[];
     const invalid = validateConfig(runner, cfg).errors;
     if (invalid.length) { skip(`incomplete after conversion (${invalid.join('; ')})`); continue; }
 
-    for (const t of list(m.tags)) {
-      tags.set(String(t.name), /^#[0-9a-f]{6}$/i.test(t.color ?? '') ? t.color : undefined);
-      if (present(t.value)) mnotes.push(`The tag "${t.name}" had the value "${String(t.value).slice(0, 60)}", the value is not kept`);
-    }
+    for (const t of list(m.tags)) tags.set(String(t.name), /^#[0-9a-f]{6}$/i.test(t.color ?? '') ? t.color : undefined);
     if (Number(m.resendInterval) > 0) mnotes.push(`"Resend notification every ${m.resendInterval} checks" is not carried over, use an escalation policy to repeat alerts`);
     const proxy = m.proxyId != null ? proxies.get(Number(m.proxyId)) : undefined;
     if (m.proxyId != null && m.proxyId !== '') { proxyUse.set(Number(m.proxyId), (proxyUse.get(Number(m.proxyId)) ?? 0) + 1); mnotes.push(`It used the proxy ${proxy?.name ? `"${proxy.name}"` : `#${m.proxyId}`}, which is not supported: requests go out directly`); }
@@ -796,7 +801,7 @@ export function convertKuma(raw: unknown): { doc: ConfigDoc; warnings: string[];
     monitors.push({
       name, type, group: groupPath(m.parent), description: m.description ?? null, config: cfg,
       intervalS: clamp(m.interval, 5, 86400, 60), timeoutS: clamp(m.timeout, 1, 300, 10), retries: clamp(m.maxretries, 0, 20, 0), retryIntervalS: clamp(m.retryInterval, 5, 3600, 60), active: m.active !== false && m.active !== 0,
-      tags: list(m.tags).map((t) => String(t.name)),
+      tags: list(m.tags).map((t) => (present(t.value) ? { name: String(t.name), value: String(t.value).trim().slice(0, 255) } : String(t.name))),
       notifications: linked.map(([id]) => chName.get(id)).filter(Boolean).map((channel) => ({ channel, events: ['down', 'up'] })),
       ...(mnotes.length ? { notes: mnotes } : {}),
     });

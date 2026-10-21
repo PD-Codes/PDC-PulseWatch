@@ -5,8 +5,10 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Loading, PageHeader, Select, useConfirm, useToast, cx } from '../components/ui';
 import { displayStatus, HeartbeatBar, StatusBadge, StatusDot, uptimeTone } from '../components/status';
 import { Pager } from '../components/Pager';
+import { MultiSelect } from '../components/MultiSelect';
 import { TimeChart } from '../components/TimeChart';
 import { MonitorCopy } from '../components/MonitorCopy';
+import { tagText } from '../components/TagEditor';
 import { del, errorMessage, get, post, type Beat, type MonitorItem } from '../lib/api';
 import { useAuth, useMeta } from '../lib/auth';
 import { fmtDateTime, fmtDuration, fmtMs, fmtPct, relTime } from '../lib/format';
@@ -70,7 +72,7 @@ export default function MonitorDetail() {
     const rollup = pts.some((p) => p.p95 != null);
     const ys = rollup ? [pts.map((p) => p.p50 ?? p.avg), pts.map((p) => p.p95 ?? null), pts.map((p) => p.p99 ?? null)] : [pts.map((p) => (p.status === 1 ? p.avg : null))];
     const series = rollup
-      ? [{ label: 'p50', color: '#6366f1', fill: true }, { label: 'p95', color: '#f59e0b' }, { label: 'p99', color: '#ef4444', dash: [4, 4] }]
+      ? [{ label: t('stat.p50'), color: '#6366f1', fill: true }, { label: t('stat.p95'), color: '#f59e0b' }, { label: t('stat.p99'), color: '#ef4444', dash: [4, 4] }]
       : [{ label: t('monitors.latency'), color: '#6366f1', fill: true }];
     const now = Math.floor(Date.now() / 1000);
     const bands = (periods.data ?? []).filter((p) => p.status === 'down' || p.status === 0).map((p): [number, number, string] => [sec(p.from), p.to ? sec(p.to) : now, 'rgba(239,68,68,0.15)']);
@@ -92,7 +94,7 @@ export default function MonitorDetail() {
     <>
       <PageHeader
         title={<span className="flex items-center gap-3"><StatusDot status={s} pulse />{m.name}</span>}
-        subtitle={<span className="flex flex-wrap items-center gap-2"><StatusBadge status={s} /><span className="font-mono text-xs">{m.type}</span>{m.statusSince && <span>{t('monitors.since', { time: relTime(m.statusSince) })}</span>}{m.flapping && <Badge tone="amber">{t('monitors.flapping')}</Badge>}{m.tags.map((x) => <span key={x.id} className="rounded px-1.5 py-0.5 text-[11px] text-white" style={{ background: x.color }}>{x.name}</span>)}</span>}
+        subtitle={<span className="flex flex-wrap items-center gap-2"><StatusBadge status={s} /><span className="font-mono text-xs">{m.type}</span>{m.statusSince && <span>{t('monitors.since', { time: relTime(m.statusSince) })}</span>}{m.flapping && <Badge tone="amber">{t('monitors.flapping')}</Badge>}{m.tags.map((x) => <span key={`${x.id}:${x.value}`} className="rounded px-1.5 py-0.5 text-[11px] text-white" style={{ background: x.color }}>{tagText(x)}</span>)}</span>}
         actions={editor ? (
           <>
             <Button size="sm" variant="primary" loading={act.isPending && act.variables === 'check'} onClick={() => act.mutate('check')}><RefreshCw className="h-4 w-4" />{t('monitors.checkNow')}</Button>
@@ -131,7 +133,8 @@ export default function MonitorDetail() {
         <div className="p-4">
           {chart.isLoading ? <Loading /> : chart.error ? <ErrorBox error={chart.error} /> : chartView.x.length === 0 ? <p className="py-10 text-center text-sm text-slate-500">{t('monitors.noData')}</p> : <TimeChart x={chartView.x} ys={chartView.ys} series={chartView.series} bands={chartView.bands} onSelect={(a, b) => setWin(b - a < 60 ? { from: Math.floor((a + b) / 2) - 30, to: Math.floor((a + b) / 2) + 30 } : { from: a, to: b })} />}
           {chartView.x.length > 0 && <p className="mt-2 flex items-center gap-1.5 text-xs text-slate-500"><ZoomIn className="h-3.5 w-3.5" aria-hidden />{t('monitors.chartHint')}</p>}
-          {sum && <dl className="mt-3 grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-6">{([['avg', sum.avg], ['min', sum.min], ['max', sum.max], ['p50', sum.p50], ['p95', sum.p95], ['p99', sum.p99]] as const).map(([k, v]) => <div key={k}><dt className="text-slate-400">{k}</dt><dd className="font-semibold">{fmtMs(v)}</dd></div>)}</dl>}
+          {sum && <dl className="mt-3 grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-6">{([['avg', sum.avg], ['min', sum.min], ['max', sum.max], ['p50', sum.p50], ['p95', sum.p95], ['p99', sum.p99]] as const).map(([k, v]) => <div key={k}><dt className="cursor-help text-slate-400" title={t(`stat.${k}.tip`)}>{t(`stat.${k}`)}</dt><dd className="font-semibold">{fmtMs(v)}</dd></div>)}</dl>}
+          {sum && sum.p50 != null && <p className="mt-2 text-xs text-slate-500">{t('monitors.percentilesHint')}</p>}
           {chartView.bands.length > 0 && <p className="mt-2 text-xs text-slate-500"><span className="mr-1 inline-block h-2 w-3 rounded-sm bg-red-500/30 align-middle" />{t('monitors.outageBands')}</p>}
         </div>
       </Card>
@@ -237,28 +240,37 @@ function Snippet({ label, text }: { label: string; text: string }) {
   );
 }
 
-interface Paged<T> { total: number; items: T[] }
+interface Paged<T> { total: number; items: T[]; statuses?: number[] }
 
 /** Page size and number live in the component; the previous page stays visible while the next one loads. */
-function usePaged<T>(id: number, what: 'heartbeats' | 'events') {
+function usePaged<T>(id: number, what: 'heartbeats' | 'events', status: number[] = []) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(5);
-  const q = useQuery({ queryKey: ['monitor', id, what, page, pageSize], queryFn: () => get<Paged<T>>(`/api/monitors/${id}/${what}?page=${page}&pageSize=${pageSize}`), placeholderData: keepPreviousData });
+  const filter = status.join(',');
+  const q = useQuery({ queryKey: ['monitor', id, what, page, pageSize, filter], queryFn: () => get<Paged<T>>(`/api/monitors/${id}/${what}?page=${page}&pageSize=${pageSize}${filter ? `&status=${filter}` : ''}`), placeholderData: keepPreviousData });
   const total = q.data?.total ?? 0;
   // the capped count can shrink (retention); never sit on a page that no longer exists
   useEffect(() => { const last = Math.max(1, Math.ceil(total / pageSize)); if (page > last) setPage(last); }, [total, page, pageSize]);
-  return { q, rows: q.data?.items ?? [], pager: <Pager page={page} pageSize={pageSize} total={total} capped={total >= 10_000} onPage={setPage} onPageSize={setPageSize} /> };
+  return { q, setPage, rows: q.data?.items ?? [], pager: <Pager page={page} pageSize={pageSize} total={total} capped={total >= 10_000} onPage={setPage} onPageSize={setPageSize} /> };
 }
+
+// stored heartbeat status: 0 down, 1 up, 2 pending (failed, retrying), 3 maintenance, 4 suppressed (failed while a dependency is down)
+const HB_STATUS = ['down', 'up', 'pending', 'maintenance', 'suppressed'] as const;
+const hbStatus = (n: number) => HB_STATUS[n] ?? 'down';
 
 function Heartbeats({ id }: { id: number }) {
   const t = useT();
-  const { q, rows, pager } = usePaged<Hb>(id, 'heartbeats');
+  const [status, setStatus] = useState<number[]>([]);
+  const { q, setPage, rows, pager } = usePaged<Hb>(id, 'heartbeats', status);
+  // only the statuses this monitor has produced, plus anything still selected
+  const present = [...new Set([...(q.data?.statuses ?? []), ...status])].sort();
+  const options = present.map((n) => ({ value: n, label: t(`status.${hbStatus(n)}`), icon: <StatusDot status={hbStatus(n)} /> }));
   return (
     <Card>
-      <CardHeader title={t('monitors.recentChecks')} />
-      {q.isLoading ? <Loading /> : !rows.length ? <p className="p-4 text-sm text-slate-500">{t('monitors.noChecks')}</p> : (
+      <CardHeader title={t('monitors.recentChecks')} actions={present.length > 0 && <MultiSelect label={t('monitors.statusFilter')} allLabel={t('monitors.allStatuses')} options={options} value={status} onChange={(v) => { setStatus(v); setPage(1); }} />} />
+      {q.isLoading ? <Loading /> : !rows.length ? <p className="p-4 text-sm text-slate-500">{status.length ? t('monitors.noChecksFiltered') : t('monitors.noChecks')}</p> : (
         <ul className="divide-y divide-slate-100 dark:divide-slate-800">{rows.map((h) => (
-          <li key={h.id} className="flex items-center gap-2 px-4 py-2 text-sm"><StatusDot status={h.status === 1 ? 'up' : h.status === 3 ? 'maintenance' : 'down'} /><span className="w-16 text-slate-500">{fmtMs(h.latencyMs)}</span><span className="min-w-0 flex-1 truncate text-xs text-slate-400" title={h.message ?? ''}>{h.errorKind ? `${h.errorKind}: ` : ''}{h.message}</span><time className="text-xs text-slate-400" dateTime={h.ts}>{fmtDateTime(h.ts)}</time></li>))}</ul>
+          <li key={h.id} className="flex items-center gap-2 px-4 py-2 text-sm"><StatusDot status={hbStatus(h.status)} /><span className="w-16 text-slate-500">{fmtMs(h.latencyMs)}</span><span className="min-w-0 flex-1 truncate text-xs text-slate-400" title={h.message ?? ''}>{h.errorKind ? `${h.errorKind}: ` : ''}{h.message}</span><time className="text-xs text-slate-400" dateTime={h.ts}>{fmtDateTime(h.ts)}</time></li>))}</ul>
       )}
       {pager}
     </Card>

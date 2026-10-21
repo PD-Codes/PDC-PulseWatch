@@ -31,7 +31,7 @@ export default function Groups() {
     for (const m of monitors.data ?? []) counts.set(m.groupId, (counts.get(m.groupId) ?? 0) + 1);
     return { children, counts };
   }, [groups.data, monitors.data]);
-  const tagUse = useMemo(() => { const c = new Map<number, number>(); for (const m of monitors.data ?? []) for (const x of m.tags) c.set(x.id, (c.get(x.id) ?? 0) + 1); return c; }, [monitors.data]);
+  const tagUse = useMemo(() => { const c = new Map<number, number>(); for (const m of monitors.data ?? []) for (const id of new Set(m.tags.map((x) => x.id))) c.set(id, (c.get(id) ?? 0) + 1); return c; }, [monitors.data]);
 
   /** A group may not be moved below itself, so exclude it and its descendants from the parent picker. */
   const descendants = (id: number): Set<number> => { const out = new Set([id]); const walk = (p: number) => (children.get(p) ?? []).forEach((c) => { out.add(c.id); walk(c.id); }); walk(id); return out; };
@@ -71,7 +71,7 @@ export default function Groups() {
   return (
     <>
       <PageHeader title={t('nav.groups')} subtitle={t('groups.subtitle')} />
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader title={t('groups.groups')} actions={editor && <Button size="sm" variant="primary" onClick={() => setGf({ name: '', parentId: null })}><Plus className="h-4 w-4" />{t('groups.new')}</Button>} />
           {groups.isLoading ? <Loading /> : groups.error ? <div className="p-4"><ErrorBox error={groups.error} /></div> : !groups.data?.length ? <EmptyState icon={<FolderTree className="h-6 w-6" />} title={t('groups.empty')} body={t('groups.emptyBody')} /> : (
@@ -96,7 +96,7 @@ export default function Groups() {
               {tags.data.map((g) => (
                 <li key={g.id} className="flex items-center gap-3 px-4 py-2">
                   <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: g.color }} aria-hidden />
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium">{g.name}</span>
+                  <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{g.name}</span>{!!g.values?.length && <span className="block truncate text-xs text-slate-500" title={g.values.map((v) => `${v.value} (${v.count})`).join(', ')}>{g.values.map((v) => `${v.value} (${v.count})`).join(', ')}</span>}</span>
                   <span className="text-xs text-slate-500">{t('groups.monitorCount', { n: tagUse.get(g.id) ?? 0 })}</span>
                   {editor && <>
                     <input type="color" aria-label={`${t('groups.color')}: ${g.name}`} value={g.color} onChange={(e) => post('/api/tags', { name: g.name, color: e.target.value }).then(refreshT, fail)} className="h-7 w-9 cursor-pointer rounded border border-slate-300 bg-transparent p-0.5 dark:border-slate-700" />

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
-import { get, type Group, type MonitorItem, type Tag } from '../lib/api';
+import { get, type Group, type MonitorItem, type TagInfo } from '../lib/api';
 import { useT } from '../lib/i18n';
 import { Badge, Input, cx, type Tone } from './ui';
 
@@ -15,7 +15,7 @@ export function SeverityBadge({ severity }: { severity: string }) { const t = us
 /** Shared monitors / groups / tags queries (same keys as the rest of the app so the cache is reused). */
 export const useMonitorsQ = () => useQuery({ queryKey: ['monitors'], queryFn: () => get<MonitorItem[]>('/api/monitors'), staleTime: 30_000 });
 export const useGroupsQ = () => useQuery({ queryKey: ['groups'], queryFn: () => get<Group[]>('/api/groups'), staleTime: 30_000 });
-export const useTagsQ = () => useQuery({ queryKey: ['tags'], queryFn: () => get<Tag[]>('/api/tags'), staleTime: 30_000 });
+export const useTagsQ = () => useQuery({ queryKey: ['tags'], queryFn: () => get<TagInfo[]>('/api/tags'), staleTime: 30_000 });
 
 /** Searchable checkbox list for picking several items. */
 export function CheckList<T extends number | string>({ items, value, onChange, searchable, empty }: { items: { id: T; label: string; hint?: string }[]; value: T[]; onChange: (v: T[]) => void; searchable?: boolean; empty?: string }) {

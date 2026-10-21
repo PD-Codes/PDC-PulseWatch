@@ -44,7 +44,7 @@ export async function seedDemo(ctx: Ctx): Promise<void> {
   const gWeb = await mkGroup('Web'), gInfra = await mkGroup('Infrastructure'), gData = await mkGroup('Data');
   const gApi = await mkGroup('APIs', gWeb);
   const tag = async (name: string, color: string) => Number((await db.insertInto('tags').values({ name, color }).executeTakeFirstOrThrow()).insertId);
-  const tags = { prod: await tag('prod', '#059669'), critical: await tag('critical', '#dc2626'), staging: await tag('staging', '#d97706') };
+  const tags = { prod: await tag('prod', '#059669'), critical: await tag('critical', '#dc2626'), staging: await tag('staging', '#d97706'), team: await tag('team', '#2563eb') };
   const groups: Record<string, number> = { Web: gWeb, Infrastructure: gInfra, Data: gData, APIs: gApi };
 
   const hook = Number((await db.insertInto('notification_channels').values({ name: 'Demo webhook', type: 'webhook', config_enc: encryptJson({ url: `${base}/demo/hook`, method: 'POST' }), active: 1, is_default: 0, created_by: adminId }).executeTakeFirstOrThrow()).insertId);
@@ -66,7 +66,7 @@ export async function seedDemo(ctx: Ctx): Promise<void> {
       name: p.name, type: p.type, groupId: groups[p.group], description: p.type === 'http' && p.path === '/demo/down' ? 'Always returns 503: shows what an outage looks like.' : null,
       config: p.config ? { ...(p.type === 'tcp' || p.type === 'mysql' ? {} : { url: base + p.path }), ...p.config } : { url: base + p.path },
       intervalS: p.interval, timeoutS: 10, retries: p.name.includes('flaky') ? 1 : 0, retryIntervalS: 10, upThreshold: 1, downThreshold: p.name.includes('flaky') ? 2 : 1, publicBadge: true,
-      tagIds: p.tags.map((t) => tags[t as keyof typeof tags]), notifications: [{ channelId: hook, events: ['down', 'up'] }],
+      tagIds: p.tags.map((t) => tags[t as keyof typeof tags]), tagValues: [{ tagId: tags.team, value: ({ Web: 'frontend', APIs: 'platform', Data: 'data' } as Record<string, string>)[p.group] ?? 'ops' }], notifications: [{ channelId: hook, events: ['down', 'up'] }],
     }, adminId);
     ids.set(p.name, id);
   }

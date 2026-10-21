@@ -6,11 +6,13 @@ import { parseJson } from '../db';
 import { monitorDefaults } from './defaults';
 import { encryptConfig, parseMonitor, type Monitor } from './model';
 
+export interface TagValue { tagId: number; value: string }
+
 export interface MonitorInput {
   name?: string; type?: string; groupId?: number | null; description?: string | null; config?: Record<string, any>;
   intervalS?: number; timeoutS?: number; retries?: number; retryIntervalS?: number; upThreshold?: number; downThreshold?: number;
   flapWindow?: number; flapThreshold?: number; active?: boolean; locations?: (number | 'local')[] | null; quorum?: number; publicBadge?: boolean;
-  tagIds?: number[]; dependsOn?: number[]; notifications?: { channelId?: number | null; policyId?: number | null; events?: string[] }[];
+  tagIds?: number[]; tagValues?: TagValue[]; dependsOn?: number[]; notifications?: { channelId?: number | null; policyId?: number | null; events?: string[] }[];
 }
 
 const num = (v: unknown, def: number, min: number, max: number, label: string, errors: string[]) => {
@@ -84,6 +86,14 @@ export async function saveMonitor(ctx: Ctx, input: MonitorInput, userId: number 
 
   const deps = input.dependsOn ? [...new Set(input.dependsOn)] : undefined;
 
+  // Plain tags (tagIds) are stored with value ''; name + value tags (tagValues) carry text. Each kind is replaced only when sent.
+  const tagValues = input.tagValues?.map((t) => ({ tagId: Number(t?.tagId), value: String(t?.value ?? '').trim() }));
+  if (tagValues && (tagValues.length > 200 || tagValues.some((t) => !Number.isInteger(t.tagId) || !t.value || t.value.length > 255)))
+    errors.push('Tag values need an existing tag and a value of 1 to 255 characters (max 200 per monitor)');
+  const wantedTags = [...new Set([...(input.tagIds ?? []), ...(tagValues ?? []).map((t) => t.tagId)])];
+  if (!errors.length && wantedTags.length && (await db.selectFrom('tags').select('id').where('id', 'in', wantedTags).execute()).length !== wantedTags.length) errors.push('Unknown tag');
+  if (errors.length) throw new ValidationError(errors);
+
   return db.transaction().execute(async (trx) => {
     let id: number;
     const common = { ...row, locations: locations ? JSON.stringify(locations) : null, quorum };
@@ -104,8 +114,13 @@ export async function saveMonitor(ctx: Ctx, input: MonitorInput, userId: number 
       if (deps && (await hasCycle(ctx, id, deps))) throw new ValidationError(['Dependencies must not form a cycle']);
     }
     if (input.tagIds) {
-      await trx.deleteFrom('monitor_tags').where('monitor_id', '=', id).execute();
+      await trx.deleteFrom('monitor_tags').where('monitor_id', '=', id).where('value', '=', '').execute();
       if (input.tagIds.length) await trx.insertInto('monitor_tags').values([...new Set(input.tagIds)].map((t) => ({ monitor_id: id, tag_id: t }))).execute();
+    }
+    if (tagValues) {
+      await trx.deleteFrom('monitor_tags').where('monitor_id', '=', id).where('value', '<>', '').execute();
+      // ignore(): the case/accent-insensitive collation can call two distinct strings equal
+      if (tagValues.length) await trx.insertInto('monitor_tags').values(tagValues.map((t) => ({ monitor_id: id, tag_id: t.tagId, value: t.value }))).ignore().execute();
     }
     if (deps) {
       await trx.deleteFrom('monitor_dependencies').where('monitor_id', '=', id).execute();
@@ -159,7 +174,7 @@ export async function listMonitors(ctx: Ctx, ids: number[] | null) {
   const rows = await q.execute();
   const mids = rows.map((r) => r.id);
   const [tags, deps, uptime] = await Promise.all([
-    mids.length ? db.selectFrom('monitor_tags as mt').innerJoin('tags as t', 't.id', 'mt.tag_id').select(['mt.monitor_id', 't.id', 't.name', 't.color']).where('mt.monitor_id', 'in', mids).execute() : [],
+    mids.length ? db.selectFrom('monitor_tags as mt').innerJoin('tags as t', 't.id', 'mt.tag_id').select(['mt.monitor_id', 't.id', 't.name', 't.color', 'mt.value']).where('mt.monitor_id', 'in', mids).orderBy('t.name').orderBy('mt.value').execute() : [],
     mids.length ? db.selectFrom('monitor_dependencies').selectAll().where('monitor_id', 'in', mids).execute() : [],
     uptimeFor(ctx, ids ?? (mids.length ? mids : [0])),
   ]);
@@ -169,7 +184,7 @@ export async function listMonitors(ctx: Ctx, ids: number[] | null) {
     errorKind: r.last_error_kind, message: r.last_message, flapping: !!r.flapping, recent: parseJson<unknown[]>(r.recent, []),
     certExpiresAt: r.cert_expires_at, anomaly: !!parseJson<{ flagged?: boolean }>(r.anomaly, {}).flagged, publicBadge: !!r.public_badge,
     locations: parseJson(r.locations, null), pushToken: r.push_token,
-    tags: tags.filter((t) => t.monitor_id === r.id).map((t) => ({ id: t.id, name: t.name, color: t.color })),
+    tags: tags.filter((t) => t.monitor_id === r.id).map((t) => ({ id: t.id, name: t.name, color: t.color, value: t.value })),
     dependsOn: deps.filter((d) => d.monitor_id === r.id).map((d) => d.depends_on_id),
     uptime: uptime.get(r.id) ?? { h24: null, d7: null, d30: null, d90: null, d365: null },
   }));

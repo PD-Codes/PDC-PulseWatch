@@ -182,13 +182,13 @@ export async function monitorRoutes(app: FastifyInstance) {
   app.post('/api/monitors/:id/clone', { ...writer, schema: { tags: ['monitors'], params: Id } }, async (req, reply) => {
     const id = await guardMonitor(req, reply, 'manage'); if (!id) return;
     const src = (await loadMonitor(ctx, id))!;
-    const tags = await db.selectFrom('monitor_tags').select('tag_id').where('monitor_id', '=', id).execute();
+    const tags = await db.selectFrom('monitor_tags').select(['tag_id', 'value']).where('monitor_id', '=', id).execute();
     const deps = await db.selectFrom('monitor_dependencies').select('depends_on_id').where('monitor_id', '=', id).execute();
     const notes = await db.selectFrom('monitor_notifications').selectAll().where('monitor_id', '=', id).execute();
     const newId = await wrapValidation(reply, () => saveMonitor(ctx, {
       name: `${src.name} (copy)`, type: src.type, groupId: src.groupId, description: src.description, config: src.config, intervalS: src.intervalS, timeoutS: src.timeoutS,
       retries: src.retries, retryIntervalS: src.retryIntervalS, upThreshold: src.upThreshold, downThreshold: src.downThreshold, flapWindow: src.flapWindow, flapThreshold: src.flapThreshold,
-      active: false, locations: src.locations, quorum: src.quorum, publicBadge: false, tagIds: tags.map((t) => t.tag_id), dependsOn: deps.map((d) => d.depends_on_id),
+      active: false, locations: src.locations, quorum: src.quorum, publicBadge: false, tagIds: tags.filter((t) => !t.value).map((t) => t.tag_id), tagValues: tags.filter((t) => t.value).map((t) => ({ tagId: t.tag_id, value: t.value })), dependsOn: deps.map((d) => d.depends_on_id),
       notifications: notes.map((n) => ({ channelId: n.channel_id, policyId: n.policy_id, events: n.events.split(',') })),
     }, req.user!.id));
     if (newId === undefined) return;
@@ -305,16 +305,22 @@ export async function monitorRoutes(app: FastifyInstance) {
   });
 
   /* ------------------------------- history ------------------------------- */
-  app.get('/api/monitors/:id/heartbeats', { ...auth, schema: { tags: ['monitors'], params: Id, querystring: Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })), before: Type.Optional(Type.String()), location: Type.Optional(Type.Integer()), ...PageQuery }) } }, async (req, reply) => {
+  app.get('/api/monitors/:id/heartbeats', { ...auth, schema: { tags: ['monitors'], params: Id, querystring: Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })), before: Type.Optional(Type.String()), location: Type.Optional(Type.Integer()), status: Type.Optional(Type.String({ pattern: '^[0-9](,[0-9])*$' })), ...PageQuery }) } }, async (req, reply) => {
     const id = await guardMonitor(req, reply, 'view'); if (!id) return;
-    const q = req.query as { limit?: number; before?: string; location?: number; page?: number; pageSize?: number };
+    const q = req.query as { limit?: number; before?: string; location?: number; page?: number; pageSize?: number; status?: string };
     const loc = q.location ?? 0;
     const map = (r: any) => ({ id: r.id, ts: r.ts, status: r.status, latencyMs: r.latency_ms, errorKind: r.error_kind, message: r.message, locationId: r.location_id });
     let s = db.selectFrom('heartbeats').select(['id', 'ts', 'status', 'latency_ms', 'error_kind', 'message', 'location_id']).where('monitor_id', '=', id).where('location_id', '=', loc).orderBy('ts', 'desc');
+    // optional filter on the stored status values (0 down, 1 up, 2 pending, 3 maintenance, 4 suppressed)
+    const only = q.status ? [...new Set(q.status.split(',').map(Number))] : null;
+    if (only) s = s.where('status', 'in', only);
     if (q.page) {
       if (q.page * (q.pageSize ?? 5) > COUNT_CAP + (q.pageSize ?? 5)) return reply.code(400).send({ error: 'validation', message: `Paging stops at ${COUNT_CAP} entries, narrow the time range instead` });
-      const total = await cappedCount(db, db.selectFrom('heartbeats').select('id').where('monitor_id', '=', id).where('location_id', '=', loc));
-      return { total, page: q.page, pageSize: q.pageSize ?? 5, items: (await s.limit(q.pageSize ?? 5).offset((q.page - 1) * (q.pageSize ?? 5)).execute()).map(map) };
+      const all = db.selectFrom('heartbeats').select('id').where('monitor_id', '=', id).where('location_id', '=', loc);
+      const total = await cappedCount(db, only ? all.where('status', 'in', only) : all);
+      // the values that occur in the latest entries, so the filter only offers statuses this monitor really has
+      const statuses = (await db.selectFrom(db.selectFrom('heartbeats').select('status').where('monitor_id', '=', id).where('location_id', '=', loc).orderBy('ts', 'desc').limit(COUNT_CAP).as('t')).select('status').distinct().orderBy('status').execute()).map((r) => r.status);
+      return { total, page: q.page, pageSize: q.pageSize ?? 5, statuses, items: (await s.limit(q.pageSize ?? 5).offset((q.page - 1) * (q.pageSize ?? 5)).execute()).map(map) };
     }
     s = s.limit(q.limit ?? 100);
     if (q.before) s = s.where('ts', '<', new Date(q.before));
@@ -405,7 +411,14 @@ export async function monitorRoutes(app: FastifyInstance) {
   app.post('/api/push/:token', pushOpts, push);
 
   /* ---------------------------- tags & groups ---------------------------- */
-  app.get('/api/tags', { ...auth, schema: { tags: ['monitors'] } }, async () => db.selectFrom('tags').selectAll().orderBy('name').execute());
+  app.get('/api/tags', { ...auth, schema: { tags: ['monitors'], summary: 'Tags with usage and the values already in use' } }, async () => {
+    const [tags, byValue, byTag] = await Promise.all([
+      db.selectFrom('tags').selectAll().orderBy('name').execute(),
+      db.selectFrom('monitor_tags').select(['tag_id', 'value', (eb) => eb.fn.countAll<number>().as('n')]).where('value', '<>', '').groupBy(['tag_id', 'value']).orderBy('value').execute(),
+      db.selectFrom('monitor_tags').select(['tag_id', (eb) => eb.fn.count<number>('monitor_id').distinct().as('n')]).groupBy('tag_id').execute(),
+    ]);
+    return tags.map((t) => ({ ...t, monitors: Number(byTag.find((u) => u.tag_id === t.id)?.n ?? 0), values: byValue.filter((u) => u.tag_id === t.id).map((u) => ({ value: u.value, count: Number(u.n) })) }));
+  });
   app.post('/api/tags', { ...writer, schema: { tags: ['monitors'], body: Type.Object({ name: Type.String({ minLength: 1, maxLength: 64 }), color: Type.Optional(Type.String({ pattern: '^#[0-9a-fA-F]{6}$' })) }) } }, async (req) => {
     const b = req.body as { name: string; color?: string };
     const q = db.insertInto('tags').values({ name: b.name, color: b.color ?? '#6366f1' });

@@ -1,0 +1,31 @@
+// Strings for latency statistics wording, tags with values and the recent-checks status filter.
+export const en = {
+  'stat.avg': 'Average', 'stat.min': 'Fastest', 'stat.max': 'Slowest', 'stat.p50': 'Typical (p50)', 'stat.p95': 'Slow (p95)', 'stat.p99': 'Worst case (p99)',
+  'stat.avg.tip': 'All response times added up and divided by the number of checks.',
+  'stat.min.tip': 'The quickest single check in this time range.',
+  'stat.max.tip': 'The slowest single check in this time range.',
+  'stat.p50.tip': 'Median: half of the checks were faster than this, half were slower. This is what a normal request feels like.',
+  'stat.p95.tip': '19 out of 20 checks were faster than this. It shows how slow the slower requests get.',
+  'stat.p99.tip': '99 out of 100 checks were faster than this. It shows the rare worst cases.',
+  'monitors.percentilesHint': 'Typical: half of the checks were faster. Slow: 19 of 20 were faster. Worst case: 99 of 100 were faster.',
+  'reports.mttrTip': 'Mean time to repair: how long an outage lasted on average.',
+  'tags.extended': 'Tags with a value', 'tags.extendedHint': 'Name and value, for example env = production. Pick from the lists or choose "Add new..." at the bottom.',
+  'tags.name': 'Tag name', 'tags.value': 'Tag value', 'tags.color': 'Color', 'tags.pickName': 'Select a name', 'tags.pickValue': 'Select a value', 'tags.addNew': 'Add new...', 'tags.addRow': 'Add tag with value',
+  'tags.newTag': 'New tag', 'tags.newValue': 'New value',
+  'monitors.statusFilter': 'Filter by status', 'monitors.allStatuses': 'All statuses', 'monitors.noChecksFiltered': 'No checks with the selected status on record.', 'filter.clear': 'Clear selection',
+};
+export const de = {
+  'stat.avg': 'Durchschnitt', 'stat.min': 'Schnellste', 'stat.max': 'Langsamste', 'stat.p50': 'Typisch (p50)', 'stat.p95': 'Langsam (p95)', 'stat.p99': 'Ausreißer (p99)',
+  'stat.avg.tip': 'Alle Antwortzeiten addiert und durch die Anzahl der Prüfungen geteilt.',
+  'stat.min.tip': 'Die schnellste einzelne Prüfung in diesem Zeitraum.',
+  'stat.max.tip': 'Die langsamste einzelne Prüfung in diesem Zeitraum.',
+  'stat.p50.tip': 'Median: Die Hälfte der Prüfungen war schneller, die andere Hälfte langsamer. So fühlt sich eine normale Anfrage an.',
+  'stat.p95.tip': '19 von 20 Prüfungen waren schneller als dieser Wert. Er zeigt, wie langsam die langsameren Anfragen werden.',
+  'stat.p99.tip': '99 von 100 Prüfungen waren schneller als dieser Wert. Er zeigt die seltenen Ausreißer.',
+  'monitors.percentilesHint': 'Typisch: Die Hälfte der Prüfungen war schneller. Langsam: 19 von 20 waren schneller. Ausreißer: 99 von 100 waren schneller.',
+  'reports.mttrTip': 'Mean Time To Repair: wie lange ein Ausfall im Durchschnitt gedauert hat.',
+  'tags.extended': 'Tags mit Wert', 'tags.extendedHint': 'Name und Wert, zum Beispiel env = production. Aus den Listen wählen oder ganz unten „Add new...“ nutzen.',
+  'tags.name': 'Tag-Name', 'tags.value': 'Tag-Wert', 'tags.color': 'Farbe', 'tags.pickName': 'Name wählen', 'tags.pickValue': 'Wert wählen', 'tags.addNew': 'Add new...', 'tags.addRow': 'Tag mit Wert hinzufügen',
+  'tags.newTag': 'Neuer Tag', 'tags.newValue': 'Neuer Wert',
+  'monitors.statusFilter': 'Nach Status filtern', 'monitors.allStatuses': 'Alle Status', 'monitors.noChecksFiltered': 'Keine Prüfungen mit dem gewählten Status vorhanden.', 'filter.clear': 'Auswahl aufheben',
+};

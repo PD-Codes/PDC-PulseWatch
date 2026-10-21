@@ -43,7 +43,7 @@ export interface MonitorsTable {
   next_run_at: NTs; lease_owner: string | null; lease_until: NTs; attempt: Generated<number>;
   created_by: number | null; created_at: Ts; updated_at: Ts;
 }
-export interface MonitorTagsTable { monitor_id: number; tag_id: number }
+export interface MonitorTagsTable { monitor_id: number; tag_id: number; value: Generated<string> }
 export interface MonitorDependenciesTable { monitor_id: number; depends_on_id: number }
 export interface MonitorStateTable {
   monitor_id: number; status: Generated<'unknown' | 'up' | 'down' | 'pending'>; overlay: Generated<'none' | 'maintenance' | 'suppressed'>;

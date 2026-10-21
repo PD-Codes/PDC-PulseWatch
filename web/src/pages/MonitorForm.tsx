@@ -3,8 +3,9 @@ import { FolderPlus, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button, Card, CardHeader, ErrorBox, Field, Input, Loading, PageHeader, Select, Textarea, Toggle, useToast } from '../components/ui';
+import { TagValueEditor, toTagValues, type TagValueRow } from '../components/TagEditor';
 import { initValues, MonitorFields, toConfig, type FieldValue, type FieldValues, type MonitorType } from '../components/MonitorFields';
-import { ApiError, errorMessage, get, post, put, type Group, type MonitorItem, type Tag } from '../lib/api';
+import { ApiError, errorMessage, get, post, put, type Group, type MonitorItem, type Tag, type TagInfo } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { parseBulk } from '../lib/bulkParse';
 import { useT } from '../lib/i18n';
@@ -38,7 +39,7 @@ export default function MonitorForm() {
   const types = useQuery({ queryKey: ['monitor-types'], queryFn: () => get<MonitorType[]>('/api/monitor-types'), staleTime: Infinity });
   const detail = useQuery({ queryKey: ['monitor', id], queryFn: () => get<Detail>(`/api/monitors/${id}`), enabled: id != null });
   const groups = useQuery({ queryKey: ['groups'], queryFn: () => get<Group[]>('/api/groups') });
-  const tags = useQuery({ queryKey: ['tags'], queryFn: () => get<Tag[]>('/api/tags') });
+  const tags = useQuery({ queryKey: ['tags'], queryFn: () => get<TagInfo[]>('/api/tags') });
   const monitors = useQuery({ queryKey: ['monitors'], queryFn: () => get<MonitorItem[]>('/api/monitors') });
   const probes = useQuery({ queryKey: ['probes'], queryFn: () => get<Probe[]>('/api/probes'), retry: false });
   const channels = useQuery({ queryKey: ['notification-channels'], queryFn: () => get<Channel[]>('/api/notification-channels'), retry: false });
@@ -48,6 +49,7 @@ export default function MonitorForm() {
   const [c, setC] = useState<Common>(COMMON);
   const [vals, setVals] = useState<FieldValues>({});
   const [tagIds, setTagIds] = useState<number[]>([]);
+  const [tagVals, setTagVals] = useState<TagValueRow[]>([]);
   const [deps, setDeps] = useState<number[]>([]);
   const [locations, setLocations] = useState<(number | 'local')[]>([]);
   const [rules, setRules] = useState<Rule[]>([]);
@@ -103,7 +105,7 @@ export default function MonitorForm() {
     setType(d.type);
     setC({ name: d.name, description: d.description ?? '', groupId: d.groupId ? String(d.groupId) : '', intervalS: String(d.intervalS), timeoutS: String(d.timeoutS), retries: String(d.retries), retryIntervalS: String(d.retryIntervalS), upThreshold: String(d.upThreshold), downThreshold: String(d.downThreshold), flapWindow: String(d.flapWindow), flapThreshold: String(d.flapThreshold), active: d.active, publicBadge: d.publicBadge, quorum: String(d.quorum) });
     setVals(initValues(r?.fields ?? [], d.config));
-    setTagIds(d.tags.map((x) => x.id)); setDeps(d.dependsOn); setLocations((d.locations ?? []) as (number | 'local')[]); setRules(d.notifications ?? []);
+    setTagIds(d.tags.filter((x) => !x.value).map((x) => x.id)); setTagVals(d.tags.filter((x) => x.value).map((x) => ({ tagId: x.id, value: x.value }))); setDeps(d.dependsOn); setLocations((d.locations ?? []) as (number | 'local')[]); setRules(d.notifications ?? []);
     setLoaded(true);
   }, [detail.data, types.data, loaded]);
 
@@ -118,7 +120,7 @@ export default function MonitorForm() {
         name: c.name.trim(), type, description: c.description.trim() || null, groupId: c.groupId ? n(c.groupId) : null, config,
         intervalS: n(c.intervalS), timeoutS: n(c.timeoutS), retries: n(c.retries), retryIntervalS: n(c.retryIntervalS), upThreshold: n(c.upThreshold), downThreshold: n(c.downThreshold),
         flapWindow: n(c.flapWindow), flapThreshold: n(c.flapThreshold), active: c.active, publicBadge: c.publicBadge, quorum: n(c.quorum),
-        locations: locations.length ? locations : null, tagIds, dependsOn: deps, notifications: rules.filter((r) => r.channelId || r.policyId),
+        locations: locations.length ? locations : null, tagIds, tagValues: toTagValues(tagVals), dependsOn: deps, notifications: rules.filter((r) => r.channelId || r.policyId),
       };
       return id ? put<{ id: number }>(`/api/monitors/${id}`, body) : post<{ id: number }>('/api/monitors', body);
     },
@@ -137,7 +139,7 @@ export default function MonitorForm() {
         description: c.description.trim() || null, groupId: c.groupId ? n(c.groupId) : null, config: toConfig(runner!.fields.filter((f) => f.key !== addressField!.key), vals),
         intervalS: n(c.intervalS), timeoutS: n(c.timeoutS), retries: n(c.retries), retryIntervalS: n(c.retryIntervalS), upThreshold: n(c.upThreshold), downThreshold: n(c.downThreshold),
         flapWindow: n(c.flapWindow), flapThreshold: n(c.flapThreshold), active: c.active, publicBadge: c.publicBadge, quorum: n(c.quorum),
-        locations: locations.length ? locations : null, tagIds, dependsOn: deps, notifications: rules.filter((r) => r.channelId || r.policyId),
+        locations: locations.length ? locations : null, tagIds, tagValues: toTagValues(tagVals), dependsOn: deps, notifications: rules.filter((r) => r.channelId || r.policyId),
       };
       return post<{ created: { index: number }[]; skipped: { index: number }[]; failed: { index: number; errors: string[] }[] }>('/api/monitors/bulk-create', {
         type, addressKey: addressField!.key, skipExisting, template, items: bulkLines.map((l) => ({ name: l.name, address: l.address })),
@@ -261,6 +263,7 @@ export default function MonitorForm() {
               <span className="inline-flex gap-1"><input className="input w-36 py-1 text-xs" aria-label={t('monitors.form.newTag')} placeholder={t('monitors.form.newTag')} value={newTag} onChange={(e) => setNewTag(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (newTag.trim()) addTag.mutate(); } }} /><Button size="sm" disabled={!newTag.trim()} loading={addTag.isPending} onClick={() => addTag.mutate()} aria-label={t('common.add')}><Plus className="h-4 w-4" /></Button></span>
             </div>
           </fieldset>
+          <TagValueEditor tags={tags.data ?? []} rows={tagVals} onChange={setTagVals} />
           <Field label={t('monitors.form.deps')} hint={t('monitors.form.depsHint')}>{(fid) => (
             <select id={fid} multiple size={5} className="input" value={deps.map(String)} onChange={(e) => setDeps([...e.target.selectedOptions].map((o) => Number(o.value)))}>
               {monitors.data?.filter((x) => x.id !== id).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}

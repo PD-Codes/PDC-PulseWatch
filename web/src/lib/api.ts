@@ -66,15 +66,19 @@ export function download(path: string) { const a = document.createElement('a'); 
 /* ---- shared response types ---- */
 export type Status = 'up' | 'down' | 'pending' | 'unknown';
 export type Overlay = 'none' | 'maintenance' | 'suppressed';
-/** [epoch seconds, heartbeat status (1 up, 0 down, 3 maintenance), latency ms] */
+/** [epoch seconds, heartbeat status (0 down, 1 up, 2 pending, 3 maintenance, 4 suppressed), latency ms] */
 export type Beat = [number, number, number | null];
 export interface Uptime { h24: number | null; d7: number | null; d30: number | null; d90: number | null; d365: number | null }
 export interface Tag { id: number; name: string; color: string }
+/** A tag as attached to a monitor: value is '' for a plain tag. */
+export interface TagAssignment extends Tag { value: string }
+/** A tag with its usage: how many monitors carry it and which values are in use. */
+export interface TagInfo extends Tag { monitors: number; values: { value: string; count: number }[] }
 export interface MonitorItem {
   id: number; name: string; type: string; groupId: number | null; active: boolean; intervalS: number; description: string | null;
   status: Status; overlay: Overlay; statusSince: string | null; lastCheckAt: string | null; latencyMs: number | null; errorKind: string | null; message: string | null;
   flapping: boolean; recent: Beat[]; certExpiresAt: string | null; anomaly: boolean; publicBadge: boolean; locations: (number | 'local')[] | null; pushToken: string | null;
-  tags: Tag[]; dependsOn: number[]; uptime: Uptime;
+  tags: TagAssignment[]; dependsOn: number[]; uptime: Uptime;
 }
 export interface Group { id: number; parentId: number | null; name: string; description: string | null }
 export type Role = 'admin' | 'editor' | 'viewer';

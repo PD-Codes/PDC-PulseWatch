@@ -186,3 +186,21 @@ describe('incident statuses', () => {
     expect((await ed.post('/api/incidents', { title: 'Nope', monitorIds: [other.json.id] })).status).toBe(403);
   });
 });
+
+describe('recent checks status filter', () => {
+  it('filters by one or several statuses, counts the filtered rows and lists the statuses that exist', async () => {
+    const id = (await push('hb-filter', { active: false })).json.id as number;
+    const now = Date.now();
+    const rows = [1, 1, 1, 0, 0, 3].map((status, i) => ({ monitor_id: id, location_id: 0, ts: new Date(now - i * 10_000), status, latency_ms: status === 1 ? 50 : null }));
+    await t.ctx.db.insertInto('heartbeats').values(rows as any).execute();
+    const list = async (qs = '') => (await c.get(`/api/monitors/${id}/heartbeats?page=1&pageSize=10${qs}`)).json as { total: number; statuses: number[]; items: { status: number }[] };
+    const all = await list();
+    expect([all.total, all.statuses]).toEqual([6, [0, 1, 3]]);
+    const down = await list('&status=0');
+    expect([down.total, down.items.map((x) => x.status)]).toEqual([2, [0, 0]]);
+    const upAndMaint = await list('&status=1,3');
+    expect([upAndMaint.total, upAndMaint.items.map((x) => x.status).sort()]).toEqual([4, [1, 1, 1, 3]]);
+    expect((await list('&status=0')).statuses).toEqual([0, 1, 3]); // the options do not shrink with the filter
+    expect((await c.get(`/api/monitors/${id}/heartbeats?page=1&status=abc`)).status).toBe(400);
+  });
+});

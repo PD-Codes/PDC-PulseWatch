@@ -19,7 +19,7 @@ export async function scopeMonitorIds(ctx: Ctx, scope: Scope, limit: number[] | 
   const { db } = ctx;
   let ids: number[];
   if (scope.type === 'monitor') ids = scope.id ? [scope.id] : [];
-  else if (scope.type === 'tag') ids = scope.id ? (await db.selectFrom('monitor_tags').select('monitor_id').where('tag_id', '=', scope.id).execute()).map((r) => r.monitor_id) : [];
+  else if (scope.type === 'tag') ids = scope.id ? (await db.selectFrom('monitor_tags').select('monitor_id').distinct().where('tag_id', '=', scope.id).execute()).map((r) => r.monitor_id) : [];
   else if (scope.type === 'group') {
     const groups = await db.selectFrom('monitor_groups').select(['id', 'parent_id']).execute();
     const set = new Set(scope.id ? [scope.id] : []);

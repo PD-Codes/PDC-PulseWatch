@@ -6,6 +6,7 @@ import { Badge, Button, Card, CardHeader, EmptyState, ErrorBox, Field, Input, Lo
 import { displayStatus, HeartbeatBar, Sparkline, StatusBadge, StatusDot, uptimeTone, type DisplayStatus } from '../components/status';
 import { ApiError, del, errorMessage, get, post, type Group, type MonitorItem, type Tag } from '../lib/api';
 import { BulkEditModal } from '../components/BulkEdit';
+import { tagText } from '../components/TagEditor';
 import { useAuth } from '../lib/auth';
 import { fmtMs, fmtPct, relTime } from '../lib/format';
 import { useT } from '../lib/i18n';
@@ -62,7 +63,7 @@ export default function Dashboard() {
       if (f.status && displayStatus(m) !== f.status) return false;
       if (f.tag && !m.tags.some((x) => String(x.id) === f.tag || x.name === f.tag)) return false;
       if (gset && (m.groupId == null || !gset.has(m.groupId))) return false;
-      return !q || `${m.name} ${m.type} ${m.description ?? ''} ${m.tags.map((x) => x.name).join(' ')}`.toLowerCase().includes(q);
+      return !q || `${m.name} ${m.type} ${m.description ?? ''} ${m.tags.map(tagText).join(' ')}`.toLowerCase().includes(q);
     });
   }, [list, f, descendants]);
 
@@ -245,7 +246,7 @@ function MonitorCard({ m, selecting, selected, onToggle, onQuick }: RowProps) {
         {selecting && <Check m={m} selected={selected} onToggle={onToggle} />}
         <div className="min-w-0 flex-1">
           <CardLink m={m} selecting={selecting} onToggle={onToggle} className="block truncate font-medium text-slate-900 no-underline hover:underline dark:text-slate-100" />
-          <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500"><span className="font-mono">{m.type}</span>{m.flapping && <Badge tone="amber">{t('monitors.flapping')}</Badge>}{m.anomaly && <Badge tone="violet">{t('monitors.slowdown')}</Badge>}{m.tags.map((x) => <span key={x.id} className="rounded px-1.5 py-0.5 text-[11px] text-white" style={{ background: x.color }}>{x.name}</span>)}</div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500"><span className="font-mono">{m.type}</span>{m.flapping && <Badge tone="amber">{t('monitors.flapping')}</Badge>}{m.anomaly && <Badge tone="violet">{t('monitors.slowdown')}</Badge>}{m.tags.map((x) => <span key={`${x.id}:${x.value}`} className="rounded px-1.5 py-0.5 text-[11px] text-white" style={{ background: x.color }}>{tagText(x)}</span>)}</div>
         </div>
         <StatusBadge status={s} /><QuickToggle m={m} onQuick={onQuick} />
       </div>

@@ -102,7 +102,7 @@ function Builder() {
           {rep.rows.length === 0 ? <EmptyState title={t('reports.empty')} /> : (
             <div className="overflow-x-auto">
               <table className="tbl">
-                <thead><tr><th>{t('reports.monitor')}</th><th>{t('reports.group')}</th><th className="text-right">{t('reports.uptime')}</th><th className="text-right">{t('reports.downtime')}</th><th className="text-right">{t('reports.incidents')}</th><th className="text-right">{t('reports.mttr')}</th><th className="text-right">{t('reports.avg')}</th><th className="text-right">{t('reports.p95')}</th><th className="text-right">{t('reports.checks')}</th></tr></thead>
+                <thead><tr><th>{t('reports.monitor')}</th><th>{t('reports.group')}</th><th className="text-right">{t('reports.uptime')}</th><th className="text-right">{t('reports.downtime')}</th><th className="text-right">{t('reports.incidents')}</th><th className="text-right" title={t('reports.mttrTip')}>{t('reports.mttr')}</th><th className="text-right" title={t('stat.avg.tip')}>{t('reports.avg')}</th><th className="text-right" title={t('stat.p95.tip')}>{t('stat.p95')}</th><th className="text-right">{t('reports.checks')}</th></tr></thead>
                 <tbody>{rep.rows.map((r) => (
                   <tr key={r.monitorId}>
                     <td className="font-medium">{r.name}</td><td>{r.group ?? '–'}</td>

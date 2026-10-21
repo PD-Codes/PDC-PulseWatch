@@ -370,10 +370,10 @@ describe('Uptime Kuma import: monitor types', () => {
     const { doc } = await convertFull();
     const mon = (n: string) => doc.monitors!.find((m) => m.name === n) as Record<string, any>;
     const site = mon('Full site');
-    expect(site).toMatchObject({ type: 'http', group: 'Infra', description: 'Main site', tags: ['prod'], config: { method: 'POST', maxRedirects: 3, authType: 'basic', basicUser: 'u', tlsExpiryDays: 21, headers: { 'X-Token': 'abc', 'Content-Type': 'application/json' } } });
+    expect(site).toMatchObject({ type: 'http', group: 'Infra', description: 'Main site', tags: [{ name: 'prod', value: 'eu' }], config: { method: 'POST', maxRedirects: 3, authType: 'basic', basicUser: 'u', tlsExpiryDays: 21, headers: { 'X-Token': 'abc', 'Content-Type': 'application/json' } } });
     expect(site.notifications.map((n: any) => n.channel)).toEqual(['Full ntfy']);
     const notes = site.notes.join(' | ');
-    for (const re of [/tag "prod" had the value "eu"/, /Resend notification every 5/, /proxy/, /"Full pagerduty"/, /Upside down/]) expect(notes).toMatch(re);
+    for (const re of [/Resend notification every 5/, /proxy/, /"Full pagerduty"/, /Upside down/]) expect(notes).toMatch(re);
     expect(mon('Docker remote').config.endpoint).toBe('http://10.0.0.5:2375');
     expect(mon('Docker local').config.endpoint).toBe('/run/docker.sock');
     expect(mon('Docker lost').config.endpoint).toBe('/var/run/docker.sock');
@@ -477,6 +477,7 @@ describe('Uptime Kuma import: maintenance, settings and the overview', () => {
     expect([await endpoint('Docker remote'), await endpoint('Docker local')]).toEqual(['http://10.0.0.5:2375', '/run/docker.sock']);
     expect(mons.find((m) => m.name === 'Clock').type).toBe('ntp');
     expect(mons.some((m) => m.name === 'Tailscale')).toBe(false);
+    expect(mons.find((m) => m.name === 'Full site').tags.map((x: any) => [x.name, x.value])).toEqual([['prod', 'eu']]); // the Kuma tag value is kept
     const page = await t.ctx.db.selectFrom('status_pages').select(['id', 'is_default']).where('slug', '=', 'full').executeTakeFirstOrThrow();
     expect(page.is_default).toBe(1); // Kuma's entry page
     const announcements = () => t.ctx.db.selectFrom('status_page_announcements').select(['kind', 'title', 'body']).where('page_id', '=', page.id).execute();
