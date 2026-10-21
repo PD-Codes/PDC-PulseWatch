@@ -1,15 +1,15 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Plus } from 'lucide-react';
+import { AlertTriangle, Eye, EyeOff, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { IncidentStatusBadge, INCIDENT_STATUSES, MonitorPicker, SeverityBadge, useGroupsQ, useMonitorsQ } from '../components/ops-shared';
-import { Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Textarea, Toggle, useToast } from '../components/ui';
-import { ApiError, get, post, qs } from '../lib/api';
+import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Textarea, Toggle, useToast } from '../components/ui';
+import { ApiError, get, patch, post, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { fmtDuration, relTime } from '../lib/format';
 import { useT } from '../lib/i18n';
 
-interface Incident { id: number; title: string; status: string; severity: string; source: string; startedAt: string; acknowledgedAt: string | null; resolvedAt: string | null; assignee: { id: number; name: string } | null; monitors: { id: number; name: string }[] }
+interface Incident { id: number; title: string; status: string; severity: string; source: string; startedAt: string; acknowledgedAt: string | null; resolvedAt: string | null; assignee: { id: number; name: string } | null; monitors: { id: number; name: string }[]; hidden: boolean }
 interface Stats { days: number; total: number; open: number; mttrSeconds: number | null; mttaSeconds: number | null; topMonitors: { id: number; name: string; incidents: number }[] }
 const PAGE = 30;
 
@@ -23,6 +23,12 @@ export default function Incidents() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const toast = useToast();
+  // takes an incident off the status pages (or puts it back) without deleting it
+  const hide = useMutation({
+    mutationFn: (v: { id: number; hidden: boolean }) => patch(`/api/incidents/${v.id}`, { hidden: v.hidden }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['incidents'] }),
+    onError: (e) => toast(e instanceof ApiError ? e.message : t('common.failed'), 'error'),
+  });
   const [status, setStatus] = useState('');
   const [days, setDays] = useState(30);
   const [creating, setCreating] = useState(false);
@@ -71,16 +77,17 @@ export default function Incidents() {
         ) : (
           <div className="overflow-x-auto">
             <table className="tbl">
-              <thead><tr><th>{t('incidents.col.incident')}</th><th>{t('common.status')}</th><th className="hidden md:table-cell">{t('incidents.col.monitors')}</th><th className="hidden sm:table-cell">{t('incidents.col.started')}</th><th className="hidden lg:table-cell">{t('incidents.col.duration')}</th><th className="hidden lg:table-cell">{t('incidents.assignee')}</th></tr></thead>
+              <thead><tr><th>{t('incidents.col.incident')}</th><th>{t('common.status')}</th><th className="hidden md:table-cell">{t('incidents.col.monitors')}</th><th className="hidden sm:table-cell">{t('incidents.col.started')}</th><th className="hidden lg:table-cell">{t('incidents.col.duration')}</th><th className="hidden lg:table-cell">{t('incidents.assignee')}</th><th><span className="sr-only">{t('incidents.hide')}</span></th></tr></thead>
               <tbody>
                 {items.map((i) => (
                   <tr key={i.id}>
-                    <td className="max-w-xs"><div className="flex items-center gap-2"><SeverityBadge severity={i.severity} /><Link to={`/incidents/${i.id}`} className="truncate font-medium">{i.title}</Link></div>{i.source === 'manual' && <span className="text-xs text-slate-400">{t('incidents.manual')}</span>}</td>
+                    <td className="max-w-xs"><div className="flex items-center gap-2"><SeverityBadge severity={i.severity} /><Link to={`/incidents/${i.id}`} className="truncate font-medium">{i.title}</Link>{i.hidden && <Badge tone="gray"><EyeOff className="h-3 w-3" aria-hidden />{t('incidents.hidden')}</Badge>}</div>{i.source === 'manual' && <span className="text-xs text-slate-400">{t('incidents.manual')}</span>}</td>
                     <td><IncidentStatusBadge status={i.status} /></td>
                     <td className="hidden max-w-[14rem] truncate md:table-cell">{i.monitors.map((m, k) => <span key={m.id}>{k > 0 && ', '}<Link to={`/monitors/${m.id}`}>{m.name}</Link></span>)}</td>
                     <td className="hidden whitespace-nowrap sm:table-cell" title={i.startedAt}>{relTime(i.startedAt)}</td>
                     <td className="hidden whitespace-nowrap lg:table-cell">{fmtDuration(((i.resolvedAt ? new Date(i.resolvedAt).getTime() : Date.now()) - new Date(i.startedAt).getTime()) / 1000)}</td>
                     <td className="hidden lg:table-cell">{i.assignee?.name ?? '–'}</td>
+                  <td>{can('editor') && <Button size="sm" variant="ghost" aria-label={i.hidden ? t('incidents.unhide') : t('incidents.hide')} title={i.hidden ? t('incidents.unhide') : t('incidents.hide')} onClick={() => hide.mutate({ id: i.id, hidden: !i.hidden })}>{i.hidden ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}</Button>}</td>
                   </tr>
                 ))}
               </tbody>

@@ -222,6 +222,10 @@ In the status page editor an announcement is one click away: pick *Info*, *Maint
 
 Each status page has its own history length (14, 30, 60, 90, 120, 150 or 180 days, default 90). In the editor, *Add a whole group* adds a monitor group, optionally with its subgroups, as sections; monitors already on the page are skipped.
 
+The *Address (slug)* of a new status page follows the title as you type (`Public Services` becomes `public-services`, umlauts become `ae`, `oe`, `ue`, `ss`) until you edit it by hand; clearing the field makes it follow the title again.
+
+**Past incidents:** the public page lists resolved incidents of the last 1, 3, 7, 14, 30 (default), 60, 90, 180 or 365 days, or none at all (switch *Show past incidents* off). Ongoing incidents always show. Long lists are paged (5, 10, 20 or 50 per page, default 10); visitors can change the page size themselves. The RSS feed follows the same age limit. A single incident can be taken off every status page and feed without deleting it: use the eye button in *Incidents* or the *Hide from status pages* switch on the incident (hidden ones carry a *Hidden* badge). The settings are part of the configuration export and import.
+
 ## Certificates and TLS errors
 
 *Settings > Certificates* imports private CA certificates (PEM, paste or file). They are trusted in addition to the built-in roots by HTTP, TLS, SMTP, MQTT, database, WebSocket and gRPC checks, on the server and on remote probes (probes receive them with their job list). Expired and duplicate certificates are skipped and reported. Processes reload the store every 30 seconds.

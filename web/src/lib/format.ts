@@ -1,6 +1,10 @@
 let locale = 'en';
 export const setFormatLocale = (l: string) => { locale = l; };
 
+/** "Public Services" becomes "public-services"; German umlauts turn into ae/oe/ue/ss, other accents are dropped. */
+export const slugify = (s: string) => s.toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 63).replace(/-+$/, '');
+
 export const fmtMs = (v: number | null | undefined) => (v == null ? '–' : v >= 10_000 ? `${(v / 1000).toFixed(1)} s` : v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${Math.round(v)} ms`);
 export const fmtPct = (v: number | null | undefined, digits = 2) => (v == null ? '–' : `${v.toFixed(digits).replace(/\.?0+$/, '') || '0'}%`);
 

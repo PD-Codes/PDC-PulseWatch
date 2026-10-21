@@ -15,7 +15,7 @@ const esc = (s: string) => s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '').replac
 const DAY = 86_400_000;
 export const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180] as const;
 
-type Page = { id: number; slug: string; title: string; description: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; show_history: number; history_days: number; is_default: number };
+type Page = { id: number; slug: string; title: string; description: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; show_history: number; history_days: number; is_default: number; incident_days: number; incident_page_size: number };
 const unlockCookie = (p: Page) => `pw_sp_${p.id}`;
 const unlockValue = (p: Page) => hmac(`status-unlock:${p.id}:${p.password_hash}`);
 
@@ -40,6 +40,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     isPublic: Type.Boolean(), password: Type.Optional(Type.Union([Type.String({ minLength: 4, maxLength: 200 }), Type.Null()])), ssoRequired: Type.Optional(Type.Boolean()),
     branding: Type.Optional(Type.Object({ logoUrl: Type.Optional(Type.String({ maxLength: 2000 })), primaryColor: Type.Optional(Type.String({ pattern: '^#[0-9a-fA-F]{6}$' })), footer: Type.Optional(Type.String({ maxLength: 500 })) })),
     customCss: Type.Optional(Type.Union([Type.String({ maxLength: 50_000 }), Type.Null()])), showHistory: Type.Optional(Type.Boolean()), historyDays: Type.Optional(Type.Union(HISTORY_DAYS.map((d) => Type.Literal(d)))), isDefault: Type.Optional(Type.Boolean()),
+    incidentDays: Type.Optional(Type.Integer({ minimum: 0, maximum: 365 })), incidentPageSize: Type.Optional(Type.Integer({ minimum: 5, maximum: 50 })),
     sections: Type.Array(Type.Object({ name: Type.String({ minLength: 1, maxLength: 255 }), components: Type.Array(compBody) }), { maxItems: 50 }),
     components: Type.Optional(Type.Array(compBody)),
   });
@@ -52,7 +53,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const map = (c: typeof comps[number]) => ({ monitorId: c.monitor_id, displayName: c.display_name });
     return {
       id: p.id, slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), hasPassword: !!p.password_hash, ssoRequired: bool(p.sso_required),
-      branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default),
+      branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size,
       sections: sections.map((s) => ({ id: s.id, name: s.name, components: comps.filter((c) => c.section_id === s.id).map(map) })), components: comps.filter((c) => !c.section_id).map(map),
     };
   };
@@ -85,6 +86,8 @@ export async function statusPageRoutes(app: FastifyInstance) {
       slug: b.slug, title: b.title, description: b.description ?? null, domain: b.domain ? String(b.domain).toLowerCase() : null, is_public: b.isPublic ? 1 : 0, sso_required: b.ssoRequired ? 1 : 0,
       branding: JSON.stringify(b.branding ?? {}), custom_css: b.customCss ?? null, show_history: b.showHistory === false ? 0 : 1, history_days: b.historyDays ?? 90,
     };
+    if (b.incidentDays !== undefined) values.incident_days = b.incidentDays;
+    if (b.incidentPageSize !== undefined) values.incident_page_size = b.incidentPageSize;
     if (b.isDefault !== undefined) values.is_default = b.isDefault ? 1 : 0;
     if (b.password === null) values.password_hash = null; else if (typeof b.password === 'string') values.password_hash = await hashPassword(b.password);
     try {
@@ -243,11 +246,11 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const now = new Date();
     const announcements = await db.selectFrom('status_page_announcements').select(['id', 'kind', 'title', 'body', 'starts_at', 'ends_at']).where('page_id', '=', p.id).where('starts_at', '<=', now).where((eb) => eb.or([eb('ends_at', 'is', null), eb('ends_at', '>', now)])).orderBy('starts_at', 'desc').execute();
     const maint = ctx.maintenance.activeWindows().filter((w) => w.announce && ids.some((i) => w.monitorIds.has(i))).map((w) => ({ id: w.id, name: w.name, description: w.description, endsAt: w.endsAt }));
-    const incidents = ids.length ? await listIncidents(ids, new Date(now.getTime() - (history ? 30 : 7) * DAY), new Map(comps.map((c) => [c.monitor_id, c.display_name || c.name]))) : [];
+    const incidents = ids.length ? await listIncidents(ids, new Date(now.getTime() - p.incident_days * DAY), new Map(comps.map((c) => [c.monitor_id, c.display_name || c.name]))) : [];
     const all = comps.map((c) => publicStatus(c.status ? { status: c.status, overlay: c.overlay ?? 'none' } : undefined));
     const overall = all.includes('outage') ? (all.every((s) => s === 'outage') ? 'outage' : 'partial') : all.some((s) => s === 'degraded') ? 'degraded' : all.includes('maintenance') ? 'maintenance' : 'operational';
     return {
-      slug: p.slug, title: p.title, description: p.description, branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: history, historyDays: p.history_days, overall, generatedAt: now,
+      slug: p.slug, title: p.title, description: p.description, branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: history, historyDays: p.history_days, incidentDays: p.incident_days, incidentPageSize: p.incident_page_size, overall, generatedAt: now,
       sections: sections.map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map(shape) })), components: comps.filter((c) => !c.section_id).map(shape),
       announcements: announcements.map((a) => ({ id: a.id, kind: a.kind, title: a.title, body: a.body, startsAt: a.starts_at, endsAt: a.ends_at })), maintenance: maint,
       incidents: incidents.filter((i) => !i.resolvedAt), recentIncidents: incidents.filter((i) => i.resolvedAt),
@@ -261,11 +264,11 @@ export async function statusPageRoutes(app: FastifyInstance) {
     return { ids: rows.map((r) => r.monitor_id), names: new Map(rows.map((r) => [r.monitor_id, r.display_name || r.name] as [number, string])) };
   }
 
-  /** Incidents touching these monitors; manual incidents appear only when flagged public. */
+  /** Incidents touching these monitors; manual incidents appear only when flagged public, and none the operator hid. */
   async function listIncidents(monitorIds: number[], since: Date, names: Map<number, string>) {
     const rows = await db.selectFrom('incidents as i').innerJoin('incident_monitors as im', 'im.incident_id', 'i.id')
       .select(['i.id', 'i.title', 'i.status', 'i.severity', 'i.source', 'i.monitor_id', 'i.started_at', 'i.resolved_at', 'i.public']).distinct()
-      .where('im.monitor_id', 'in', monitorIds).where((eb) => eb.or([eb('i.resolved_at', 'is', null), eb('i.resolved_at', '>=', since)])).orderBy('i.started_at', 'desc').limit(100).execute();
+      .where('im.monitor_id', 'in', monitorIds).where('i.hidden', '=', 0).where((eb) => eb.or([eb('i.resolved_at', 'is', null), eb('i.resolved_at', '>=', since)])).orderBy('i.started_at', 'desc').limit(100).execute();
     const visible = rows.filter((r) => r.source === 'auto' || bool(r.public));
     const updates = visible.length ? await db.selectFrom('incident_updates').select(['incident_id', 'ts', 'kind', 'status', 'body']).where('incident_id', 'in', visible.filter((r) => bool(r.public)).map((r) => r.id).concat(0)).where('kind', 'in', ['status', 'resolve', 'postmortem']).orderBy('ts', 'desc').execute() : [];
     // an automatic incident is titled with the internal monitor name, the page shows the name chosen for it
@@ -289,7 +292,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const p = await gate(req, reply, (req.params as any).slug, true);
     if (!p) return;
     const { ids, names } = await pageMonitors(p.id);
-    const inc = ids.length ? await listIncidents(ids, new Date(Date.now() - 30 * DAY), names) : [];
+    const inc = ids.length ? await listIncidents(ids, new Date(Date.now() - p.incident_days * DAY), names) : [];
     const link = `${config.baseUrl}/status/${p.slug}`;
     const items = inc.map((i) => `<item><title>${esc(`[${i.resolvedAt ? 'Resolved' : 'Ongoing'}] ${i.title}`)}</title><link>${esc(link)}</link><guid isPermaLink="false">${esc(`${p.slug}-incident-${i.id}-${i.resolvedAt ? 'r' : 'o'}`)}</guid><pubDate>${new Date(i.resolvedAt ?? i.startedAt).toUTCString()}</pubDate><description>${esc(i.updates[0]?.body ?? i.title)}</description></item>`).join('');
     return reply.type('application/rss+xml; charset=utf-8').send(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${esc(p.title)}</title><link>${esc(link)}</link><description>${esc(p.description ?? `${p.title} status`)}</description>${items}</channel></rss>`);

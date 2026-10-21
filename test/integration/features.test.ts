@@ -204,3 +204,52 @@ describe('recent checks status filter', () => {
     expect((await c.get(`/api/monitors/${id}/heartbeats?page=1&status=abc`)).status).toBe(400);
   });
 });
+
+describe('past incidents on a status page', () => {
+  it('limits them by age, can switch them off, and drops incidents an operator hid', async () => {
+    const m = await push('pi-monitor', { active: false });
+    const body = { slug: 'pi', title: 'Past incidents', isPublic: true, sections: [], components: [{ monitorId: m.json.id }] };
+    const page = await c.post('/api/status-pages', body);
+    const monitorId = m.json.id as number;
+    const DAY = 86_400_000;
+    const resolved = async (title: string, daysAgo: number) => {
+      const at = new Date(Date.now() - daysAgo * DAY);
+      const id = Number((await t.ctx.db.insertInto('incidents').values({ title, severity: 'major', source: 'manual', public: 1, started_at: at, resolved_at: new Date(at.getTime() + 60_000), status: 'resolved', monitor_id: monitorId }).executeTakeFirstOrThrow()).insertId);
+      await t.ctx.db.insertInto('incident_monitors').values({ incident_id: id, monitor_id: monitorId }).execute();
+      return id;
+    };
+    const fresh = await resolved('two days ago', 2), mid = await resolved('twenty days ago', 20);
+    await resolved('forty days ago', 40);
+    const open = Number((await t.ctx.db.insertInto('incidents').values({ title: 'still open', severity: 'major', source: 'manual', public: 1, started_at: new Date(), status: 'open', monitor_id: monitorId }).executeTakeFirstOrThrow()).insertId);
+    await t.ctx.db.insertInto('incident_monitors').values({ incident_id: open, monitor_id: monitorId }).execute();
+
+    const view = async () => (await t.client().get('/api/public/status/pi')).json as { incidentDays: number; incidentPageSize: number; incidents: { title: string }[]; recentIncidents: { title: string }[] };
+    const titles = async () => (await view()).recentIncidents.map((x) => x.title);
+    let v = await view();
+    expect([v.incidentDays, v.incidentPageSize]).toEqual([30, 10]); // defaults
+    expect(await titles()).toEqual(['two days ago', 'twenty days ago']);
+
+    expect((await c.put(`/api/status-pages/${page.json.id}`, { ...body, incidentDays: 7, incidentPageSize: 5 })).status).toBe(200);
+    v = await view();
+    expect([v.incidentDays, v.incidentPageSize, await titles()]).toEqual([7, 5, ['two days ago']]);
+    expect((await c.get(`/api/status-pages/${page.json.id}`)).json).toMatchObject({ incidentDays: 7, incidentPageSize: 5 });
+
+    expect((await c.put(`/api/status-pages/${page.json.id}`, { ...body, incidentDays: 0 })).status).toBe(200);
+    v = await view();
+    expect([await titles(), v.incidents.map((x) => x.title)]).toEqual([[], ['still open']]); // ongoing incidents always show
+    expect((await c.put(`/api/status-pages/${page.json.id}`, { ...body, incidentDays: 400 })).status).toBe(400);
+
+    await c.put(`/api/status-pages/${page.json.id}`, { ...body, incidentDays: 30 });
+    expect((await c.call('PATCH', `/api/incidents/${fresh}`, { hidden: true })).status).toBe(200);
+    expect(await titles()).toEqual(['twenty days ago']);
+    const rss = (await t.client().get('/api/public/status/pi/rss')).body;
+    expect(rss).not.toContain('two days ago');
+    expect(rss).toContain('twenty days ago');
+    expect(((await c.get('/api/incidents')).json as { id: number; hidden: boolean }[]).find((x) => x.id === fresh)?.hidden).toBe(true); // still listed in the dashboard
+    await c.call('PATCH', `/api/incidents/${fresh}`, { hidden: false });
+    expect(await titles()).toEqual(['two days ago', 'twenty days ago']);
+    expect(mid).toBeGreaterThan(0);
+    const exported = JSON.parse((await c.get('/api/config/export?format=json')).body).statusPages.find((x: any) => x.slug === 'pi');
+    expect([exported.incidentDays, exported.incidentPageSize]).toEqual([30, 5]); // the settings travel with export and import
+  });
+});

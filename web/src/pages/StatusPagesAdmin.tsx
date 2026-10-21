@@ -5,27 +5,29 @@ import { Link } from 'react-router-dom';
 import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
 import { del, errorMessage, get, post, put, type Group, type MonitorItem } from '../lib/api';
 import { useAuth, useMeta } from '../lib/auth';
-import { fmtDateTime } from '../lib/format';
+import { fmtDateTime, slugify } from '../lib/format';
 import { useT } from '../lib/i18n';
 
 interface PageRow { id: number; slug: string; title: string; domain: string | null; isPublic: boolean; protected: boolean; isDefault: boolean }
 interface Comp { monitorId: number; displayName: string | null }
 interface Full {
   id: number; slug: string; title: string; description: string | null; domain: string | null; isPublic: boolean; hasPassword: boolean; ssoRequired: boolean;
-  branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number; isDefault: boolean;
+  branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number; isDefault: boolean; incidentDays: number; incidentPageSize: number;
   sections: { name: string; components: Comp[] }[]; components: Comp[];
 }
 /** Editor model: group 0 is always the ungrouped list (name === null). */
 interface Grp { name: string | null; items: Comp[] }
 interface Form {
-  slug: string; title: string; description: string; domain: string; isPublic: boolean; ssoRequired: boolean; showHistory: boolean; historyDays: number; isDefault: boolean;
+  slug: string; title: string; description: string; domain: string; isPublic: boolean; ssoRequired: boolean; showHistory: boolean; historyDays: number; isDefault: boolean; incidentDays: number; incidentPageSize: number;
   pwMode: 'keep' | 'set' | 'remove'; password: string; logoUrl: string; primaryColor: string; footer: string; customCss: string; groups: Grp[];
 }
 const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180];
+const INCIDENT_DAYS = [1, 3, 7, 14, 30, 60, 90, 180, 365];
+const INCIDENT_PAGE_SIZES = [5, 10, 20, 50];
 type Tab = 'general' | 'components' | 'appearance' | 'announcements' | 'subscribers';
 
 const toForm = (p?: Full): Form => ({
-  slug: p?.slug ?? '', title: p?.title ?? '', description: p?.description ?? '', domain: p?.domain ?? '', isPublic: p?.isPublic ?? true, ssoRequired: p?.ssoRequired ?? false, showHistory: p?.showHistory ?? true, historyDays: p?.historyDays ?? 90, isDefault: p?.isDefault ?? false,
+  slug: p?.slug ?? '', title: p?.title ?? '', description: p?.description ?? '', domain: p?.domain ?? '', isPublic: p?.isPublic ?? true, ssoRequired: p?.ssoRequired ?? false, showHistory: p?.showHistory ?? true, historyDays: p?.historyDays ?? 90, incidentDays: p?.incidentDays ?? 30, incidentPageSize: p?.incidentPageSize ?? 10, isDefault: p?.isDefault ?? false,
   pwMode: 'keep', password: '', logoUrl: p?.branding.logoUrl ?? '', primaryColor: p?.branding.primaryColor ?? '', footer: p?.branding.footer ?? '', customCss: p?.customCss ?? '',
   groups: [{ name: null, items: p?.components ?? [] }, ...(p?.sections ?? []).map((s) => ({ name: s.name, items: s.components }))],
 });
@@ -112,6 +114,8 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
   const [f, setF] = useState<Form>(initial);
   const [tab, setTab] = useState<Tab>('general');
   const [err, setErr] = useState<string | null>(null);
+  // a new page follows its title until the slug is typed by hand (emptying the field hands control back); an existing slug is a public URL and stays put
+  const [slugOwn, setSlugOwn] = useState(id !== 'new');
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((p) => ({ ...p, [k]: v }));
   const monitors = useQuery({ queryKey: ['monitors'], queryFn: () => get<MonitorItem[]>('/api/monitors') });
 
@@ -119,7 +123,7 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
     mutationFn: () => {
       const comp = (c: Comp) => ({ monitorId: c.monitorId, displayName: c.displayName?.trim() || null });
       const body = {
-        slug: f.slug.trim().toLowerCase(), title: f.title.trim(), description: f.description.trim() || null, domain: f.domain.trim().toLowerCase() || null, isPublic: f.isPublic, ssoRequired: f.ssoRequired, showHistory: f.showHistory, historyDays: f.historyDays,
+        slug: f.slug.trim().toLowerCase(), title: f.title.trim(), description: f.description.trim() || null, domain: f.domain.trim().toLowerCase() || null, isPublic: f.isPublic, ssoRequired: f.ssoRequired, showHistory: f.showHistory, historyDays: f.historyDays, incidentDays: f.incidentDays, incidentPageSize: f.incidentPageSize,
         // only send the home-page flag when this form changed it, so a stale form cannot take the home page back from another page
         ...(f.isDefault !== initial.isDefault ? { isDefault: f.isDefault } : {}),
         ...(f.pwMode === 'set' ? { password: f.password } : f.pwMode === 'remove' ? { password: null } : {}),
@@ -155,8 +159,8 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
         {err && <div role="alert" className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">{err}</div>}
         {tab === 'general' && (
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label={t('statuspages.f.title')}>{(i) => <Input id={i} value={f.title} onChange={(e) => set('title', e.target.value)} maxLength={255} />}</Field>
-            <Field label={t('statuspages.f.slug')} hint={t('statuspages.f.slugHint')}>{(i) => <Input id={i} value={f.slug} onChange={(e) => set('slug', e.target.value)} maxLength={63} placeholder="status" />}</Field>
+            <Field label={t('statuspages.f.title')}>{(i) => <Input id={i} value={f.title} onChange={(e) => setF((p) => ({ ...p, title: e.target.value, ...(slugOwn ? {} : { slug: slugify(e.target.value) }) }))} maxLength={255} />}</Field>
+            <Field label={t('statuspages.f.slug')} hint={t('statuspages.f.slugHint')}>{(i) => <Input id={i} value={f.slug} onChange={(e) => { setSlugOwn(e.target.value !== ''); set('slug', e.target.value); }} maxLength={63} placeholder="status" />}</Field>
             <Field label={t('statuspages.f.description')} className="sm:col-span-2">{(i) => <Textarea id={i} rows={2} value={f.description} onChange={(e) => set('description', e.target.value)} maxLength={5000} />}</Field>
             <Field label={t('statuspages.f.domain')} hint={t('statuspages.f.domainHint')} className="sm:col-span-2">{(i) => <Input id={i} value={f.domain} onChange={(e) => set('domain', e.target.value)} placeholder="status.example.com" />}</Field>
             <div className="flex flex-col items-start gap-3 sm:col-span-2">
@@ -169,6 +173,18 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
                   {(i) => <Select id={i} value={f.historyDays} onChange={(e) => set('historyDays', Number(e.target.value))}>{HISTORY_DAYS.map((d) => <option key={d} value={d}>{t('statuspages.f.historyDaysOpt', { n: d })}</option>)}</Select>}
                 </Field>
               )}
+              <Toggle checked={f.incidentDays > 0} onChange={(v) => set('incidentDays', v ? 30 : 0)} label={t('statuspages.f.pastIncidents')} />
+              {f.incidentDays > 0 && (
+                <div className="flex flex-wrap gap-3">
+                  <Field label={t('statuspages.f.incidentDays')}>
+                    {(i) => <Select id={i} value={f.incidentDays} onChange={(e) => set('incidentDays', Number(e.target.value))}>{INCIDENT_DAYS.map((d) => <option key={d} value={d}>{d === 1 ? t('statuspages.f.dayOne') : t('statuspages.f.historyDaysOpt', { n: d })}</option>)}</Select>}
+                  </Field>
+                  <Field label={t('statuspages.f.incidentPageSize')}>
+                    {(i) => <Select id={i} value={f.incidentPageSize} onChange={(e) => set('incidentPageSize', Number(e.target.value))}>{INCIDENT_PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}</Select>}
+                  </Field>
+                </div>
+              )}
+              <p className="hint">{t('statuspages.f.incidentHint')}</p>
             </div>
             <Field label={t('statuspages.f.password')} hint={t('statuspages.f.passwordHint')} className="sm:col-span-2">
               {(i) => (

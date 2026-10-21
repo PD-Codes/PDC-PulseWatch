@@ -176,3 +176,59 @@ test('explains the latency percentiles in plain words', async ({ page }) => {
   await expect(page.getByText('Typical (p50)').first()).toBeVisible();
   await expect(page.getByText(/half of the checks were faster/i).first()).toBeVisible();
 });
+
+test('fills the status page slug from the title until it is edited by hand', async ({ page }) => {
+  await login(page);
+  await page.goto('/status-pages');
+  await page.getByRole('button', { name: 'New status page' }).first().click();
+  const title = page.getByLabel('Title', { exact: true });
+  const slug = page.getByLabel('URL slug');
+  await title.fill('Public Services');
+  await expect(slug).toHaveValue('public-services');
+  await slug.fill('pub');
+  await title.fill('Public Services EU');
+  await expect(slug).toHaveValue('pub'); // a hand-made slug is left alone
+  await slug.fill('');
+  await title.fill('Öffentliche Dienste');
+  await expect(slug).toHaveValue('oeffentliche-dienste'); // an emptied slug follows the title again
+});
+
+test('hides an incident from the dashboard and tunes the past-incident settings', async ({ page }) => {
+  await login(page);
+  await page.goto('/incidents');
+  const rows = page.locator('tbody tr');
+  await expect(rows.first()).toBeVisible();
+  const first = rows.first();
+  await first.getByRole('button', { name: 'Hide from status pages' }).click();
+  await expect(first.getByText('Hidden')).toBeVisible();
+  await first.getByRole('button', { name: 'Show on status pages' }).click();
+  await expect(first.getByText('Hidden')).toBeHidden();
+
+  await page.goto('/status-pages');
+  await page.getByRole('button', { name: 'Edit: Demo Status' }).click();
+  await expect(page.getByLabel('Show resolved incidents of the last')).toBeVisible();
+  await page.getByRole('switch', { name: 'Show past incidents' }).click();
+  await expect(page.getByLabel('Show resolved incidents of the last')).toBeHidden();
+  await page.getByRole('switch', { name: 'Show past incidents' }).click();
+  await expect(page.getByLabel('Incidents per page')).toBeVisible();
+});
+
+test('pages the past incidents on the public status page', async ({ page, request }) => {
+  const auth = await request.post('/api/auth/login', { data: { username: 'admin', password: 'e2e-password-1' } });
+  const headers = { 'x-csrf-token': (await auth.json()).csrf };
+  const pages = await (await request.get('/api/status-pages')).json();
+  const demo = pages.find((p: { slug: string }) => p.slug === 'demo');
+  const full = await (await request.get(`/api/status-pages/${demo.id}`)).json();
+  const monitorId = [...full.sections.flatMap((s: { components: unknown[] }) => s.components), ...full.components][0].monitorId;
+  for (let n = 1; n <= 7; n++) {
+    const inc = await (await request.post('/api/incidents', { headers, data: { title: `pager-test ${n}`, severity: 'minor', monitorIds: [monitorId], public: true } })).json();
+    expect((await request.post(`/api/incidents/${inc.id}/resolve`, { headers })).ok()).toBe(true);
+  }
+  await page.goto('/status/demo');
+  const cards = page.getByText(/^pager-test \d$/);
+  await expect(page.getByRole('heading', { name: 'Past incidents' })).toBeVisible();
+  await page.getByLabel('Per page').selectOption('5');
+  await expect(cards).toHaveCount(5);
+  await page.getByRole('button', { name: 'Next page' }).click();
+  await expect(cards).toHaveCount(2);
+});

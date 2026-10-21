@@ -11,7 +11,7 @@ import { useT } from '../lib/i18n';
 
 interface Detail {
   id: number; title: string; status: string; severity: string; source: string; startedAt: string; acknowledgedAt: string | null; acknowledgedBy: string | null; resolvedAt: string | null;
-  assignee: { id: number; name: string } | null; public: boolean; postmortem: string | null; monitors: { id: number; name: string }[];
+  assignee: { id: number; name: string } | null; public: boolean; hidden: boolean; postmortem: string | null; monitors: { id: number; name: string }[];
   updates: { id: number; ts: string; kind: string; status: string | null; body: string | null; author: string | null }[];
 }
 const KIND_ICON: Record<string, React.ReactNode> = {
@@ -127,6 +127,7 @@ export default function IncidentDetail() {
                 {editor && !i.assignee && user && <button type="button" className="mt-1 text-xs underline" onClick={() => upd({ assigneeId: user.id })}>{t('incidents.assignMe')}</button>}
               </div>
               <Toggle disabled={!editor} checked={i.public} onChange={(v) => upd({ public: v })} label={t('incidents.field.public')} />
+              <div><Toggle disabled={!editor} checked={i.hidden} onChange={(v) => upd({ hidden: v })} label={t('incidents.field.hidden')} /><p className="hint">{t('incidents.hiddenHint')}</p></div>
             </div>
           </Card>
           <Card>

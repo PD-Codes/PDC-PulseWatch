@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Lock, Rss, Wrench, XCircle } from 'lucide-react';
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
+import { Pager } from '../components/Pager';
 import { Badge, Button, cx, ErrorBox, Field, Input, Loading, type Tone } from '../components/ui';
 import { ApiError, get, post } from '../lib/api';
 import { fmtDate, fmtDateTime, fmtPct, relTime } from '../lib/format';
@@ -14,7 +15,7 @@ interface Page {
   slug: string; title: string; description: string | null; branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number;
   overall: 'operational' | 'partial' | 'outage' | 'degraded' | 'maintenance'; generatedAt: string; sections: { name: string; components: Comp[] }[]; components: Comp[];
   announcements: { id: number; kind: 'info' | 'maintenance' | 'incident'; title: string; body: string | null; startsAt: string; endsAt: string | null }[];
-  maintenance: { id: number; name: string; description: string | null; endsAt: string }[]; incidents: Incident[]; recentIncidents: Incident[]; subscribe: { email: boolean };
+  maintenance: { id: number; name: string; description: string | null; endsAt: string }[]; incidents: Incident[]; recentIncidents: Incident[]; incidentDays: number; incidentPageSize: number; subscribe: { email: boolean };
 }
 
 const DOT: Record<CompStatus, string> = { operational: 'bg-emerald-500', outage: 'bg-red-500', degraded: 'bg-amber-500', maintenance: 'bg-sky-500', unknown: 'bg-slate-400' };
@@ -55,6 +56,21 @@ function Component({ comp, history, days }: { comp: Comp; history: boolean; days
 }
 
 const PHASES = new Set(['identified', 'fixing', 'monitoring']);
+
+/** Resolved incidents, paged on the client: the server already limited them to the page's maximum age. */
+function PastIncidents({ items, pageSize: initial, days }: { items: Incident[]; pageSize: number; days: number }) {
+  const t = useT();
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(initial);
+  const current = Math.min(page, Math.max(1, Math.ceil(items.length / pageSize)));
+  return (
+    <section aria-labelledby="inc-past" className="space-y-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 id="inc-past" className="text-lg font-semibold">{t('public.pastIncidents')}</h2><span className="text-xs text-slate-500">{days === 1 ? t('public.pastIncidentsDay') : t('public.pastIncidentsDays', { n: days })}</span></div>
+      {items.slice((current - 1) * pageSize, current * pageSize).map((i) => <IncidentCard key={i.id} inc={i} />)}
+      <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800 [&>nav]:border-t-0"><Pager page={current} pageSize={pageSize} total={items.length} onPage={setPage} onPageSize={setPageSize} sizes={[...new Set([5, 10, 20, 50, initial])].sort((a, b) => a - b)} /></div>
+    </section>
+  );
+}
 function IncidentCard({ inc }: { inc: Incident }) {
   const t = useT();
   return (
@@ -157,7 +173,7 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
         {page.components.length > 0 && list(page.components)}
         {page.sections.length === 0 && page.components.length === 0 && <p className="text-center text-sm text-slate-500">{t('public.noComponents')}</p>}
 
-        {page.recentIncidents.length > 0 && <section aria-labelledby="inc-past" className="space-y-3"><h2 id="inc-past" className="text-lg font-semibold">{t('public.pastIncidents')}</h2>{page.recentIncidents.map((i) => <IncidentCard key={i.id} inc={i} />)}</section>}
+        {page.recentIncidents.length > 0 && <PastIncidents items={page.recentIncidents} pageSize={page.incidentPageSize} days={page.incidentDays} />}
 
         {(page.subscribe.email || !unlocked) && (
           <section className="card space-y-3 p-4" aria-label={t('public.subscribeTitle')}>

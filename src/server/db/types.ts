@@ -70,7 +70,7 @@ export type IncidentStatus = 'open' | 'acknowledged' | 'identified' | 'fixing' |
 export interface IncidentsTable {
   id: Id; title: string; status: Generated<IncidentStatus>; severity: Generated<'minor' | 'major' | 'critical'>; source: Generated<'auto' | 'manual'>;
   monitor_id: number | null; started_at: Date; acknowledged_at: NTs; acknowledged_by: number | null; resolved_at: NTs; assignee_id: number | null;
-  postmortem: string | null; public: Flag; created_by: number | null; created_at: Ts;
+  postmortem: string | null; public: Flag; hidden: Flag; created_by: number | null; created_at: Ts;
 }
 export interface IncidentMonitorsTable { incident_id: number; monitor_id: number }
 export interface IncidentUpdatesTable { id: Id; incident_id: number; ts: Ts; user_id: number | null; kind: Generated<'note' | 'status' | 'ack' | 'assign' | 'resolve' | 'auto' | 'postmortem'>; status: IncidentStatus | null; body: string | null }
@@ -81,7 +81,7 @@ export interface MaintenanceWindowsTable {
 export interface MaintenanceTargetsTable { window_id: number; target_type: 'monitor' | 'group' | 'tag'; target_id: number }
 export interface StatusPagesTable {
   id: Id; slug: string; title: string; description: string | null; domain: string | null; is_public: Flag; password_hash: string | null; sso_required: Flag;
-  branding: string | null; custom_css: string | null; show_history: Flag; history_days: Generated<number>; is_default: Flag; created_at: Ts;
+  branding: string | null; custom_css: string | null; show_history: Flag; history_days: Generated<number>; is_default: Flag; incident_days: Generated<number>; incident_page_size: Generated<number>; created_at: Ts;
 }
 export interface StatusPageSectionsTable { id: Id; page_id: number; name: string; sort: Generated<number> }
 export interface StatusPageComponentsTable { id: Id; page_id: number; section_id: number | null; monitor_id: number; display_name: string | null; sort: Generated<number> }

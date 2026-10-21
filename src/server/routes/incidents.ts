@@ -36,7 +36,7 @@ export async function incidentRoutes(app: FastifyInstance) {
     const name = (id: number | null) => users.find((u) => u.id === id)?.display_name ?? null;
     return rows.map((r) => ({
       id: r.id, title: r.title, status: r.status, severity: r.severity, source: r.source, monitorId: !seen || (r.monitor_id && seen.includes(r.monitor_id)) ? r.monitor_id : null, startedAt: r.started_at, acknowledgedAt: r.acknowledged_at, acknowledgedBy: name(r.acknowledged_by),
-      resolvedAt: r.resolved_at, assignee: r.assignee_id ? { id: r.assignee_id, name: name(r.assignee_id) } : null, public: !!r.public, hasPostmortem: !!r.postmortem,
+      resolvedAt: r.resolved_at, assignee: r.assignee_id ? { id: r.assignee_id, name: name(r.assignee_id) } : null, public: !!r.public, hidden: !!r.hidden, hasPostmortem: !!r.postmortem,
       monitors: mons.filter((m) => m.incident_id === r.id).map((m) => ({ id: m.id, name: m.name })),
     }));
   }
@@ -148,14 +148,14 @@ export async function incidentRoutes(app: FastifyInstance) {
     return { id };
   });
 
-  const bodyPatch = Type.Object({ title: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })), severity: Type.Optional(Type.Union([Type.Literal('minor'), Type.Literal('major'), Type.Literal('critical')])), assigneeId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), public: Type.Optional(Type.Boolean()), postmortem: Type.Optional(Type.Union([Type.String({ maxLength: 50000 }), Type.Null()])) });
+  const bodyPatch = Type.Object({ title: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })), severity: Type.Optional(Type.Union([Type.Literal('minor'), Type.Literal('major'), Type.Literal('critical')])), assigneeId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), public: Type.Optional(Type.Boolean()), hidden: Type.Optional(Type.Boolean()), postmortem: Type.Optional(Type.Union([Type.String({ maxLength: 50000 }), Type.Null()])) });
   app.patch('/api/incidents/:id', { ...writer, schema: { tags: ['incidents'], params: Id, body: bodyPatch } }, async (req, reply) => {
     const id = (req.params as any).id; const b = req.body as any;
     const row = await db.selectFrom('incidents').select(['id', 'assignee_id', 'postmortem']).where('id', '=', id).executeTakeFirst();
     if (!row) return reply.code(404).send({ error: 'not_found' });
     if (!(await mayChange(req, reply, id))) return;
     const set: Record<string, unknown> = {};
-    if (b.title !== undefined) set.title = b.title; if (b.severity !== undefined) set.severity = b.severity; if (b.public !== undefined) set.public = b.public ? 1 : 0;
+    if (b.title !== undefined) set.title = b.title; if (b.severity !== undefined) set.severity = b.severity; if (b.public !== undefined) set.public = b.public ? 1 : 0; if (b.hidden !== undefined) set.hidden = b.hidden ? 1 : 0;
     if (b.assigneeId !== undefined) set.assignee_id = b.assigneeId; if (b.postmortem !== undefined) set.postmortem = b.postmortem;
     if (Object.keys(set).length) await db.updateTable('incidents').set(set).where('id', '=', id).execute();
     if (b.assigneeId !== undefined && b.assigneeId !== row.assignee_id) {
