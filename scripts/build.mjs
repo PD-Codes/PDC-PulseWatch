@@ -11,14 +11,15 @@ fs.rmSync(path.join(out, 'probe'), { recursive: true, force: true });
 
 // The server keeps its dependencies external (installed with `npm ci --omit=dev` in the image): packages such as
 // swagger-ui and pdfkit load assets from their own package directory at runtime and cannot be bundled.
-// The probe is self-contained and bundles everything except optional add-ons of the MongoDB driver that are never used.
-const optional = ['kerberos', '@mongodb-js/zstd', 'snappy', 'mongodb-client-encryption', '@aws-sdk/credential-providers', 'gcp-metadata', 'socks', 'aws4', 'pg-native', 'cloudflare:sockets'];
+// The probe is self-contained and bundles everything except optional add-ons that are never used: the MongoDB driver's extras and the native speedups of ssh2 (it falls back to pure JavaScript).
+const optional = ['kerberos', '@mongodb-js/zstd', 'snappy', 'mongodb-client-encryption', '@aws-sdk/credential-providers', 'gcp-metadata', 'socks', 'aws4', 'pg-native', 'cloudflare:sockets', 'cpu-features', '*.node'];
 const common = { bundle: true, platform: 'node', target: 'node22', format: 'esm', sourcemap: true, logLevel: 'info', legalComments: 'none', loader: { '.json': 'json' } };
 
 await build({ ...common, packages: 'external', entryPoints: [path.join(root, 'src/server/main.ts')], outfile: path.join(out, 'server/main.js') });
 await build({
   ...common, external: optional, entryPoints: [path.join(root, 'src/probe/main.ts')], outfile: path.join(out, 'probe/main.js'),
-  banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
+  // bundled CommonJS packages (ssh2) still expect require, __filename and __dirname
+  banner: { js: "import { createRequire as __cr } from 'node:module'; import { fileURLToPath as __fu } from 'node:url'; import { dirname as __dn } from 'node:path'; const require = __cr(import.meta.url); const __filename = __fu(import.meta.url); const __dirname = __dn(__filename);" },
 });
 
 if (!process.argv.includes('--skip-web')) {

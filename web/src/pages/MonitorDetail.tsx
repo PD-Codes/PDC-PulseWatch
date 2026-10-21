@@ -1,9 +1,10 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, Copy, Edit3, Pause, Play, RefreshCw, ShieldCheck, Trash2, TriangleAlert } from 'lucide-react';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Activity, Copy, Edit3, Pause, Play, RefreshCw, ShieldCheck, Trash2, TriangleAlert, X, ZoomIn } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Loading, PageHeader, Select, useConfirm, useToast, cx } from '../components/ui';
 import { displayStatus, HeartbeatBar, StatusBadge, StatusDot, uptimeTone } from '../components/status';
+import { Pager } from '../components/Pager';
 import { TimeChart } from '../components/TimeChart';
 import { MonitorCopy } from '../components/MonitorCopy';
 import { del, errorMessage, get, post, type Beat, type MonitorItem } from '../lib/api';
@@ -24,7 +25,7 @@ interface Hb { id: number; ts: string; status: number; latencyMs: number | null;
 interface Ev { id: number; ts: string; type: string; from: string | null; to: string | null; errorKind: string | null; message: string | null }
 interface Inc { id: number; title: string; status: string; severity: string; started_at: string; resolved_at: string | null }
 
-const RANGES = ['1h', '24h', '7d', '30d', '90d', '365d'] as const;
+const RANGES = ['15m', '30m', '1h', '3h', '6h', '12h', '24h', '7d', '30d', '90d', '365d'] as const;
 const sec = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
 
 export default function MonitorDetail() {
@@ -37,6 +38,10 @@ export default function MonitorDetail() {
   const { can } = useAuth();
   const meta = useMeta();
   const [range, setRange] = useState<(typeof RANGES)[number]>('24h');
+  // a window picked by dragging across the chart (epoch seconds); it replaces the named range until reset
+  const [win, setWin] = useState<{ from: number; to: number } | null>(null);
+  useEffect(() => { setWin(null); }, [id]); // a picked window belongs to one monitor
+  const span = win ? `from=${new Date(win.from * 1000).toISOString()}&to=${new Date(win.to * 1000).toISOString()}` : `range=${range}`;
   const key = ['monitor', id];
 
   const q = useQuery({ queryKey: key, queryFn: () => get<Detail>(`/api/monitors/${id}`), enabled: Number.isFinite(id) });
@@ -49,8 +54,8 @@ export default function MonitorDetail() {
     void qc.invalidateQueries({ queryKey: ['monitor', id, 'events'] });
   }), [id, qc]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const chart = useQuery({ queryKey: ['monitor', id, 'chart', range], queryFn: () => get<ChartData>(`/api/monitors/${id}/chart?range=${range}`), refetchInterval: 60_000, enabled: Number.isFinite(id) });
-  const periods = useQuery({ queryKey: ['monitor', id, 'periods', range], queryFn: () => get<Period[]>(`/api/monitors/${id}/periods?range=${range}`), enabled: Number.isFinite(id) });
+  const chart = useQuery({ queryKey: ['monitor', id, 'chart', span], queryFn: () => get<ChartData>(`/api/monitors/${id}/chart?${span}`), refetchInterval: win ? false : range === '15m' || range === '30m' ? 20_000 : 60_000, enabled: Number.isFinite(id), placeholderData: keepPreviousData });
+  const periods = useQuery({ queryKey: ['monitor', id, 'periods', span], queryFn: () => get<Period[]>(`/api/monitors/${id}/periods?${span}`), enabled: Number.isFinite(id), placeholderData: keepPreviousData });
   const incidents = useQuery({ queryKey: ['monitor', id, 'incidents'], queryFn: () => get<Inc[]>(`/api/monitors/${id}/incidents`), enabled: Number.isFinite(id) });
 
   const act = useMutation({
@@ -81,6 +86,7 @@ export default function MonitorDetail() {
   const badge = (f: string) => `${base}/badge/${m.id}/${f}.svg`;
   const pushUrl = m.pushToken ? `${base}/api/push/${m.pushToken}` : '';
   const sum = chart.data?.summary;
+  const windowLabel = win ? `${fmtDateTime(new Date(win.from * 1000).toISOString())} – ${fmtDateTime(new Date(win.to * 1000).toISOString())}` : '';
 
   return (
     <>
@@ -95,7 +101,7 @@ export default function MonitorDetail() {
             <Link to={`/monitors/new?clone=${id}`} className="btn btn-sm no-underline"><Copy className="h-4 w-4" />{t('monitors.clone')}</Link>
             <Button size="sm" variant="danger" onClick={async () => {
               if (!(await confirm({ title: t('monitors.deleteTitle', { name: m.name }), body: t('monitors.deleteBody'), danger: true, confirmLabel: t('common.delete') }))) return;
-              try { await del(`/api/monitors/${id}`); void qc.invalidateQueries({ queryKey: ['monitors'] }); nav('/'); } catch (e) { toast(errorMessage(e), 'error'); }
+              try { await del(`/api/monitors/${id}`); void qc.invalidateQueries({ queryKey: ['monitors'] }); nav('/dashboard'); } catch (e) { toast(errorMessage(e), 'error'); }
             }}><Trash2 className="h-4 w-4" />{t('common.delete')}</Button>
           </>
         ) : undefined}
@@ -113,9 +119,18 @@ export default function MonitorDetail() {
       </div>
 
       <Card className="mb-4">
-        <CardHeader title={t('monitors.responseTime')} actions={<Select aria-label={t('monitors.range')} value={range} onChange={(e) => setRange(e.target.value as typeof range)} className="w-auto">{RANGES.map((r) => <option key={r} value={r}>{t(`monitors.range.${r}`)}</option>)}</Select>} />
+        <CardHeader title={t('monitors.responseTime')} actions={(
+          <div className="flex flex-wrap items-center gap-2">
+            {win && <Button size="sm" onClick={() => setWin(null)}><X className="h-4 w-4" />{t('monitors.range.reset')}</Button>}
+            <Select aria-label={t('monitors.range')} value={win ? 'custom' : range} onChange={(e) => { setWin(null); setRange(e.target.value as typeof range); }} className="w-auto">
+              {win && <option value="custom">{windowLabel}</option>}
+              {RANGES.map((r) => <option key={r} value={r}>{t(`monitors.range.${r}`)}</option>)}
+            </Select>
+          </div>
+        )} />
         <div className="p-4">
-          {chart.isLoading ? <Loading /> : chart.error ? <ErrorBox error={chart.error} /> : chartView.x.length === 0 ? <p className="py-10 text-center text-sm text-slate-500">{t('monitors.noData')}</p> : <TimeChart x={chartView.x} ys={chartView.ys} series={chartView.series} bands={chartView.bands} />}
+          {chart.isLoading ? <Loading /> : chart.error ? <ErrorBox error={chart.error} /> : chartView.x.length === 0 ? <p className="py-10 text-center text-sm text-slate-500">{t('monitors.noData')}</p> : <TimeChart x={chartView.x} ys={chartView.ys} series={chartView.series} bands={chartView.bands} onSelect={(a, b) => setWin(b - a < 60 ? { from: Math.floor((a + b) / 2) - 30, to: Math.floor((a + b) / 2) + 30 } : { from: a, to: b })} />}
+          {chartView.x.length > 0 && <p className="mt-2 flex items-center gap-1.5 text-xs text-slate-500"><ZoomIn className="h-3.5 w-3.5" aria-hidden />{t('monitors.chartHint')}</p>}
           {sum && <dl className="mt-3 grid grid-cols-3 gap-2 text-center text-xs sm:grid-cols-6">{([['avg', sum.avg], ['min', sum.min], ['max', sum.max], ['p50', sum.p50], ['p95', sum.p95], ['p99', sum.p99]] as const).map(([k, v]) => <div key={k}><dt className="text-slate-400">{k}</dt><dd className="font-semibold">{fmtMs(v)}</dd></div>)}</dl>}
           {chartView.bands.length > 0 && <p className="mt-2 text-xs text-slate-500"><span className="mr-1 inline-block h-2 w-3 rounded-sm bg-red-500/30 align-middle" />{t('monitors.outageBands')}</p>}
         </div>
@@ -202,7 +217,7 @@ export default function MonitorDetail() {
 
       {periods.data && periods.data.length > 0 && (
         <Card className="mb-4">
-          <CardHeader title={t('monitors.periods')} subtitle={t(`monitors.range.${range}`)} />
+          <CardHeader title={t('monitors.periods')} subtitle={win ? windowLabel : t(`monitors.range.${range}`)} />
           <ul className="max-h-72 divide-y divide-slate-100 overflow-y-auto dark:divide-slate-800">{periods.data.slice(0, 50).map((p, i) => {
             const st = p.status === 'down' || p.status === 0 ? 'down' : p.status === 'maintenance' || p.status === 3 ? 'maintenance' : 'up';
             return <li key={i} className="flex flex-wrap items-center gap-2 px-4 py-2 text-sm"><StatusDot status={st} /><span>{t(`status.${st}`)}</span><span className="text-slate-500">{fmtDuration(p.durationS)}</span>{p.message && <span className="min-w-0 flex-1 truncate text-xs text-slate-400" title={p.message}>{p.message}</span>}<span className="ml-auto text-xs text-slate-400">{fmtDateTime(p.from)}</span></li>;
@@ -222,14 +237,22 @@ function Snippet({ label, text }: { label: string; text: string }) {
   );
 }
 
+interface Paged<T> { total: number; items: T[] }
+
+/** Page size and number live in the component; the previous page stays visible while the next one loads. */
+function usePaged<T>(id: number, what: 'heartbeats' | 'events') {
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(5);
+  const q = useQuery({ queryKey: ['monitor', id, what, page, pageSize], queryFn: () => get<Paged<T>>(`/api/monitors/${id}/${what}?page=${page}&pageSize=${pageSize}`), placeholderData: keepPreviousData });
+  const total = q.data?.total ?? 0;
+  // the capped count can shrink (retention); never sit on a page that no longer exists
+  useEffect(() => { const last = Math.max(1, Math.ceil(total / pageSize)); if (page > last) setPage(last); }, [total, page, pageSize]);
+  return { q, rows: q.data?.items ?? [], pager: <Pager page={page} pageSize={pageSize} total={total} capped={total >= 10_000} onPage={setPage} onPageSize={setPageSize} /> };
+}
+
 function Heartbeats({ id }: { id: number }) {
   const t = useT();
-  const q = useInfiniteQuery({
-    queryKey: ['monitor', id, 'heartbeats'], initialPageParam: 0,
-    queryFn: ({ pageParam }) => get<Hb[]>(`/api/monitors/${id}/heartbeats?limit=15${pageParam ? `&before=${pageParam}` : ''}`),
-    getNextPageParam: (l) => (l.length >= 15 ? l[l.length - 1].id : undefined),
-  });
-  const rows = q.data?.pages.flat() ?? [];
+  const { q, rows, pager } = usePaged<Hb>(id, 'heartbeats');
   return (
     <Card>
       <CardHeader title={t('monitors.recentChecks')} />
@@ -237,19 +260,14 @@ function Heartbeats({ id }: { id: number }) {
         <ul className="divide-y divide-slate-100 dark:divide-slate-800">{rows.map((h) => (
           <li key={h.id} className="flex items-center gap-2 px-4 py-2 text-sm"><StatusDot status={h.status === 1 ? 'up' : h.status === 3 ? 'maintenance' : 'down'} /><span className="w-16 text-slate-500">{fmtMs(h.latencyMs)}</span><span className="min-w-0 flex-1 truncate text-xs text-slate-400" title={h.message ?? ''}>{h.errorKind ? `${h.errorKind}: ` : ''}{h.message}</span><time className="text-xs text-slate-400" dateTime={h.ts}>{fmtDateTime(h.ts)}</time></li>))}</ul>
       )}
-      {q.hasNextPage && <div className="border-t border-slate-100 p-2 text-center dark:border-slate-800"><Button size="sm" variant="ghost" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>{t('common.more')}</Button></div>}
+      {pager}
     </Card>
   );
 }
 
 function Events({ id }: { id: number }) {
   const t = useT();
-  const q = useInfiniteQuery({
-    queryKey: ['monitor', id, 'events'], initialPageParam: 0,
-    queryFn: ({ pageParam }) => get<Ev[]>(`/api/monitors/${id}/events?limit=15${pageParam ? `&before=${pageParam}` : ''}`),
-    getNextPageParam: (l) => (l.length >= 15 ? l[l.length - 1].id : undefined),
-  });
-  const rows = q.data?.pages.flat() ?? [];
+  const { q, rows, pager } = usePaged<Ev>(id, 'events');
   return (
     <Card>
       <CardHeader title={t('monitors.eventLog')} />
@@ -260,7 +278,7 @@ function Events({ id }: { id: number }) {
             {(e.message || e.errorKind) && <p className="ml-4 mt-0.5 break-words text-xs text-slate-500">{e.errorKind ? `${e.errorKind}: ` : ''}{e.message}</p>}
           </li>))}</ul>
       )}
-      {q.hasNextPage && <div className="border-t border-slate-100 p-2 text-center dark:border-slate-800"><Button size="sm" variant="ghost" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>{t('common.more')}</Button></div>}
+      {pager}
     </Card>
   );
 }

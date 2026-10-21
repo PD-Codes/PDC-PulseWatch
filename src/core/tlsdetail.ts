@@ -69,12 +69,15 @@ export function tlsMessage(f: TlsFacts, opts: { expiring?: boolean } = {}): stri
   const where = f.host ? `host ${f.host}${f.port ? `:${f.port}` : ''}${f.servername && f.servername !== f.host ? `, SNI ${f.servername}` : ''}` : undefined;
   const tail = [`${cn(f.subject)}`, `issuer ${cn(f.issuer)}`, where].filter(Boolean).join(', ') + (f.code ? ` (${f.code})` : '');
   const expired = new Date(f.validTo).getTime() < now;
+  const mismatch = f.nameMatches === false || f.code === 'ERR_TLS_CERT_ALTNAME_INVALID' || f.code === 'HOSTNAME_MISMATCH';
+  const isExpired = expired || f.code === 'CERT_HAS_EXPIRED';
+  const wrong = mismatch ? `does not match ${f.servername || f.host || 'the host'}${f.altNames.length ? ` (valid for ${f.altNames.slice(0, 5).join(', ')}${f.altNames.length > 5 ? ', ...' : ''})` : ''}` : '';
   let head: string;
-  if (f.nameMatches === false || f.code === 'ERR_TLS_CERT_ALTNAME_INVALID' || f.code === 'HOSTNAME_MISMATCH') {
-    head = `TLS certificate does not match ${f.servername || f.host || 'the host'}${f.altNames.length ? ` (valid for ${f.altNames.slice(0, 5).join(', ')}${f.altNames.length > 5 ? ', ...' : ''})` : ''}`;
-  } else if (expired || f.code === 'CERT_HAS_EXPIRED') {
+  if (isExpired) {
     const ago = Math.max(1, Math.ceil((now - new Date(f.validTo).getTime()) / DAY));
-    head = `TLS certificate expired on ${day(f.validTo)} (${plural(ago)} ago)`;
+    head = `TLS certificate expired on ${day(f.validTo)} (${plural(ago)} ago)${wrong ? ` and ${wrong}` : ''}`; // a certificate can have both problems, name both
+  } else if (mismatch) {
+    head = `TLS certificate ${wrong}`;
   } else if (new Date(f.validFrom).getTime() > now || f.code === 'CERT_NOT_YET_VALID') {
     head = `TLS certificate is not valid before ${day(f.validFrom)}`;
   } else if (f.code && REASONS[f.code]) {
@@ -122,7 +125,7 @@ export function withTlsDetail(r: Runner): Runner {
 }
 
 export async function enrich(res: CheckResult, config: Record<string, any>, guard: NetGuard): Promise<CheckResult> {
-  if (res.ok || res.details?.tls) return res;
+  if (res.ok || res.details?.tls || res.details?.hostKey) return res; // an SSH host key problem is not a certificate problem
   const d = res.details ?? {};
   const target: TlsTarget | undefined = typeof d.host === 'string' && d.port ? { host: d.host, port: Number(d.port), servername: d.servername as string | undefined } : targetFromConfig(config);
   if (res.cert && (res.errorKind === 'tls_expiry' || (res.errorKind === 'tls' && /^Certificate expired/.test(res.message ?? '')))) {

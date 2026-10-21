@@ -4,12 +4,12 @@ import { sql } from 'kysely';
 import { config } from '../config';
 import { createSession, COOKIE, csrfFor } from '../auth/plugin';
 import { writeAudit } from '../auth/access';
+import { countFailure, reauthError } from '../auth/reauth';
 import { decrypt, encrypt, hashPassword, newTotpSecret, randomToken, sha256, verifyPassword, verifyTotp } from '../crypto';
 import { bool, parseJson } from '../db';
 import { ldapLogin } from '../auth/external';
 
 const DUMMY_HASH = 'scrypt$32768$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
-const MAX_FAILS = 8;
 
 export const pwSchema = Type.String({ minLength: 10, maxLength: 200 });
 const publicUser = (u: any, csrf?: string) => ({
@@ -64,8 +64,7 @@ export async function authRoutes(app: FastifyInstance) {
     if (!u || !bool(u.is_active)) return fail('unknown or disabled');
     if (u.locked_until && u.locked_until > new Date()) return reply.code(429).send({ error: 'locked', message: 'Account is temporarily locked after too many failed attempts' });
     if (!valid) {
-      const fails = u.failed_logins + 1;
-      await db.updateTable('users').set(fails >= MAX_FAILS ? { failed_logins: 0, locked_until: new Date(Date.now() + 15 * 60_000) } : { failed_logins: fails }).where('id', '=', u.id).execute();
+      await countFailure(ctx, u.id);
       return fail('bad password');
     }
     if (bool(u.totp_enabled)) {
@@ -77,7 +76,7 @@ export async function authRoutes(app: FastifyInstance) {
         const h = sha256(b.totp.trim().toLowerCase());
         if (codes.includes(h)) { okCode = true; await db.updateTable('users').set({ totp_recovery: JSON.stringify(codes.filter((c) => c !== h)) }).where('id', '=', u.id).execute(); }
       }
-      if (!okCode) return fail('bad totp');
+      if (!okCode) { await countFailure(ctx, u.id); return fail('bad totp'); }
     }
     await db.updateTable('users').set({ failed_logins: 0, locked_until: null, last_login_at: new Date() }).where('id', '=', u.id).execute();
     const token = await createSession(ctx, u.id, req, reply);
@@ -111,12 +110,12 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/auth/password', {
-    preHandler: app.requireAuth,
+    preHandler: app.requireSession,
     schema: { tags: ['auth'], body: Type.Object({ current: Type.String(), next: pwSchema }) },
   }, async (req, reply) => {
     const b = req.body as { current: string; next: string };
     const u = await db.selectFrom('users').select(['password_hash', 'auth_source']).where('id', '=', req.user!.id).executeTakeFirst();
-    if (!u?.password_hash || !(await verifyPassword(b.current, u.password_hash))) return reply.code(400).send({ error: 'invalid_password', message: 'Current password is wrong' });
+    if (!u?.password_hash || !(await verifyPassword(b.current, u.password_hash))) { await countFailure(ctx, req.user!.id); return reply.code(400).send({ error: 'invalid_password', message: 'Current password is wrong' }); }
     await db.updateTable('users').set({ password_hash: await hashPassword(b.next) }).where('id', '=', req.user!.id).execute();
     // end all other sessions
     let q = db.deleteFrom('sessions').where('user_id', '=', req.user!.id);
@@ -131,20 +130,22 @@ export async function authRoutes(app: FastifyInstance) {
     return rows.map((r) => ({ ...r, current: r.id === req.user!.sessionId }));
   });
 
-  app.delete('/api/auth/sessions/:id', { preHandler: app.requireAuth, schema: { tags: ['auth'], params: Type.Object({ id: Type.Integer() }) } }, async (req) => {
+  app.delete('/api/auth/sessions/:id', { preHandler: app.requireSession, schema: { tags: ['auth'], params: Type.Object({ id: Type.Integer() }) } }, async (req) => {
     await db.deleteFrom('sessions').where('id', '=', (req.params as any).id).where('user_id', '=', req.user!.id).execute();
     return { ok: true };
   });
 
   /* ---- two factor ---- */
-  app.post('/api/auth/2fa/setup', { preHandler: app.requireAuth, schema: { tags: ['auth'], summary: 'Start TOTP enrollment' } }, async (req) => {
+  app.post('/api/auth/2fa/setup', { preHandler: app.requireSession, schema: { tags: ['auth'], summary: 'Start TOTP enrollment' } }, async (req, reply) => {
+    // starting over would switch 2FA off without a code, so an enrolled account has to disable it first
+    if (req.user!.totpEnabled) return reply.code(409).send({ error: 'conflict', message: 'Two-factor authentication is already on. Turn it off first to enroll a new device.' });
     const secret = newTotpSecret();
     await db.updateTable('users').set({ totp_secret_enc: encrypt(secret), totp_enabled: 0 }).where('id', '=', req.user!.id).execute();
     const issuer = encodeURIComponent(config.brand.name);
     return { secret, otpauthUrl: `otpauth://totp/${issuer}:${encodeURIComponent(req.user!.username)}?secret=${secret}&issuer=${issuer}&digits=6&period=30` };
   });
 
-  app.post('/api/auth/2fa/enable', { preHandler: app.requireAuth, schema: { tags: ['auth'], body: Type.Object({ code: Type.String() }) } }, async (req, reply) => {
+  app.post('/api/auth/2fa/enable', { preHandler: app.requireSession, schema: { tags: ['auth'], body: Type.Object({ code: Type.String() }) } }, async (req, reply) => {
     const u = await db.selectFrom('users').select('totp_secret_enc').where('id', '=', req.user!.id).executeTakeFirst();
     if (!u?.totp_secret_enc || !verifyTotp(decrypt(u.totp_secret_enc), (req.body as any).code)) return reply.code(400).send({ error: 'invalid_code', message: 'The code is not valid' });
     const codes = Array.from({ length: 8 }, () => randomToken(6).toLowerCase().replace(/[^a-z0-9]/g, 'x').slice(0, 10));
@@ -153,10 +154,10 @@ export async function authRoutes(app: FastifyInstance) {
     return { ok: true, recoveryCodes: codes };
   });
 
-  app.post('/api/auth/2fa/disable', { preHandler: app.requireAuth, schema: { tags: ['auth'], body: Type.Object({ password: Type.String(), code: Type.String() }) } }, async (req, reply) => {
+  app.post('/api/auth/2fa/disable', { preHandler: app.requireSession, schema: { tags: ['auth'], body: Type.Object({ password: Type.String(), code: Type.String() }) } }, async (req, reply) => {
     const b = req.body as { password: string; code: string };
-    const u = await db.selectFrom('users').select(['password_hash', 'totp_secret_enc']).where('id', '=', req.user!.id).executeTakeFirst();
-    if (!u?.password_hash || !(await verifyPassword(b.password, u.password_hash)) || !u.totp_secret_enc || !verifyTotp(decrypt(u.totp_secret_enc), b.code)) return reply.code(400).send({ error: 'invalid_credentials', message: 'Password or code is wrong' });
+    const bad = await reauthError(ctx, req.user!.id, b.password, b.code);
+    if (bad) return reply.code(400).send({ error: 'invalid_credentials', message: bad });
     await db.updateTable('users').set({ totp_enabled: 0, totp_secret_enc: null, totp_recovery: null }).where('id', '=', req.user!.id).execute();
     await writeAudit(ctx, req.user, '2fa.disabled', { type: 'user', id: req.user!.id }, undefined, req.ip);
     return { ok: true };

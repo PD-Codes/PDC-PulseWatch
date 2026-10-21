@@ -10,3 +10,4 @@ web/dist/
 web/node_modules/
 .DS_Store
 .e2e-data/
+_to_delete/

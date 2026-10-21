@@ -4,9 +4,11 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { CertsTab } from '../components/CertsTab';
 import { DefaultsTab } from '../components/DefaultsTab';
+import { ReportView, type Report } from '../components/ImportReport';
+import { KumaImport } from '../components/KumaImport';
 import { CopyButton, EMAIL_RE, FieldsForm, splitList } from '../components/settingsParts';
 import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
-import { ApiError, del, download, errorMessage, get, post, put, qs } from '../lib/api';
+import { del, download, errorMessage, get, post, put, qs } from '../lib/api';
 import { useMeta } from '../lib/auth';
 import { useT } from '../lib/i18n';
 import type { FieldDef } from '../../../src/core/types';
@@ -17,13 +19,16 @@ type Tab = (typeof TABS)[number];
 export default function Settings() {
   const t = useT();
   const [sp, setSp] = useSearchParams();
+  const meta = useMeta();
+  // the daily digest is mailed, so its tab only exists when SMTP is configured
+  const tabs = TABS.filter((id) => id !== 'digest' || meta?.smtp);
   const raw = sp.get('tab') as Tab | null;
-  const tab: Tab = raw && TABS.includes(raw) ? raw : 'network';
+  const tab: Tab = raw && tabs.includes(raw) ? raw : 'network';
   return (
     <div className="space-y-6">
       <PageHeader title={t('settings.title')} subtitle={t('settings.subtitle')} />
       <div className="overflow-x-auto">
-        <Tabs tabs={TABS.map((id) => ({ id, label: t(`settings.tab.${id}`) }))} value={tab} onChange={(v) => setSp({ tab: v }, { replace: true })} />
+        <Tabs tabs={tabs.map((id) => ({ id, label: t(`settings.tab.${id}`) }))} value={tab} onChange={(v) => setSp({ tab: v }, { replace: true })} />
       </div>
       {tab === 'network' && <NetworkTab />}
       {tab === 'defaults' && <DefaultsTab />}
@@ -108,7 +113,6 @@ function DigestTab() {
       <Card>
         <CardHeader title={t('settings.digest.title')} subtitle={t('settings.digest.intro')} />
         <form className="space-y-4 p-4" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
-          {!f.smtpConfigured && <div role="alert" className="flex items-start gap-2 rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />{t('settings.digest.noSmtp')}</div>}
           <Toggle checked={f.enabled} onChange={(v) => set({ enabled: v })} label={t('settings.digest.enabled')} />
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={t('settings.digest.hour')}>{(id) => <Select id={id} value={f.hour} onChange={(e) => set({ hour: Number(e.target.value) })}>{Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>)}</Select>}</Field>
@@ -205,10 +209,6 @@ function AuthTab() {
 
 /* ---------------- backup & import ---------------- */
 
-interface Counts { created: number; updated: number }
-interface Report { dryRun: boolean; counts: Record<string, Counts>; warnings: string[]; errors: string[] }
-const SECTIONS = ['groups', 'tags', 'templates', 'channels', 'policies', 'monitors', 'maintenance', 'statusPages'];
-
 function ImportCard({ title, intro, endpoint, accept }: { title: string; intro: string; endpoint: string; accept: string }) {
   const t = useT(); const toast = useToast();
   const [content, setContent] = useState<string | null>(null);
@@ -228,7 +228,7 @@ function ImportCard({ title, intro, endpoint, accept }: { title: string; intro: 
     <Card>
       <CardHeader title={title} subtitle={intro} />
       <div className="space-y-4 p-4">
-        <Field label={t('settings.backup.file')}>{(id) => <input id={id} type="file" accept={accept} className="input" onChange={(e) => onFile(e.target.files?.[0])} />}</Field>
+        <Field label={t('settings.backup.file')}>{(id) => <input id={id} type="file" accept={accept} className="input" disabled={run.isPending} onChange={(e) => onFile(e.target.files?.[0])} />}</Field>
         <div className="flex flex-wrap items-center gap-2">
           <Button disabled={!content} loading={run.isPending && run.variables === true} onClick={() => run.mutate(true)}>{t('settings.backup.dryRun')}</Button>
           <Button variant="primary" disabled={!content || !clean} loading={run.isPending && run.variables === false} onClick={() => run.mutate(false)}><Upload className="h-4 w-4" />{t('settings.backup.apply')}</Button>
@@ -240,66 +240,6 @@ function ImportCard({ title, intro, endpoint, accept }: { title: string; intro: 
   );
 }
 
-/** Uptime Kuma 1.x/2.x: database file upload or live API login, both previewed first and applied from the preview. */
-function KumaCard() {
-  const t = useT(); const toast = useToast();
-  const [mode, setMode] = useState<'db' | 'api'>('db');
-  const [file, setFile] = useState<File | null>(null);
-  const [f, setF] = useState({ url: '', username: '', password: '', token: '' });
-  const [needToken, setNeedToken] = useState(false);
-  const [report, setReport] = useState<(Report & { previewId?: string }) | null>(null);
-  const preview = useMutation({
-    mutationFn: () => (mode === 'db' ? post<Report & { previewId: string }>('/api/import/kuma-db', file) : post<Report & { previewId: string }>('/api/import/kuma-api', { ...f, token: f.token || undefined })),
-    onSuccess: (r) => { setReport(r); setNeedToken(false); toast(t('settings.backup.dryDone')); },
-    onError: (e) => { setReport(null); if (e instanceof ApiError && e.code === 'token_required') { setNeedToken(true); toast(t('settings.kuma.tokenNeeded'), 'error'); } else toast(errorMessage(e), 'error'); },
-  });
-  const apply = useMutation({
-    mutationFn: () => post<Report>('/api/import/kuma-apply', { previewId: report!.previewId }),
-    onSuccess: (r) => { setReport(r); toast(t('settings.backup.applied')); }, onError: (e) => toast(errorMessage(e), 'error'),
-  });
-  const canPreview = mode === 'db' ? !!file : !!(f.url && f.username && f.password);
-  const clean = !!report?.dryRun && report.errors.length === 0 && !!report.previewId;
-  return (
-    <Card>
-      <CardHeader title={t('settings.kuma.title')} subtitle={t('settings.kuma.intro')} />
-      <div className="space-y-4 p-4">
-        <Field label={t('settings.kuma.source')}>{(id) => <Select id={id} value={mode} onChange={(e) => { setMode(e.target.value as 'db' | 'api'); setReport(null); }}><option value="db">{t('settings.kuma.db')}</option><option value="api">{t('settings.kuma.api')}</option></Select>}</Field>
-        {mode === 'db' ? (
-          <Field label={t('settings.kuma.dbFile')} hint={t('settings.kuma.dbHint')}>{(id) => <input id={id} type="file" accept=".db,.sqlite,.sqlite3,application/octet-stream" className="input" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setReport(null); }} />}</Field>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label={t('settings.kuma.url')} className="sm:col-span-2" hint={t('settings.kuma.urlHint')}>{(id) => <Input id={id} type="url" placeholder="https://kuma.example.com" value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} />}</Field>
-            <Field label={t('settings.kuma.username')}>{(id) => <Input id={id} autoComplete="off" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value })} />}</Field>
-            <Field label={t('settings.kuma.password')}>{(id) => <Input id={id} type="password" autoComplete="off" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />}</Field>
-            {needToken && <Field label={t('settings.kuma.token')}>{(id) => <Input id={id} inputMode="numeric" autoComplete="one-time-code" maxLength={8} value={f.token} onChange={(e) => setF({ ...f, token: e.target.value })} />}</Field>}
-          </div>
-        )}
-        <div className="flex flex-wrap items-center gap-2">
-          <Button disabled={!canPreview} loading={preview.isPending} onClick={() => preview.mutate()}>{t('settings.backup.dryRun')}</Button>
-          <Button variant="primary" disabled={!clean || !report?.dryRun} loading={apply.isPending} onClick={() => apply.mutate()}><Upload className="h-4 w-4" />{t('settings.backup.apply')}</Button>
-        </div>
-        {report && <ReportView report={report} />}
-      </div>
-    </Card>
-  );
-}
-
-function ReportView({ report }: { report: Report }) {
-  const t = useT();
-  const rows = SECTIONS.filter((s) => report.counts[s] && (report.counts[s].created || report.counts[s].updated));
-  return (
-    <div className="space-y-3" aria-live="polite">
-      <div className="flex items-center gap-2"><span className="font-medium">{t('settings.backup.report')}</span><Badge tone={report.dryRun ? 'amber' : 'green'}>{t('settings.backup.dryRun')}{report.dryRun ? '' : ' ✓'}</Badge></div>
-      {rows.length === 0 ? <p className="text-sm text-slate-500">{t('settings.backup.noChanges')}</p> : (
-        <div className="overflow-x-auto"><table className="tbl"><tbody>
-          {rows.map((s) => <tr key={s}><th scope="row" className="text-left font-medium">{t(`settings.backup.section.${s}`)}</th><td>{report.counts[s].created} {t('settings.backup.created')}</td><td>{report.counts[s].updated} {t('settings.backup.updated')}</td></tr>)}
-        </tbody></table></div>
-      )}
-      {report.warnings.length > 0 && <div><div className="label">{t('settings.backup.warnings')} ({report.warnings.length})</div><ul className="mt-1 max-h-48 list-disc space-y-0.5 overflow-auto pl-5 text-sm text-amber-700 dark:text-amber-300">{report.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></div>}
-      {report.errors.length > 0 && <div role="alert"><div className="label">{t('settings.backup.errors')} ({report.errors.length})</div><ul className="mt-1 max-h-48 list-disc space-y-0.5 overflow-auto pl-5 text-sm text-red-700 dark:text-red-300">{report.errors.map((w, i) => <li key={i}>{w}</li>)}</ul></div>}
-    </div>
-  );
-}
 
 function BackupTab() {
   const t = useT();
@@ -317,7 +257,7 @@ function BackupTab() {
         </div>
       </Card>
       <ImportCard title={t('settings.backup.import')} intro={t('settings.backup.importIntro')} endpoint="/api/config/import" accept=".yaml,.yml,.json,application/json" />
-      <KumaCard />
+      <KumaImport />
       <ImportCard title={t('settings.backup.kuma')} intro={t('settings.backup.kumaIntro')} endpoint="/api/import/kuma" accept=".json,application/json" />
       <Card>
         <CardHeader title={t('settings.backup.dbTitle')} subtitle={t('settings.backup.dbBody')} />

@@ -87,11 +87,20 @@ export class Engine {
     return { ok: agg.ok, latencyMs: agg.latencyMs, errorKind: agg.errorKind as CheckResult['errorKind'], message: agg.message, details: { locations: results } };
   }
 
-  /** Is the monitor suppressed by a parent that is down or in maintenance? */
+  /** Is the monitor suppressed by an ancestor that is down, suppressed itself, or in maintenance? Follows the dependency chain upwards (bounded, cycle safe). */
   private async suppressedByParent(monitorId: number): Promise<boolean> {
-    const parents = await this.ctx.db.selectFrom('monitor_dependencies as d').innerJoin('monitor_state as s', 's.monitor_id', 'd.depends_on_id')
-      .select(['d.depends_on_id', 's.status']).where('d.monitor_id', '=', monitorId).execute();
-    return parents.some((p) => p.status === 'down' || this.ctx.maintenance.isActive(p.depends_on_id));
+    const seen = new Set<number>([monitorId]);
+    let frontier = [monitorId];
+    for (let depth = 0; frontier.length && depth < 10; depth++) {
+      const parents = await this.ctx.db.selectFrom('monitor_dependencies as d').innerJoin('monitor_state as s', 's.monitor_id', 'd.depends_on_id')
+        .select(['d.depends_on_id', 's.status', 's.overlay']).where('d.monitor_id', 'in', frontier).execute();
+      frontier = [];
+      for (const p of parents) {
+        if (p.status === 'down' || p.overlay === 'suppressed' || this.ctx.maintenance.isActive(p.depends_on_id)) return true;
+        if (!seen.has(p.depends_on_id)) { seen.add(p.depends_on_id); frontier.push(p.depends_on_id); }
+      }
+    }
+    return false;
   }
 
   async reschedule(m: Monitor, scheduledFor?: Date, retry = false): Promise<void> {
@@ -195,7 +204,8 @@ export class Engine {
       if (!o.flapping) await notifier.notify({ event: 'up', monitor: m, result: r, incidentId: ids[0] });
     }
     if (o.flapEvent === 'start') await notifier.notify({ event: 'flap', monitor: m, result: r });
-    if (o.flapEvent === 'stop') await notifier.notify({ event: o.status === 'down' ? 'down' : 'up', monitor: m, result: r });
+    // when the end of flapping coincides with a status change, that change was already announced above
+    if (o.flapEvent === 'stop' && !o.transition) await notifier.notify({ event: o.status === 'down' ? 'down' : 'up', monitor: m, result: r });
     if (certAlert !== null && !muted) await notifier.notify({ event: 'cert', monitor: m, result: r });
   }
 

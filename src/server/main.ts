@@ -1,3 +1,4 @@
+import { installCrashBackstop } from '../core/survive';
 import { config } from './config';
 import { buildApp } from './app';
 import { migrate } from './db/migrate';
@@ -8,6 +9,7 @@ import { Tailer } from './jobs/tail';
 import { startCaSync } from './ca-store';
 import { startGuardSync } from './guard-sync';
 import { ReportJobs } from './reports';
+import { startSubscriberNotifications } from './routes/status-pages';
 import { createServices } from './services';
 import { stopTracing } from './telemetry';
 import { VERSION } from './version';
@@ -15,6 +17,7 @@ import { VERSION } from './version';
 async function main() {
   const ctx = createServices();
   const { log } = ctx;
+  installCrashBackstop((kind, e) => log.error({ err: e }, kind));
   log.info({ version: VERSION, role: config.role }, `${config.brand.name} starting`);
   config.secretKey; // fail fast when the key cannot be loaded
   await migrate(config.migrationsDir, (m) => log.info(m));
@@ -25,6 +28,8 @@ async function main() {
   const stopGuardSync = startGuardSync(ctx);
   const stopCaSync = startCaSync(ctx);
   ctx.notifier.start();
+  // incidents are opened by whichever process runs the checks, so each role tells subscribers about the events on its own bus
+  const stopSubscribers = startSubscriberNotifications(ctx);
   const scheduler = runsWork ? new Scheduler(ctx) : undefined;
   const housekeeping = runsWork ? new Housekeeping(ctx) : undefined;
   const reportJobs = runsWork ? new ReportJobs(ctx) : undefined;
@@ -51,7 +56,7 @@ async function main() {
     stopping = true;
     log.info({ sig }, 'shutting down');
     try {
-      stopGuardSync(); stopCaSync(); deadman.stop(); tailer?.stop(); housekeeping?.stop(); reportJobs?.stop(); ctx.notifier.stop(); ctx.maintenance.stop();
+      stopGuardSync(); stopCaSync(); deadman.stop(); tailer?.stop(); housekeeping?.stop(); reportJobs?.stop(); ctx.notifier.stop(); ctx.maintenance.stop(); stopSubscribers();
       await app?.close();
       await scheduler?.stop();
       await stopTracing();

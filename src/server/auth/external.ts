@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { SAML, ValidateInResponseTo, type CacheProvider } from '@node-saml/node-saml';
 import { Client } from 'ldapts';
 import * as oidc from 'openid-client';
-import type { FieldDef, Runner } from '../../core';
+import { trustOptions, type FieldDef, type Runner } from '../../core';
 import { config } from '../config';
 import type { Ctx } from '../context';
 import { decryptJson, safeEqual } from '../crypto';
@@ -19,7 +19,7 @@ const OIDC_FIELDS: FieldDef[] = [
   { key: 'adminGroups', label: 'Admin groups (comma separated)', kind: 'text' },
   { key: 'editorGroups', label: 'Editor groups (comma separated)', kind: 'text' },
   role,
-  { key: 'autoCreate', label: 'Create users on first login', kind: 'bool', default: true },
+  { key: 'autoCreate', label: 'Create users on first login', kind: 'bool', default: false, help: 'Off by default: anyone who can sign in at the identity provider would otherwise get an account. Turn on only for a restricted provider (own tenant, allowed domains).' },
   { key: 'allowInsecure', label: 'Allow http:// issuer (development only)', kind: 'bool', default: false },
 ];
 const LDAP_FIELDS: FieldDef[] = [
@@ -48,7 +48,7 @@ const SAML_FIELDS: FieldDef[] = [
   { key: 'adminGroups', label: 'Admin groups (comma separated)', kind: 'text' },
   { key: 'editorGroups', label: 'Editor groups (comma separated)', kind: 'text' },
   role,
-  { key: 'autoCreate', label: 'Create users on first login', kind: 'bool', default: true },
+  { key: 'autoCreate', label: 'Create users on first login', kind: 'bool', default: false, help: 'Off by default: anyone who can sign in at the identity provider would otherwise get an account. Turn on only for a restricted provider (own tenant, allowed domains).' },
   { key: 'wantAssertionsSigned', label: 'Require signed assertions', kind: 'bool', default: true },
   { key: 'wantAuthnResponseSigned', label: 'Require signed response', kind: 'bool', default: false },
 ];
@@ -93,8 +93,10 @@ export async function ldapLogin(ctx: Ctx, username: string, password: string): P
   if (!providers.length) return undefined;
   for (const prov of providers) {
     const c = decryptJson<Record<string, any>>(prov.config_enc);
-    const tls = { rejectUnauthorized: c.verifyTls !== false };
-    const client = new Client({ url: c.url, tlsOptions: tls, connectTimeout: 5000, timeout: 10000 });
+    const tls = { rejectUnauthorized: c.verifyTls !== false, ...trustOptions() };
+    // ldapts switches a plain ldap:// connection to TLS as soon as any TLS option is set, so only ldaps:// gets them up front (STARTTLS passes them itself)
+    const opts = { url: c.url, tlsOptions: /^ldaps:/i.test(String(c.url)) ? tls : undefined, connectTimeout: 5000, timeout: 10000 };
+    const client = new Client(opts);
     try {
       if (c.startTls) await client.startTLS(tls);
       if (c.bindDn) await client.bind(c.bindDn, c.bindPassword ?? '');
@@ -103,7 +105,7 @@ export async function ldapLogin(ctx: Ctx, username: string, password: string): P
       if (searchEntries.length !== 1) continue; // unknown or ambiguous
       const entry = searchEntries[0];
       await client.unbind().catch(() => {});
-      const userClient = new Client({ url: c.url, tlsOptions: tls, connectTimeout: 5000, timeout: 10000 });
+      const userClient = new Client(opts);
       try { if (c.startTls) await userClient.startTLS(tls); await userClient.bind(entry.dn, password); } finally { await userClient.unbind().catch(() => {}); }
       const groups = ([] as string[]).concat((entry.memberOf as string | string[] | undefined) ?? []).map((g) => g.toLowerCase());
       const str = (v: unknown) => (Array.isArray(v) ? String(v[0]) : v == null ? undefined : String(v));
@@ -159,7 +161,7 @@ export async function oidcFinish(ctx: Ctx, currentUrl: URL, st: { s: string; n: 
   if (info.email && info.email_verified === false) info.email = undefined; // never trust unverified addresses
   return upsertExternal(ctx, 'oidc', `${prov.id}:${claims.sub}`, {
     username: String(info.preferred_username ?? info.email ?? claims.sub).replace(/[^A-Za-z0-9._@-]/g, '_'), email: info.email as string | undefined, displayName: (info.name as string | undefined) ?? undefined,
-    role: mapped, defaultRole: c.defaultRole ?? 'viewer', create: c.autoCreate !== false,
+    role: mapped, defaultRole: c.defaultRole ?? 'viewer', create: c.autoCreate === true,
   });
 }
 
@@ -255,6 +257,6 @@ export async function samlFinish(ctx: Ctx, body: Record<string, string>, st: { p
   const mapped: Role | undefined = admin.some((g) => groups.includes(g)) ? 'admin' : editor.some((g) => groups.includes(g)) ? 'editor' : admin.length || editor.length ? (c.defaultRole ?? 'viewer') : undefined;
   return upsertExternal(ctx, 'saml', `${prov.id}:${profile.nameID}`, {
     username: String(email ?? profile.nameID).replace(/[^A-Za-z0-9._@-]/g, '_'), email, displayName: attr(c.nameAttr)[0],
-    role: mapped, defaultRole: c.defaultRole ?? 'viewer', create: c.autoCreate !== false,
+    role: mapped, defaultRole: c.defaultRole ?? 'viewer', create: c.autoCreate === true,
   });
 }

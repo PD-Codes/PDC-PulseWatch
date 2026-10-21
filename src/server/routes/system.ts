@@ -74,7 +74,8 @@ export async function systemRoutes(app: FastifyInstance, deps: SystemDeps) {
 
   /* ------------------------------- realtime ------------------------------- */
   app.get('/api/stream', { preHandler: app.requireAuth, schema: { tags: ['system'], summary: 'Server-sent events with live monitor updates' } }, async (req, reply) => {
-    const user = req.user!;
+    const user = { ...req.user! }; // role and scope are re-read from the database while the stream is open
+    const restricted = () => user.scopeRestricted && user.role !== 'admin';
     let visible = await accessibleMonitorIds(ctx, user).then((v) => (v ? new Set(v) : null));
     reply.hijack();
     const raw = reply.raw;
@@ -83,11 +84,22 @@ export async function systemRoutes(app: FastifyInstance, deps: SystemDeps) {
     send('hello', { ts: Date.now() });
     const unsub = ctx.bus.subscribe((e) => {
       if (e.type === 'monitor') { if (visible && !visible.has(e.monitorId)) return; send('monitor', e.data); }
-      else if (e.type === 'incident') { if (visible && e.monitorId && !visible.has(e.monitorId)) return; send('incident', { id: e.incidentId, status: e.status, monitorId: e.monitorId }); }
+      else if (e.type === 'incident') { if (restricted() && (!e.monitorId || !visible?.has(e.monitorId))) return; send('incident', { id: e.incidentId, status: e.status, monitorId: e.monitorId }); }
+      else if (e.type === 'config' && restricted()) { if (e.entity === 'monitor' && e.id && visible?.has(e.id)) send('config', e); }
+      else if (restricted()) return; // maintenance and other global events carry nothing a restricted user may see
       else send(e.type, e);
     });
     const ping = setInterval(() => raw.write(': ping\n\n'), 15_000);
-    const refresh = setInterval(async () => { visible = await accessibleMonitorIds(ctx, user).then((v) => (v ? new Set(v) : null)).catch(() => visible); }, 60_000);
+    // a stream outlives the login it started with: end it when the account or session is gone, and follow changes of role or scope
+    const refresh = setInterval(async () => {
+      try {
+        const row = await db.selectFrom('users').select(['role', 'scope_restricted', 'is_active']).where('id', '=', user.id).executeTakeFirst();
+        const session = user.sessionId ? await db.selectFrom('sessions').select('id').where('id', '=', user.sessionId).where('expires_at', '>', new Date()).executeTakeFirst() : true;
+        if (!row || !row.is_active || !session) { raw.end(); return; }
+        Object.assign(user, { role: row.role, scopeRestricted: !!row.scope_restricted });
+        visible = await accessibleMonitorIds(ctx, user).then((v) => (v ? new Set(v) : null));
+      } catch { /* keep the previous state until the next round */ }
+    }, 60_000);
     req.raw.on('close', () => { unsub(); clearInterval(ping); clearInterval(refresh); });
   });
 

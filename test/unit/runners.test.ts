@@ -122,3 +122,13 @@ describe('helpers', () => {
     expect(g.check('8.8.4.4')).toBeTruthy();
   });
 });
+
+describe('user supplied regular expressions', () => {
+  it('refuses nested quantifiers and very long patterns, accepts ordinary ones', async () => {
+    const { compileRegex } = await import('../../src/core/regex');
+    expect(compileRegex('^ok (\\d+)$').test('ok 42')).toBe(true);
+    expect(() => compileRegex('(a+)+$')).toThrow(/nests quantifiers/);
+    expect(() => compileRegex('(.*)*x')).toThrow(/nests quantifiers/);
+    expect(() => compileRegex('a'.repeat(600))).toThrow(/too long/);
+  });
+});

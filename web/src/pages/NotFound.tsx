@@ -4,5 +4,5 @@ import { useT } from '../lib/i18n';
 
 export default function NotFound() {
   const t = useT();
-  return <EmptyState title={t('errors.notFound')} body={t('errors.notFoundBody')} action={<Link className="btn btn-primary" to="/">{t('nav.dashboard')}</Link>} />;
+  return <EmptyState title={t('errors.notFound')} body={t('errors.notFoundBody')} action={<Link className="btn btn-primary" to="/dashboard">{t('nav.dashboard')}</Link>} />;
 }

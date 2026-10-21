@@ -23,7 +23,7 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const providers = useQuery({ queryKey: ['auth-providers'], queryFn: () => get<{ id: number; kind: 'oidc' | 'saml'; name: string }[]>('/api/auth/providers/public'), staleTime: 60_000 });
   const setup = useQuery({ queryKey: ['setup'], queryFn: () => get<{ needsSetup: boolean }>('/api/setup/status'), staleTime: 60_000 });
-  const from = (loc.state as { from?: string } | null)?.from ?? '/';
+  const from = (loc.state as { from?: string } | null)?.from ?? '/dashboard';
 
   useEffect(() => { document.title = `${t('auth.signIn')} · PulseWatch`; }, [t]);
   if (user) return <Navigate to={from} replace />;

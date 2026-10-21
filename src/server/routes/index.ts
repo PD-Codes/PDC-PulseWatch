@@ -11,7 +11,7 @@ import { maintenanceRoutes } from './maintenance';
 import { notificationRoutes } from './notifications';
 import { probeRoutes } from './probes';
 import { reportRoutes } from './reports';
-import { startSubscriberNotifications, statusPageRoutes } from './status-pages';
+import { statusPageRoutes } from './status-pages';
 
 /** Registers the route modules that are not part of the core bootstrap. */
 export async function registerAllRoutes(app: FastifyInstance): Promise<void> {
@@ -27,6 +27,4 @@ export async function registerAllRoutes(app: FastifyInstance): Promise<void> {
   await reportRoutes(app);
   await insightRoutes(app);
   if (config.demo) registerDemoRoutes(app);
-  const stop = startSubscriberNotifications(app.ctx);
-  app.addHook('onClose', async () => stop());
 }

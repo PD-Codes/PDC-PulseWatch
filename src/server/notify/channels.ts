@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer';
 import { httpRequest } from '../../core/http';
 import type { FieldDef, Runner } from '../../core';
 import type { NetGuard } from '../../core';
+import { trustOptions } from '../../core';
 
 export interface Message {
   event: string;
@@ -48,6 +49,7 @@ const email: ChannelType = {
     const t = nodemailer.createTransport({
       host: c.host, port: c.port, secure: c.security === 'ssl', requireTLS: c.security === 'starttls', ignoreTLS: c.security === 'none',
       auth: c.username ? { user: c.username, pass: c.password } : undefined, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000,
+      tls: trustOptions(),
     });
     try { await t.sendMail({ from: c.from, to: c.to, subject: msg.subject, text: msg.text, html: msg.html }); } finally { t.close(); }
   },

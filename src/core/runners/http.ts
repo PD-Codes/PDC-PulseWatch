@@ -1,5 +1,6 @@
 import { httpRequest, type HttpResponse } from '../http';
 import { jsonCompare, jsonGet, type JsonOp } from '../jsonpath';
+import { compileRegex, regexInput } from '../regex';
 import { CheckError, type CheckResult, type FieldDef, type RunContext, type Runner } from '../types';
 import { certExpiryError, fail, ok, statusMatcher, toCheckError } from '../util';
 
@@ -131,7 +132,7 @@ async function runMulti(ctx: RunContext): Promise<CheckResult> {
         let val: unknown;
         if (kind === 'json') val = jsonGet(JSON.parse(res.body), arg);
         else if (kind === 'header') val = res.headers[arg.toLowerCase()];
-        else if (kind === 'regex') { const m = new RegExp(arg).exec(res.body); val = m?.[1] ?? m?.[0]; }
+        else if (kind === 'regex') { const m = compileRegex(arg).exec(regexInput(res.body)); val = m?.[1] ?? m?.[0]; }
         if (val === undefined || val === null) return fail('content', `${label}: could not extract "${name}" (${spec})`, { latencyMs: Math.round(total), details: { step: i + 1 } });
         vars[name] = String(val);
       }

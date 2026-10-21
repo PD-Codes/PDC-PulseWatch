@@ -11,8 +11,8 @@ export async function passkeyLogin(): Promise<string> {
 }
 
 /** Register a new passkey for the signed-in user. */
-export async function passkeyRegister(name: string): Promise<void> {
-  const options = await post('/api/auth/passkeys/register/options');
+export async function passkeyRegister(name: string, password?: string, code?: string): Promise<void> {
+  const options = await post('/api/auth/passkeys/register/options', { password, code });
   const credential = await startRegistration({ optionsJSON: options });
   await post('/api/auth/passkeys/register/verify', { name, credential });
 }

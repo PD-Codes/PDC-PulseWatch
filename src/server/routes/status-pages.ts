@@ -11,11 +11,11 @@ import { mailConfigured, sendSystemMail } from '../mail';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
 const Slug = Type.Object({ slug: Type.String({ minLength: 1, maxLength: 64 }) });
-const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+const esc = (s: string) => s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 const DAY = 86_400_000;
 export const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180] as const;
 
-type Page = { id: number; slug: string; title: string; description: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; show_history: number; history_days: number };
+type Page = { id: number; slug: string; title: string; description: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; show_history: number; history_days: number; is_default: number };
 const unlockCookie = (p: Page) => `pw_sp_${p.id}`;
 const unlockValue = (p: Page) => hmac(`status-unlock:${p.id}:${p.password_hash}`);
 
@@ -39,7 +39,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     domain: Type.Optional(Type.Union([Type.String({ pattern: '^[a-z0-9.-]{3,255}$' }), Type.Null()])),
     isPublic: Type.Boolean(), password: Type.Optional(Type.Union([Type.String({ minLength: 4, maxLength: 200 }), Type.Null()])), ssoRequired: Type.Optional(Type.Boolean()),
     branding: Type.Optional(Type.Object({ logoUrl: Type.Optional(Type.String({ maxLength: 2000 })), primaryColor: Type.Optional(Type.String({ pattern: '^#[0-9a-fA-F]{6}$' })), footer: Type.Optional(Type.String({ maxLength: 500 })) })),
-    customCss: Type.Optional(Type.Union([Type.String({ maxLength: 50_000 }), Type.Null()])), showHistory: Type.Optional(Type.Boolean()), historyDays: Type.Optional(Type.Union(HISTORY_DAYS.map((d) => Type.Literal(d)))),
+    customCss: Type.Optional(Type.Union([Type.String({ maxLength: 50_000 }), Type.Null()])), showHistory: Type.Optional(Type.Boolean()), historyDays: Type.Optional(Type.Union(HISTORY_DAYS.map((d) => Type.Literal(d)))), isDefault: Type.Optional(Type.Boolean()),
     sections: Type.Array(Type.Object({ name: Type.String({ minLength: 1, maxLength: 255 }), components: Type.Array(compBody) }), { maxItems: 50 }),
     components: Type.Optional(Type.Array(compBody)),
   });
@@ -52,7 +52,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const map = (c: typeof comps[number]) => ({ monitorId: c.monitor_id, displayName: c.display_name });
     return {
       id: p.id, slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), hasPassword: !!p.password_hash, ssoRequired: bool(p.sso_required),
-      branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: bool(p.show_history), historyDays: p.history_days,
+      branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default),
       sections: sections.map((s) => ({ id: s.id, name: s.name, components: comps.filter((c) => c.section_id === s.id).map(map) })), components: comps.filter((c) => !c.section_id).map(map),
     };
   };
@@ -64,10 +64,10 @@ export async function statusPageRoutes(app: FastifyInstance) {
   };
 
   app.get('/api/status-pages', { preHandler: app.requireAuth, schema: { tags: ['status-pages'] } }, async (req) => {
-    let q = db.selectFrom('status_pages').select(['id', 'slug', 'title', 'domain', 'is_public', 'password_hash', 'sso_required']).orderBy('title');
+    let q = db.selectFrom('status_pages').select(['id', 'slug', 'title', 'domain', 'is_public', 'password_hash', 'sso_required', 'is_default']).orderBy('title');
     const ids = await visibleIds(req.user!);
     if (ids) q = q.where('id', 'in', ids.length ? ids : [0]);
-    return (await q.execute()).map((p) => ({ id: p.id, slug: p.slug, title: p.title, domain: p.domain, isPublic: bool(p.is_public), protected: !!p.password_hash || bool(p.sso_required) }));
+    return (await q.execute()).map((p) => ({ id: p.id, slug: p.slug, title: p.title, domain: p.domain, isPublic: bool(p.is_public), protected: !!p.password_hash || bool(p.sso_required), isDefault: bool(p.is_default) }));
   });
 
   app.get('/api/status-pages/:id', { ...admin, schema: { tags: ['status-pages'], params: Id } }, async (req, reply) => (await loadFull((req.params as any).id)) ?? reply.code(404).send({ error: 'not_found' }));
@@ -85,11 +85,13 @@ export async function statusPageRoutes(app: FastifyInstance) {
       slug: b.slug, title: b.title, description: b.description ?? null, domain: b.domain ? String(b.domain).toLowerCase() : null, is_public: b.isPublic ? 1 : 0, sso_required: b.ssoRequired ? 1 : 0,
       branding: JSON.stringify(b.branding ?? {}), custom_css: b.customCss ?? null, show_history: b.showHistory === false ? 0 : 1, history_days: b.historyDays ?? 90,
     };
+    if (b.isDefault !== undefined) values.is_default = b.isDefault ? 1 : 0;
     if (b.password === null) values.password_hash = null; else if (typeof b.password === 'string') values.password_hash = await hashPassword(b.password);
     try {
       await db.transaction().execute(async (trx) => {
         if (id) await trx.updateTable('status_pages').set(values as any).where('id', '=', id).execute();
         else id = Number((await trx.insertInto('status_pages').values(values as any).executeTakeFirstOrThrow()).insertId);
+        if (values.is_default === 1) await trx.updateTable('status_pages').set({ is_default: 0 }).where('id', '!=', id!).execute(); // only one home page
         await trx.deleteFrom('status_page_components').where('page_id', '=', id!).execute();
         await trx.deleteFrom('status_page_sections').where('page_id', '=', id!).execute();
         let sort = 0;
@@ -105,6 +107,16 @@ export async function statusPageRoutes(app: FastifyInstance) {
   };
   app.post('/api/status-pages', { ...admin, schema: { tags: ['status-pages'], body: pageBody } }, (req, reply) => save(req, reply));
   app.put('/api/status-pages/:id', { ...admin, schema: { tags: ['status-pages'], params: Id, body: pageBody } }, (req, reply) => save(req, reply, (req.params as any).id));
+  app.put('/api/status-pages/:id/default', { ...admin, schema: { tags: ['status-pages'], summary: 'Use this page as the home page (or stop doing so)', params: Id, body: Type.Object({ isDefault: Type.Boolean() }) } }, async (req, reply) => {
+    const id = (req.params as any).id; const on = (req.body as any).isDefault;
+    if (!(await db.selectFrom('status_pages').select('id').where('id', '=', id).executeTakeFirst())) return reply.code(404).send({ error: 'not_found' });
+    await db.transaction().execute(async (trx) => {
+      if (on) await trx.updateTable('status_pages').set({ is_default: 0 }).execute();
+      await trx.updateTable('status_pages').set({ is_default: on ? 1 : 0 }).where('id', '=', id).execute();
+    });
+    await writeAudit(ctx, req.user, on ? 'status_page.default_set' : 'status_page.default_cleared', { type: 'status_page', id }, undefined, req.ip);
+    return { ok: true };
+  });
   app.delete('/api/status-pages/:id', { ...admin, schema: { tags: ['status-pages'], params: Id } }, async (req) => {
     await db.deleteFrom('status_pages').where('id', '=', (req.params as any).id).execute();
     await writeAudit(ctx, req.user, 'status_page.deleted', { type: 'status_page', id: (req.params as any).id }, undefined, req.ip);
@@ -118,7 +130,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const b = req.body as any; const pageId = (req.params as any).id;
     if (!(await db.selectFrom('status_pages').select('id').where('id', '=', pageId).executeTakeFirst())) return reply.code(404).send({ error: 'not_found' });
     const r = await db.insertInto('status_page_announcements').values({ page_id: pageId, kind: b.kind, title: b.title, body: b.body ?? null, starts_at: b.startsAt ? new Date(b.startsAt) : new Date(), ends_at: b.endsAt ? new Date(b.endsAt) : null }).executeTakeFirstOrThrow();
-    if (b.notify) void notifySubscribers(ctx, pageId, `[${b.kind}] ${b.title}`, b.body ?? b.title);
+    if (b.notify) void notifySubscribers(ctx, pageId, `[${b.kind}] ${b.title}`, b.body ?? b.title).catch((err) => ctx.log.warn({ err }, 'announcement notification failed'));
     return { id: Number(r.insertId) };
   });
   app.delete('/api/status-pages/:id/announcements/:aid', { ...admin, schema: { tags: ['status-pages'], params: Type.Object({ id: Type.Integer(), aid: Type.Integer() }) } }, async (req) => {
@@ -186,6 +198,9 @@ export async function statusPageRoutes(app: FastifyInstance) {
     return { slug: p?.slug ?? null };
   });
 
+  /** Home page: the status page marked as default replaces the dashboard at "/" (the admin UI stays at /dashboard and /admin). */
+  app.get('/api/public/default-page', { ...pub, schema: { hide: true } }, async () => ({ slug: (await db.selectFrom('status_pages').select('slug').where('is_default', '=', 1).where('is_public', '=', 1).executeTakeFirst())?.slug ?? null }));
+
   app.post('/api/public/status/:slug/unlock', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, schema: { tags: ['public'], params: Slug, body: Type.Object({ password: Type.String({ maxLength: 200 }) }) } }, async (req, reply) => {
     const p = await findPage((req.params as any).slug, req.headers.host);
     if (!p?.password_hash || !(await verifyPassword((req.body as any).password, p.password_hash))) return reply.code(401).send({ error: 'invalid_password', message: 'Wrong password' });
@@ -228,7 +243,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const now = new Date();
     const announcements = await db.selectFrom('status_page_announcements').select(['id', 'kind', 'title', 'body', 'starts_at', 'ends_at']).where('page_id', '=', p.id).where('starts_at', '<=', now).where((eb) => eb.or([eb('ends_at', 'is', null), eb('ends_at', '>', now)])).orderBy('starts_at', 'desc').execute();
     const maint = ctx.maintenance.activeWindows().filter((w) => w.announce && ids.some((i) => w.monitorIds.has(i))).map((w) => ({ id: w.id, name: w.name, description: w.description, endsAt: w.endsAt }));
-    const incidents = ids.length ? await listIncidents(ids, new Date(now.getTime() - (history ? 30 : 7) * DAY)) : [];
+    const incidents = ids.length ? await listIncidents(ids, new Date(now.getTime() - (history ? 30 : 7) * DAY), new Map(comps.map((c) => [c.monitor_id, c.display_name || c.name]))) : [];
     const all = comps.map((c) => publicStatus(c.status ? { status: c.status, overlay: c.overlay ?? 'none' } : undefined));
     const overall = all.includes('outage') ? (all.every((s) => s === 'outage') ? 'outage' : 'partial') : all.some((s) => s === 'degraded') ? 'degraded' : all.includes('maintenance') ? 'maintenance' : 'operational';
     return {
@@ -240,14 +255,21 @@ export async function statusPageRoutes(app: FastifyInstance) {
     };
   }
 
+  /** Monitors on a page with the name the page shows for each. */
+  async function pageMonitors(pageId: number) {
+    const rows = await db.selectFrom('status_page_components as c').innerJoin('monitors as m', 'm.id', 'c.monitor_id').select(['c.monitor_id', 'c.display_name', 'm.name']).where('c.page_id', '=', pageId).execute();
+    return { ids: rows.map((r) => r.monitor_id), names: new Map(rows.map((r) => [r.monitor_id, r.display_name || r.name] as [number, string])) };
+  }
+
   /** Incidents touching these monitors; manual incidents appear only when flagged public. */
-  async function listIncidents(monitorIds: number[], since: Date) {
+  async function listIncidents(monitorIds: number[], since: Date, names: Map<number, string>) {
     const rows = await db.selectFrom('incidents as i').innerJoin('incident_monitors as im', 'im.incident_id', 'i.id')
-      .select(['i.id', 'i.title', 'i.status', 'i.severity', 'i.source', 'i.started_at', 'i.resolved_at', 'i.public']).distinct()
+      .select(['i.id', 'i.title', 'i.status', 'i.severity', 'i.source', 'i.monitor_id', 'i.started_at', 'i.resolved_at', 'i.public']).distinct()
       .where('im.monitor_id', 'in', monitorIds).where((eb) => eb.or([eb('i.resolved_at', 'is', null), eb('i.resolved_at', '>=', since)])).orderBy('i.started_at', 'desc').limit(100).execute();
     const visible = rows.filter((r) => r.source === 'auto' || bool(r.public));
-    const updates = visible.length ? await db.selectFrom('incident_updates').select(['incident_id', 'ts', 'kind', 'body']).where('incident_id', 'in', visible.filter((r) => bool(r.public)).map((r) => r.id).concat(0)).where('kind', 'in', ['note', 'status', 'resolve', 'postmortem']).orderBy('ts', 'desc').execute() : [];
-    return visible.map((r) => ({ id: r.id, title: r.title, status: r.status, severity: r.severity, startedAt: r.started_at, resolvedAt: r.resolved_at, updates: updates.filter((u) => u.incident_id === r.id).map((u) => ({ ts: u.ts, kind: u.kind, body: u.body })) }));
+    const updates = visible.length ? await db.selectFrom('incident_updates').select(['incident_id', 'ts', 'kind', 'status', 'body']).where('incident_id', 'in', visible.filter((r) => bool(r.public)).map((r) => r.id).concat(0)).where('kind', 'in', ['status', 'resolve', 'postmortem']).orderBy('ts', 'desc').execute() : [];
+    // an automatic incident is titled with the internal monitor name, the page shows the name chosen for it
+    return visible.map((r) => ({ id: r.id, title: r.source === 'auto' && r.monitor_id && names.has(r.monitor_id) ? `${names.get(r.monitor_id)} is down` : r.title, status: r.status, severity: r.severity, startedAt: r.started_at, resolvedAt: r.resolved_at, updates: updates.filter((u) => u.incident_id === r.id).map((u) => ({ ts: u.ts, kind: u.kind, status: u.status, body: u.body })) }));
   }
 
   app.get('/api/public/status/:slug', { ...pub, schema: { tags: ['public'], params: Slug } }, async (req, reply) => {
@@ -259,15 +281,15 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const p = await gate(req, reply, (req.params as any).slug);
     if (!p) return;
     if (!bool(p.show_history)) return reply.code(404).send({ error: 'not_found' });
-    const ids = (await db.selectFrom('status_page_components').select('monitor_id').where('page_id', '=', p.id).execute()).map((c) => c.monitor_id);
-    return { incidents: ids.length ? await listIncidents(ids, new Date(Date.now() - ((req.query as any).days ?? p.history_days) * DAY)) : [] };
+    const { ids, names } = await pageMonitors(p.id);
+    return { incidents: ids.length ? await listIncidents(ids, new Date(Date.now() - ((req.query as any).days ?? p.history_days) * DAY), names) : [] };
   });
 
   app.get('/api/public/status/:slug/rss', { ...pub, schema: { tags: ['public'], params: Slug } }, async (req, reply) => {
     const p = await gate(req, reply, (req.params as any).slug, true);
     if (!p) return;
-    const ids = (await db.selectFrom('status_page_components').select('monitor_id').where('page_id', '=', p.id).execute()).map((c) => c.monitor_id);
-    const inc = ids.length ? await listIncidents(ids, new Date(Date.now() - 30 * DAY)) : [];
+    const { ids, names } = await pageMonitors(p.id);
+    const inc = ids.length ? await listIncidents(ids, new Date(Date.now() - 30 * DAY), names) : [];
     const link = `${config.baseUrl}/status/${p.slug}`;
     const items = inc.map((i) => `<item><title>${esc(`[${i.resolvedAt ? 'Resolved' : 'Ongoing'}] ${i.title}`)}</title><link>${esc(link)}</link><guid isPermaLink="false">${esc(`${p.slug}-incident-${i.id}-${i.resolvedAt ? 'r' : 'o'}`)}</guid><pubDate>${new Date(i.resolvedAt ?? i.startedAt).toUTCString()}</pubDate><description>${esc(i.updates[0]?.body ?? i.title)}</description></item>`).join('');
     return reply.type('application/rss+xml; charset=utf-8').send(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${esc(p.title)}</title><link>${esc(link)}</link><description>${esc(p.description ?? `${p.title} status`)}</description>${items}</channel></rss>`);
@@ -321,15 +343,27 @@ export async function notifySubscribers(ctx: Ctx, pageId: number, subject: strin
   }
 }
 
-/** Notifies subscribers when a public-facing incident opens or resolves. */
+const PHASES: Record<string, string> = { identified: 'Identified', fixing: 'Fix in progress', monitoring: 'Monitoring' };
+
+/** Notifies subscribers when a public-facing incident opens, moves to a new phase or resolves. */
 export function startSubscriberNotifications(ctx: Ctx): () => void {
   return ctx.bus.subscribe((e) => {
-    if (e.type !== 'incident' || !e.monitorId || (e.status !== 'open' && e.status !== 'resolved')) return;
+    if (e.type !== 'incident' || (e.status !== 'open' && e.status !== 'resolved' && !PHASES[e.status])) return;
     void (async () => {
-      const inc = await ctx.db.selectFrom('incidents').select(['title', 'source', 'public']).where('id', '=', e.incidentId).executeTakeFirst();
+      const inc = await ctx.db.selectFrom('incidents').select(['title', 'source', 'public', 'monitor_id']).where('id', '=', e.incidentId).executeTakeFirst();
       if (!inc || (inc.source !== 'auto' && !bool(inc.public))) return;
-      const pages = await ctx.db.selectFrom('status_page_components').select('page_id').distinct().where('monitor_id', '=', e.monitorId!).execute();
-      for (const pg of pages) await notifySubscribers(ctx, pg.page_id, e.status === 'open' ? `Incident: ${inc.title}` : `Resolved: ${inc.title}`, e.status === 'open' ? `${inc.title}. We are investigating.` : `${inc.title} has been resolved.`);
+      // the message the operator wrote for this phase (public incidents only; automatic ones have no human text)
+      const last = bool(inc.public) && PHASES[e.status] ? await ctx.db.selectFrom('incident_updates').select('body').where('incident_id', '=', e.incidentId).where('status', '=', e.status as any).orderBy('id', 'desc').limit(1).executeTakeFirst() : undefined;
+      // every page that shows any monitor of the incident, each told once, with the name that page uses (automatic titles carry the internal monitor name)
+      const comps = await ctx.db.selectFrom('status_page_components as c').innerJoin('monitors as m', 'm.id', 'c.monitor_id').select(['c.page_id', 'c.monitor_id', 'c.display_name', 'm.name'])
+        .where('c.monitor_id', 'in', ctx.db.selectFrom('incident_monitors').select('monitor_id').where('incident_id', '=', e.incidentId)).execute();
+      for (const pageId of new Set(comps.map((c) => c.page_id))) {
+        const own = comps.find((c) => c.page_id === pageId && c.monitor_id === inc.monitor_id);
+        const title = inc.source === 'auto' && own ? `${own.display_name || own.name} is down` : inc.title;
+        const subject = e.status === 'open' ? `Incident: ${title}` : e.status === 'resolved' ? `Resolved: ${title}` : `Update (${PHASES[e.status]}): ${title}`;
+        const body = e.status === 'open' ? `${title}. We are investigating.` : e.status === 'resolved' ? `${title} has been resolved.` : `${title}: ${PHASES[e.status]}.${last?.body ? `\n\n${last.body}` : ''}`;
+        await notifySubscribers(ctx, pageId, subject, body);
+      }
     })().catch((err) => ctx.log.warn({ err }, 'subscriber notification failed'));
   });
 }

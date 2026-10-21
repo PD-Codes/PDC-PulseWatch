@@ -1,3 +1,4 @@
+import dgram from 'node:dgram';
 import net from 'node:net';
 import tls from 'node:tls';
 import { CheckError, type CertInfo, type ErrorKind } from './types';
@@ -13,8 +14,10 @@ const TLS_CODES = new Set([
 export function toCheckError(err: unknown, phase?: string, target?: { host: string; port: number; servername?: string }): CheckError {
   if (err instanceof CheckError) return err;
   const e = err as NodeJS.ErrnoException & { name?: string };
-  const code = e?.code ?? '';
-  const msg = e?.message ?? String(err);
+  // Node's dual-stack connect fails with an AggregateError that has an empty message: report what the individual attempts said
+  const inner = (e as { errors?: NodeJS.ErrnoException[] } | undefined)?.errors;
+  const code = e?.code || inner?.[0]?.code || '';
+  const msg = e?.message || (inner?.length ? [...new Set(inner.map((x) => x.message || x.code || 'connection failed'))].join('; ') : String(err));
   const d = { ...(phase ? { phase, code } : { code }), ...(target ?? {}) };
   if (code === 'PW_BLOCKED') return new CheckError('blocked', msg, d);
   if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'EAI_FAIL' || code === 'ENODATA' || code === 'ENOTIMP' || code === 'ESERVFAIL' || code === 'EBADNAME')
@@ -122,3 +125,26 @@ export function certExpiryError(cert: CertInfo | undefined, warnDays: number): C
 
 export const ok = (latencyMs: number, extra: Partial<import('./types').CheckResult> = {}) => ({ ok: true, latencyMs: Math.round(latencyMs), ...extra });
 export const fail = (kind: ErrorKind, message: string, extra: Partial<import('./types').CheckResult> = {}) => ({ ok: false, errorKind: kind, message, ...extra });
+
+/** Turns whatever a runner caught into a failed check result. */
+export const failure = (e: unknown) => { const ce = toCheckError(e); return fail(ce.kind, ce.message, { details: ce.details }); };
+
+/** Closes a datagram socket. A second close throws in Node, which from an event handler would take the whole process down. */
+export function closeDgram(s: dgram.Socket): void {
+  try { s.close(); } catch { /* already closed */ }
+}
+
+/** Sends one datagram and resolves with the first reply. The socket is closed exactly once on every path. */
+export function udpRequest(addr: { address: string; family: number }, port: number, pkt: Buffer, timeoutMs: number, what: string, signal?: AbortSignal): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    const s = dgram.createSocket(addr.family === 6 ? 'udp6' : 'udp4');
+    let finished = false;
+    const end = (fn: () => void) => { if (finished) return; finished = true; clearTimeout(timer); signal?.removeEventListener('abort', onAbort); closeDgram(s); fn(); };
+    const onAbort = () => end(() => reject(new CheckError('timeout', 'Aborted')));
+    const timer = setTimeout(() => end(() => reject(new CheckError('timeout', `No ${what} response`, { phase: 'response' }))), timeoutMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    s.on('error', (e) => end(() => reject(e)));
+    s.on('message', (m) => end(() => resolve(m)));
+    s.send(pkt, port, addr.address, (e) => { if (e) end(() => reject(e)); });
+  });
+}

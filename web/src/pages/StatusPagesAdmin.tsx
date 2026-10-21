@@ -1,31 +1,31 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, ExternalLink, Globe, Lock, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ExternalLink, Globe, Home, Lock, Megaphone, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
 import { del, errorMessage, get, post, put, type Group, type MonitorItem } from '../lib/api';
-import { useAuth } from '../lib/auth';
+import { useAuth, useMeta } from '../lib/auth';
 import { fmtDateTime } from '../lib/format';
 import { useT } from '../lib/i18n';
 
-interface PageRow { id: number; slug: string; title: string; domain: string | null; isPublic: boolean; protected: boolean }
+interface PageRow { id: number; slug: string; title: string; domain: string | null; isPublic: boolean; protected: boolean; isDefault: boolean }
 interface Comp { monitorId: number; displayName: string | null }
 interface Full {
   id: number; slug: string; title: string; description: string | null; domain: string | null; isPublic: boolean; hasPassword: boolean; ssoRequired: boolean;
-  branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number;
+  branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number; isDefault: boolean;
   sections: { name: string; components: Comp[] }[]; components: Comp[];
 }
 /** Editor model: group 0 is always the ungrouped list (name === null). */
 interface Grp { name: string | null; items: Comp[] }
 interface Form {
-  slug: string; title: string; description: string; domain: string; isPublic: boolean; ssoRequired: boolean; showHistory: boolean; historyDays: number;
+  slug: string; title: string; description: string; domain: string; isPublic: boolean; ssoRequired: boolean; showHistory: boolean; historyDays: number; isDefault: boolean;
   pwMode: 'keep' | 'set' | 'remove'; password: string; logoUrl: string; primaryColor: string; footer: string; customCss: string; groups: Grp[];
 }
 const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180];
 type Tab = 'general' | 'components' | 'appearance' | 'announcements' | 'subscribers';
 
 const toForm = (p?: Full): Form => ({
-  slug: p?.slug ?? '', title: p?.title ?? '', description: p?.description ?? '', domain: p?.domain ?? '', isPublic: p?.isPublic ?? true, ssoRequired: p?.ssoRequired ?? false, showHistory: p?.showHistory ?? true, historyDays: p?.historyDays ?? 90,
+  slug: p?.slug ?? '', title: p?.title ?? '', description: p?.description ?? '', domain: p?.domain ?? '', isPublic: p?.isPublic ?? true, ssoRequired: p?.ssoRequired ?? false, showHistory: p?.showHistory ?? true, historyDays: p?.historyDays ?? 90, isDefault: p?.isDefault ?? false,
   pwMode: 'keep', password: '', logoUrl: p?.branding.logoUrl ?? '', primaryColor: p?.branding.primaryColor ?? '', footer: p?.branding.footer ?? '', customCss: p?.customCss ?? '',
   groups: [{ name: null, items: p?.components ?? [] }, ...(p?.sections ?? []).map((s) => ({ name: s.name, items: s.components }))],
 });
@@ -46,11 +46,17 @@ export default function StatusPagesAdmin() {
   const { can } = useAuth();
   const isAdmin = can('admin');
   const [editing, setEditing] = useState<number | 'new' | null>(null);
+  const [posting, setPosting] = useState<PageRow | null>(null);
   const pages = useQuery({ queryKey: ['status-pages'], queryFn: () => get<PageRow[]>('/api/status-pages') });
 
+  const setDefault = useMutation({
+    mutationFn: (p: PageRow) => put(`/api/status-pages/${p.id}/default`, { isDefault: !p.isDefault }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['status-pages'] }); void qc.invalidateQueries({ queryKey: ['default-page'] }); toast(t('common.saved')); },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
   const remove = async (p: PageRow) => {
     if (!(await confirm({ title: t('common.delete'), body: t('common.deleteConfirm', { name: p.title }), danger: true, confirmLabel: t('common.delete') }))) return;
-    try { await del(`/api/status-pages/${p.id}`); void qc.invalidateQueries({ queryKey: ['status-pages'] }); toast(t('common.deleted')); } catch (e) { toast(errorMessage(e), 'error'); }
+    try { await del(`/api/status-pages/${p.id}`); void qc.invalidateQueries({ queryKey: ['status-pages'] }); void qc.invalidateQueries({ queryKey: ['default-page'] }); toast(t('common.deleted')); } catch (e) { toast(errorMessage(e), 'error'); }
   };
 
   return (
@@ -66,11 +72,18 @@ export default function StatusPagesAdmin() {
               <tbody>
                 {pages.data.map((p) => (
                   <tr key={p.id}>
-                    <td><div className="font-medium">{p.title}</div><Link to={`/status/${p.slug}`} target="_blank" className="inline-flex items-center gap-1 text-xs">/status/{p.slug}<ExternalLink className="h-3 w-3" aria-hidden /></Link></td>
+                    <td><div className="flex flex-wrap items-center gap-2 font-medium">{p.title}{p.isDefault && <Badge tone="brand"><Home className="h-3 w-3" />{t('statuspages.homePage')}</Badge>}</div><Link to={`/status/${p.slug}`} target="_blank" className="inline-flex items-center gap-1 text-xs">/status/{p.slug}<ExternalLink className="h-3 w-3" aria-hidden /></Link></td>
                     <td className="text-sm text-slate-500">{p.domain ?? '—'}</td>
                     <td>{p.protected ? <Badge tone="amber"><Lock className="h-3 w-3" />{t('statuspages.protected')}</Badge> : p.isPublic ? <Badge tone="green">{t('statuspages.public')}</Badge> : <Badge>{t('statuspages.private')}</Badge>}</td>
                     <td className="text-right">
-                      {isAdmin && <div className="flex justify-end gap-1"><Button size="sm" onClick={() => setEditing(p.id)} aria-label={`${t('common.edit')}: ${p.title}`}><Pencil className="h-4 w-4" />{t('common.edit')}</Button><Button size="sm" variant="ghost" onClick={() => remove(p)} aria-label={`${t('common.delete')}: ${p.title}`}><Trash2 className="h-4 w-4" /></Button></div>}
+                      {isAdmin && (
+                        <div className="flex justify-end gap-1">
+                          <Button size="sm" variant="ghost" onClick={() => setPosting(p)} aria-label={`${t('statuspages.postUpdate')}: ${p.title}`} title={t('statuspages.postUpdate')}><Megaphone className="h-4 w-4" /></Button>
+                          <Button size="sm" variant="ghost" loading={setDefault.isPending && setDefault.variables?.id === p.id} onClick={() => setDefault.mutate(p)} aria-pressed={p.isDefault} aria-label={`${p.isDefault ? t('statuspages.unsetHome') : t('statuspages.setHome')}: ${p.title}`} title={p.isDefault ? t('statuspages.unsetHome') : t('statuspages.setHome')}><Home className={p.isDefault ? 'h-4 w-4 text-brand-600' : 'h-4 w-4'} /></Button>
+                          <Button size="sm" onClick={() => setEditing(p.id)} aria-label={`${t('common.edit')}: ${p.title}`}><Pencil className="h-4 w-4" />{t('common.edit')}</Button>
+                          <Button size="sm" variant="ghost" onClick={() => remove(p)} aria-label={`${t('common.delete')}: ${p.title}`}><Trash2 className="h-4 w-4" /></Button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -79,7 +92,8 @@ export default function StatusPagesAdmin() {
           </div>
         )}
       </Card>
-      {editing !== null && <Editor id={editing} onClose={() => setEditing(null)} onSaved={() => { void qc.invalidateQueries({ queryKey: ['status-pages'] }); }} />}
+      {posting && <Modal open onClose={() => setPosting(null)} title={`${t('statuspages.postUpdate')}: ${posting.title}`}><AnnouncementForm pageId={posting.id} onDone={() => setPosting(null)} /></Modal>}
+      {editing !== null && <Editor id={editing} onClose={() => setEditing(null)} onSaved={() => { void qc.invalidateQueries({ queryKey: ['status-pages'] }); void qc.invalidateQueries({ queryKey: ['default-page'] }); }} />}
     </>
   );
 }
@@ -106,6 +120,8 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
       const comp = (c: Comp) => ({ monitorId: c.monitorId, displayName: c.displayName?.trim() || null });
       const body = {
         slug: f.slug.trim().toLowerCase(), title: f.title.trim(), description: f.description.trim() || null, domain: f.domain.trim().toLowerCase() || null, isPublic: f.isPublic, ssoRequired: f.ssoRequired, showHistory: f.showHistory, historyDays: f.historyDays,
+        // only send the home-page flag when this form changed it, so a stale form cannot take the home page back from another page
+        ...(f.isDefault !== initial.isDefault ? { isDefault: f.isDefault } : {}),
         ...(f.pwMode === 'set' ? { password: f.password } : f.pwMode === 'remove' ? { password: null } : {}),
         branding: { ...(f.logoUrl.trim() && { logoUrl: f.logoUrl.trim() }), ...(f.primaryColor && { primaryColor: f.primaryColor }), ...(f.footer.trim() && { footer: f.footer.trim() }) },
         customCss: f.customCss.trim() || null,
@@ -126,9 +142,10 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
     save.mutate();
   };
 
+  const smtp = useMeta()?.smtp;
   const tabs: { id: Tab; label: ReactNode }[] = [
     { id: 'general', label: t('statuspages.tab.general') }, { id: 'components', label: t('statuspages.tab.components') }, { id: 'appearance', label: t('statuspages.tab.appearance') },
-    ...(id === 'new' ? [] : [{ id: 'announcements' as const, label: t('statuspages.tab.announcements') }, { id: 'subscribers' as const, label: t('statuspages.tab.subscribers') }]),
+    ...(id === 'new' ? [] : [{ id: 'announcements' as const, label: t('statuspages.tab.announcements') }, ...(smtp ? [{ id: 'subscribers' as const, label: t('statuspages.tab.subscribers') }] : [])]),
   ];
 
   return (
@@ -142,8 +159,9 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
             <Field label={t('statuspages.f.slug')} hint={t('statuspages.f.slugHint')}>{(i) => <Input id={i} value={f.slug} onChange={(e) => set('slug', e.target.value)} maxLength={63} placeholder="status" />}</Field>
             <Field label={t('statuspages.f.description')} className="sm:col-span-2">{(i) => <Textarea id={i} rows={2} value={f.description} onChange={(e) => set('description', e.target.value)} maxLength={5000} />}</Field>
             <Field label={t('statuspages.f.domain')} hint={t('statuspages.f.domainHint')} className="sm:col-span-2">{(i) => <Input id={i} value={f.domain} onChange={(e) => set('domain', e.target.value)} placeholder="status.example.com" />}</Field>
-            <div className="space-y-3 sm:col-span-2">
+            <div className="flex flex-col items-start gap-3 sm:col-span-2">
               <Toggle checked={f.isPublic} onChange={(v) => set('isPublic', v)} label={t('statuspages.f.isPublic')} />
+              <div><Toggle checked={f.isDefault} onChange={(v) => set('isDefault', v)} label={t('statuspages.f.default')} /><p className="hint">{t('statuspages.f.defaultHint')}</p></div>
               <Toggle checked={f.ssoRequired} onChange={(v) => set('ssoRequired', v)} label={t('statuspages.f.sso')} />
               <Toggle checked={f.showHistory} onChange={(v) => set('showHistory', v)} label={t('statuspages.f.history')} />
               {f.showHistory && (
@@ -184,7 +202,7 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
           </div>
         )}
         {tab === 'announcements' && id !== 'new' && <Announcements pageId={id} />}
-        {tab === 'subscribers' && id !== 'new' && <Subscribers pageId={id} />}
+        {tab === 'subscribers' && smtp && id !== 'new' && <Subscribers pageId={id} />}
       </div>
     </Modal>
   );
@@ -192,20 +210,17 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
 
 function Components({ groups, onChange, monitors, loading, error }: { groups: Grp[]; onChange: (g: Grp[]) => void; monitors?: MonitorItem[]; loading: boolean; error: unknown }) {
   const t = useT();
+  const monGroups = useQuery({ queryKey: ['groups'], queryFn: () => get<Group[]>('/api/groups') });
+  const [withSub, setWithSub] = useState(true);
   if (loading) return <Loading />;
   if (error) return <ErrorBox error={error} />;
   const all = monitors ?? [];
-  const monGroups = useQuery({ queryKey: ['groups'], queryFn: () => get<Group[]>('/api/groups') });
-  const [pickGroup, setPickGroup] = useState('');
-  const [withSub, setWithSub] = useState(true);
   const used = new Set(groups.flatMap((g) => g.items.map((c) => c.monitorId)));
   const free = all.filter((m) => !used.has(m.id));
   const nameOf = (id: number) => all.find((m) => m.id === id)?.name ?? `#${id}`;
   // Adds one section per monitor group (optionally with its subgroups), skipping monitors already on the page.
-  const addWholeGroup = () => {
-    const root = Number(pickGroup);
+  const addWholeGroup = (root: number) => {
     const list = monGroups.data ?? [];
-    if (!root) return;
     const ids = [root];
     if (withSub) for (let i = 0; i < ids.length; i++) for (const g of list) if (g.parentId === ids[i] && !ids.includes(g.id)) ids.push(g.id);
     const taken = new Set(used);
@@ -216,7 +231,12 @@ function Components({ groups, onChange, monitors, loading, error }: { groups: Gr
       if (items.length) added.push({ name: list.find((g) => g.id === gid)?.name ?? `#${gid}`, items });
     }
     onChange([...groups, ...added]);
-    setPickGroup('');
+  };
+  // Number of monitors a chip would still add (own + optional subgroups), so empty/used groups can be disabled.
+  const freeIn = (root: number) => {
+    const ids = [root];
+    if (withSub) for (let i = 0; i < ids.length; i++) for (const g of monGroups.data ?? []) if (g.parentId === ids[i] && !ids.includes(g.id)) ids.push(g.id);
+    return free.filter((m) => m.groupId != null && ids.includes(m.groupId)).length;
   };
   const patchGroup = (gi: number, fn: (g: Grp) => Grp) => onChange(groups.map((g, i) => (i === gi ? fn(g) : g)));
 
@@ -254,16 +274,20 @@ function Components({ groups, onChange, monitors, loading, error }: { groups: Gr
           </ul>
         </section>
       ))}
-      <div className="flex flex-wrap items-end gap-2">
-        <Button onClick={() => onChange([...groups, { name: '', items: [] }])}><Plus className="h-4 w-4" />{t('statuspages.addSection')}</Button>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          <Select className="w-auto" aria-label={t('statuspages.addGroup')} value={pickGroup} onChange={(e) => setPickGroup(e.target.value)}>
-            <option value="">{t('statuspages.addGroup')}</option>
-            {monGroups.data?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-          </Select>
+      <div className="space-y-2 rounded-lg border border-dashed border-slate-300 p-3 dark:border-slate-700">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-sm font-medium">{t('statuspages.addGroup')}</span>
           <label className="inline-flex items-center gap-1.5 text-sm"><input type="checkbox" checked={withSub} onChange={(e) => setWithSub(e.target.checked)} />{t('statuspages.withSub')}</label>
-          <Button disabled={!pickGroup} onClick={addWholeGroup}><Plus className="h-4 w-4" />{t('statuspages.addGroupBtn')}</Button>
         </div>
+        {monGroups.data?.length ? (
+          <div className="flex flex-wrap gap-2">
+            {monGroups.data.map((g) => {
+              const n = freeIn(g.id);
+              return <button key={g.id} type="button" disabled={!n} onClick={() => addWholeGroup(g.id)} title={n ? undefined : t('statuspages.groupNothingToAdd')} className="inline-flex items-center gap-1 rounded-full border border-slate-300 px-3 py-1 text-sm hover:bg-slate-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"><Plus className="h-3.5 w-3.5" />{g.name}<span className="text-xs text-slate-500">{n}</span></button>;
+            })}
+          </div>
+        ) : <p className="text-sm text-slate-500">{t('statuspages.noGroups')}</p>}
+        <Button onClick={() => onChange([...groups, { name: '', items: [] }])}><Plus className="h-4 w-4" />{t('statuspages.addSection')}</Button>
       </div>
     </div>
   );
@@ -272,32 +296,62 @@ function Components({ groups, onChange, monitors, loading, error }: { groups: Gr
 interface Announcement { id: number; kind: 'info' | 'maintenance' | 'incident'; title: string; body: string | null; startsAt: string; endsAt: string | null }
 const KIND_TONE = { info: 'blue', maintenance: 'amber', incident: 'red' } as const;
 
+const KINDS = ['info', 'maintenance', 'incident'] as const;
+const KIND_STYLE = { info: 'border-sky-400 bg-sky-50 text-sky-800 dark:bg-sky-950/40 dark:text-sky-200', maintenance: 'border-amber-400 bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200', incident: 'border-red-400 bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-200' } as const;
+
+/** Compose and publish one announcement; used inline in the editor and as the quick "Post update" dialog. */
+function AnnouncementForm({ pageId, onDone }: { pageId: number; onDone?: () => void }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const smtp = useMeta()?.smtp;
+  const [kind, setKind] = useState<Announcement['kind']>('info');
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [from, setFrom] = useState('');
+  const [until, setUntil] = useState('');
+  const [notify, setNotify] = useState(false);
+  const add = useMutation({
+    mutationFn: () => post(`/api/status-pages/${pageId}/announcements`, {
+      kind, title: title.trim(), body: body.trim() || undefined, notify: smtp ? notify : false,
+      ...(kind === 'maintenance' && from ? { startsAt: new Date(from).toISOString() } : {}), ...(kind === 'maintenance' && until ? { endsAt: new Date(until).toISOString() } : {}),
+    }),
+    onSuccess: () => { setTitle(''); setBody(''); setFrom(''); setUntil(''); void qc.invalidateQueries({ queryKey: ['status-page-announcements', pageId] }); toast(t('statuspages.ann.published')); onDone?.(); },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
+  return (
+    <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
+      <div role="radiogroup" aria-label={t('statuspages.ann.kind')} className="grid grid-cols-3 gap-2">
+        {KINDS.map((k) => <button key={k} type="button" role="radio" aria-checked={kind === k} onClick={() => setKind(k)} className={`rounded-lg border-2 px-3 py-2 text-sm font-medium ${kind === k ? KIND_STYLE[k] : 'border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300'}`}>{t(`statuspages.ann.kind.${k}`)}</button>)}
+      </div>
+      <Field label={t('statuspages.ann.title')}>{(i) => <Input id={i} required maxLength={255} autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />}</Field>
+      <Field label={t('statuspages.ann.body')}>{(i) => <Textarea id={i} rows={3} maxLength={5000} value={body} onChange={(e) => setBody(e.target.value)} />}</Field>
+      {kind === 'maintenance' && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label={t('statuspages.ann.from')}>{(i) => <Input id={i} type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} />}</Field>
+          <Field label={t('statuspages.ann.until')}>{(i) => <Input id={i} type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} />}</Field>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {smtp ? <Toggle checked={notify} onChange={setNotify} label={t('statuspages.ann.notify')} /> : <span />}
+        <Button type="submit" variant="primary" loading={add.isPending} disabled={!title.trim()}>{t('statuspages.ann.publish')}</Button>
+      </div>
+    </form>
+  );
+}
+
 function Announcements({ pageId }: { pageId: number }) {
   const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const key = ['status-page-announcements', pageId];
   const list = useQuery({ queryKey: key, queryFn: () => get<Announcement[]>(`/api/status-pages/${pageId}/announcements`) });
-  const [kind, setKind] = useState<Announcement['kind']>('info');
-  const [title, setTitle] = useState('');
-  const [body, setBody] = useState('');
-  const [notify, setNotify] = useState(false);
-  const add = useMutation({
-    mutationFn: () => post(`/api/status-pages/${pageId}/announcements`, { kind, title: title.trim(), body: body.trim() || undefined, notify }),
-    onSuccess: () => { setTitle(''); setBody(''); void qc.invalidateQueries({ queryKey: key }); toast(t('common.saved')); },
-    onError: (e) => toast(errorMessage(e), 'error'),
-  });
   const remove = async (a: Announcement) => {
     try { await del(`/api/status-pages/${pageId}/announcements/${a.id}`); void qc.invalidateQueries({ queryKey: key }); } catch (e) { toast(errorMessage(e), 'error'); }
   };
   return (
     <div className="space-y-4">
-      <form className="grid gap-3 rounded-lg border border-slate-200 p-3 dark:border-slate-800 sm:grid-cols-3" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
-        <Field label={t('statuspages.ann.kind')}>{(i) => <Select id={i} value={kind} onChange={(e) => setKind(e.target.value as Announcement['kind'])}>{(['info', 'maintenance', 'incident'] as const).map((k) => <option key={k} value={k}>{t(`statuspages.ann.kind.${k}`)}</option>)}</Select>}</Field>
-        <Field label={t('statuspages.ann.title')} className="sm:col-span-2">{(i) => <Input id={i} required maxLength={255} value={title} onChange={(e) => setTitle(e.target.value)} />}</Field>
-        <Field label={t('statuspages.ann.body')} className="sm:col-span-3">{(i) => <Textarea id={i} rows={3} maxLength={5000} value={body} onChange={(e) => setBody(e.target.value)} />}</Field>
-        <div className="flex flex-wrap items-center justify-between gap-2 sm:col-span-3"><Toggle checked={notify} onChange={setNotify} label={t('statuspages.ann.notify')} /><Button type="submit" variant="primary" loading={add.isPending} disabled={!title.trim()}><Plus className="h-4 w-4" />{t('statuspages.ann.publish')}</Button></div>
-      </form>
+      <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-800"><AnnouncementForm pageId={pageId} /></div>
       {list.isLoading ? <Loading /> : list.error ? <ErrorBox error={list.error} /> : !list.data?.length ? <p className="text-sm text-slate-500">{t('statuspages.ann.empty')}</p> : (
         <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
           {list.data.map((a) => (

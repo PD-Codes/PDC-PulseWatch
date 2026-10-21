@@ -88,3 +88,101 @@ describe('status page history length', () => {
     expect(JSON.parse(exp.body).statusPages.find((p: any) => p.slug === 'hist').historyDays).toBe(30);
   });
 });
+
+describe('default status page', () => {
+  it('is exclusive, public-only, switchable and survives export/import', async () => {
+    const mk = async (slug: string, extra: object = {}) => (await c.post('/api/status-pages', { slug, title: slug, isPublic: true, sections: [], ...extra })).json.id as number;
+    const a = await mk('home-a');
+    const b = await mk('home-b');
+    const home = async () => (await t.client().get('/api/public/default-page')).json.slug;
+    expect(await home()).toBeNull();
+    expect((await c.put(`/api/status-pages/${a}/default`, { isDefault: true })).status).toBe(200);
+    expect(await home()).toBe('home-a');
+    expect((await c.put(`/api/status-pages/${b}/default`, { isDefault: true })).status).toBe(200);
+    expect(await home()).toBe('home-b');
+    expect(((await c.get('/api/status-pages')).json as any[]).filter((p) => p.isDefault).map((p) => p.slug)).toEqual(['home-b']);
+    const exp = JSON.parse((await c.get('/api/config/export?format=json')).body);
+    expect(exp.statusPages.find((p: any) => p.slug === 'home-b').isDefault).toBe(true);
+    expect((await c.put('/api/status-pages/999999/default', { isDefault: true })).status).toBe(404);
+    expect((await c.put(`/api/status-pages/${b}/default`, { isDefault: false })).status).toBe(200);
+    expect(await home()).toBeNull();
+    // a hidden page never becomes the public home page
+    const hidden = await mk('home-hidden', { isDefault: true, isPublic: false });
+    expect(hidden).toBeGreaterThan(0);
+    expect(await home()).toBeNull();
+  });
+});
+
+describe('monitor detail windows and paging', () => {
+  it('serves 15 minute ranges, custom windows and paged check lists', async () => {
+    const m = await push('window-push');
+    const token = (await c.get(`/api/monitors/${m.json.id}`)).json.pushToken;
+    for (let i = 0; i < 7; i++) expect((await t.client().get(`/api/push/${token}?status=down&msg=boom${i}`)).status).toBe(200);
+    const chart = (qs: string) => c.get(`/api/monitors/${m.json.id}/chart${qs}`);
+    expect((await chart('?range=15m')).json).toMatchObject({ range: '15m', resolution: 'raw' });
+    expect((await chart('?range=15m')).json.points.length).toBe(7);
+    const from = new Date(Date.now() - 600_000).toISOString(), to = new Date().toISOString();
+    expect((await chart(`?from=${from}&to=${to}`)).json).toMatchObject({ range: 'custom', resolution: 'raw' });
+    expect((await chart(`?from=${new Date(Date.now() - 20 * 86_400_000).toISOString()}&to=${to}`)).json.resolution).toBe('hour');
+    expect((await chart(`?from=${to}&to=${from}`)).status).toBe(400);
+    expect((await chart(`?from=${new Date(Date.now() - 1000).toISOString()}&to=${to}`)).status).toBe(400); // under a minute
+    // an outage that began before a short window still shows up as a period
+    const periods = (await c.get(`/api/monitors/${m.json.id}/periods?range=15m`)).json as any[];
+    expect(periods[0].status).toBe('down');
+    // page numbers with a total instead of "load more"
+    const p1 = (await c.get(`/api/monitors/${m.json.id}/heartbeats?page=1&pageSize=5`)).json;
+    const p2 = (await c.get(`/api/monitors/${m.json.id}/heartbeats?page=2&pageSize=5`)).json;
+    expect([p1.total, p1.items.length, p2.items.length]).toEqual([7, 5, 2]);
+    expect(p1.items.map((r: any) => r.id).some((id: number) => p2.items.some((r: any) => r.id === id))).toBe(false);
+    const ev = (await c.get(`/api/monitors/${m.json.id}/events?page=1&pageSize=5`)).json;
+    expect(ev.total).toBeGreaterThan(0);
+    expect(Array.isArray((await c.get(`/api/monitors/${m.json.id}/heartbeats?limit=3`)).json)).toBe(true); // the plain list still works
+  });
+});
+
+describe('incident statuses', () => {
+  it('walks through the phases, shows them on the status page and keeps "monitoring" open on recovery', async () => {
+    const mon = await push('phase-push');
+    const monitorId = mon.json.id as number;
+    const other = await push('phase-other');
+    const page = await c.post('/api/status-pages', { slug: 'phases', title: 'Phases', isPublic: true, sections: [{ name: 'Core', components: [{ monitorId }] }] });
+    expect(page.status).toBe(200);
+    const inc = await c.post('/api/incidents', { title: 'Phase test', monitorIds: [monitorId], public: true });
+    const id = inc.json.id as number;
+    const status = (s: string, message?: string) => c.post(`/api/incidents/${id}/status`, { status: s, message });
+    const row = async () => (await c.get(`/api/incidents/${id}`)).json;
+
+    expect((await status('identified', 'Found the broken disk')).status).toBe(200);
+    let d = await row();
+    expect([d.status, d.acknowledgedAt !== null, d.resolvedAt]).toEqual(['identified', true, null]); // any move off "open" counts as acknowledged
+    expect((await status('identified')).status).toBe(409);
+    expect((await c.get('/api/incidents?status=active')).json.some((i: any) => i.id === id)).toBe(true);
+    expect((await c.post(`/api/incidents/${id}/ack`)).status).toBe(409);
+    expect((await status('fixing', 'Replacing it')).status).toBe(200);
+    expect((await c.post(`/api/incidents/${id}/status`, { status: 'bogus' })).status).toBe(400);
+
+    // the public page carries the phase and the per-update status
+    let pub = (await t.client().get('/api/public/status/phases')).json.incidents.find((i: any) => i.id === id);
+    expect(pub.status).toBe('fixing');
+    expect(pub.updates.map((u: any) => u.status)).toEqual(expect.arrayContaining(['identified', 'fixing']));
+
+    // a recovering monitor resolves automatic incidents, except one a person moved to "monitoring"
+    const auto = async (st: string) => Number((await t.ctx.db.insertInto('incidents').values({ title: `auto ${st}`, severity: 'major', source: 'auto', started_at: new Date(), status: st as any, monitor_id: monitorId }).executeTakeFirstOrThrow()).insertId);
+    const [watched, fixing] = [await auto('monitoring'), await auto('fixing')];
+    await t.ctx.incidents.resolveFor({ id: monitorId } as any);
+    const st = async (i: number) => (await t.ctx.db.selectFrom('incidents').select('status').where('id', '=', i).executeTakeFirstOrThrow()).status;
+    expect([await st(watched), await st(fixing)]).toEqual(['monitoring', 'resolved']);
+
+    expect((await status('resolved')).status).toBe(200);
+    d = await row();
+    expect([d.status, d.resolvedAt !== null]).toEqual(['resolved', true]);
+    expect((await status('open')).status).toBe(200); // reopening clears the end
+    expect((await row()).resolvedAt).toBeNull();
+
+    // a scope-restricted editor cannot touch incidents of monitors they do not manage
+    expect((await c.post('/api/users', { username: 'scoped', password: 'correct-horse-battery-2', role: 'editor', scopeRestricted: true })).status).toBe(200);
+    const ed = t.client(); await ed.post('/api/auth/login', { username: 'scoped', password: 'correct-horse-battery-2' });
+    expect((await ed.post(`/api/incidents/${id}/status`, { status: 'fixing' })).status).toBe(403);
+    expect((await ed.post('/api/incidents', { title: 'Nope', monitorIds: [other.json.id] })).status).toBe(403);
+  });
+});

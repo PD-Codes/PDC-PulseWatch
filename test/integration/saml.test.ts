@@ -20,7 +20,7 @@ beforeAll(async () => {
   await admin.post('/api/setup', { username: 'admin', password: 'correct-horse-battery-1' });
   const r = await admin.post('/api/auth/providers', {
     kind: 'saml', name: 'Entra', enabled: true,
-    config: { entryPoint: 'https://login.example.com/saml2', idpIssuer: IDP, idpCert: CRT, emailAttr: 'email', nameAttr: 'name', groupsAttr: 'groups', adminGroups: 'g-admin', editorGroups: 'g-edit', defaultRole: 'viewer' },
+    config: { entryPoint: 'https://login.example.com/saml2', idpIssuer: IDP, idpCert: CRT, emailAttr: 'email', nameAttr: 'name', groupsAttr: 'groups', adminGroups: 'g-admin', editorGroups: 'g-edit', defaultRole: 'viewer', autoCreate: true },
   });
   expect(r.status).toBe(200);
   pid = r.json.id;
@@ -74,7 +74,7 @@ describe('SAML sign-in', () => {
     const s = await start();
     const r = await post(s.c, { SAMLResponse: signedResponse({ inResponseTo: s.requestId, groups: ['g-admin'] }), RelayState: s.relay });
     expect(r.status).toBe(303);
-    expect(r.headers.location).toBe('/');
+    expect(r.headers.location).toBe('/dashboard');
     const me = await s.c.get('/api/auth/me');
     expect(me.status).toBe(200);
     expect([me.json.role, me.json.authSource, me.json.email]).toEqual(['admin', 'saml', 'user1@example.com']);
@@ -96,7 +96,7 @@ describe('SAML sign-in', () => {
   it('rejects a replayed response, an unsolicited response and a wrong relay state', async () => {
     const s = await start();
     const body = { SAMLResponse: signedResponse({ inResponseTo: s.requestId, name: 'user-4', email: 'u4@example.com' }), RelayState: s.relay };
-    expect((await post(s.c, body, s.cookie)).headers.location).toBe('/'); // first use succeeds
+    expect((await post(s.c, body, s.cookie)).headers.location).toBe('/dashboard'); // first use succeeds
     const replay = await post(t.client(), body, s.cookie); // attacker re-sends the captured response with the captured cookie
     expect(replay.headers.location).toContain('sso_failed');
     const unsolicited = await post(t.client(), { SAMLResponse: signedResponse({ inResponseTo: '_forged' }), RelayState: 'x' });

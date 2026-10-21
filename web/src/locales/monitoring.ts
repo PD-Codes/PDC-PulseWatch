@@ -96,7 +96,7 @@ export const de: Record<keyof typeof en, string> = {
   'monitors.event.check_error': 'Prüffehler', 'monitors.event.maintenance': 'Wartung', 'monitors.event.maintenance_start': 'Wartung gestartet', 'monitors.event.maintenance_end': 'Wartung beendet',
   'monitors.event.suppressed': 'Durch Abhängigkeit unterdrückt', 'monitors.event.flap': 'Flattert', 'monitors.event.anomaly': 'Verlangsamung',
   'monitors.incidents': 'Vorfälle', 'monitors.noIncidents': 'Keine Vorfälle für diesen Monitor.', 'monitors.periods': 'Ausfallzeiträume',
-  'monitors.incStatus.open': 'Offen', 'monitors.incStatus.acknowledged': 'Bestätigt', 'monitors.incStatus.investigating': 'In Untersuchung', 'monitors.incStatus.identified': 'Ursache gefunden', 'monitors.incStatus.monitoring': 'Beobachtung', 'monitors.incStatus.resolved': 'Behoben',
+  'monitors.incStatus.open': 'Offen', 'monitors.incStatus.acknowledged': 'Bestätigt', 'monitors.incStatus.investigating': 'In Untersuchung', 'monitors.incStatus.identified': 'Ursache gefunden', 'monitors.incStatus.monitoring': 'Wird beobachtet', 'monitors.incStatus.resolved': 'Behoben',
   'monitors.form.newTitle': 'Neuer Monitor', 'monitors.form.editTitle': 'Monitor bearbeiten', 'monitors.form.forbidden': 'Zum Ändern von Monitoren brauchst du Editor-Rechte.', 'monitors.form.cloned': 'Monitor geklont. Er ist pausiert, bis du ihn aktivierst.',
   'monitors.form.general': 'Allgemein', 'monitors.form.type': 'Typ', 'monitors.form.key': 'Schlüssel', 'monitors.form.value': 'Wert', 'monitors.form.addRow': 'Zeile hinzufügen',
   'monitors.form.timing': 'Zeiten und Schwellen', 'monitors.form.seconds': 'Sekunden', 'monitors.form.upHint': 'Erfolge in Folge, bis er als online gilt', 'monitors.form.downHint': 'Fehler in Folge, bis er als offline gilt',

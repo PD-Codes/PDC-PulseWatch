@@ -22,7 +22,8 @@ const MAX_ATTEMPTS = 5;
 export function quietUntil(q: QuietHours | null, now = new Date()): Date | null {
   if (!q?.start || !q.end) return null;
   const tz = q.timezone || 'UTC';
-  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short' }).formatToParts(now);
+  let parts: Intl.DateTimeFormatPart[];
+  try { parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short' }).formatToParts(now); } catch { return null; } // an unknown zone must not block delivery
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
   const mins = (s: string) => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
   const cur = Number(get('hour')) % 24 * 60 + Number(get('minute'));
@@ -107,7 +108,7 @@ export class Notifier {
     }
     await db.insertInto('notification_deliveries').values({
       channel_id: channelId, monitor_id: i.monitor.id, incident_id: i.incidentId ?? null, event: i.event, status, next_attempt_at: status === 'pending' ? due : null,
-      last_error: note, subject: msg.subject, payload: JSON.stringify(msg),
+      last_error: note, subject: msg.subject.slice(0, 255), payload: JSON.stringify(msg),
     }).execute();
   }
 
@@ -189,7 +190,7 @@ export class Notifier {
     const msg = this.buildMessage(input);
     let error: string | undefined;
     try { await this.send(channelId, msg); } catch (e) { error = (e as Error).message; }
-    await this.ctx.db.insertInto('notification_deliveries').values({ channel_id: channelId, monitor_id: null, event: 'test', status: error ? 'failed' : 'sent', attempts: 1, last_error: error?.slice(0, 900) ?? null, subject: msg.subject, payload: JSON.stringify(msg) }).execute();
+    await this.ctx.db.insertInto('notification_deliveries').values({ channel_id: channelId, monitor_id: null, event: 'test', status: error ? 'failed' : 'sent', attempts: 1, last_error: error?.slice(0, 900) ?? null, subject: msg.subject.slice(0, 255), payload: JSON.stringify(msg) }).execute();
     return error ? { ok: false, error } : { ok: true };
   }
 }

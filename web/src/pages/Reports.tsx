@@ -19,14 +19,16 @@ interface Sla { generatedAt: string; from: string; to: string; days: number; sco
 interface Schedule { id: number; name: string; scopeType: ScopeType; scopeId: number | null; rangeDays: number; cronExpr: string; timezone: string; recipients: string[]; format: 'pdf' | 'csv'; enabled: boolean; lastRunAt: string | null }
 
 export default function Reports() {
-  const t = useT(); const { can } = useAuth();
+  const t = useT(); const { can } = useAuth(); const meta = useMeta();
   const [sp, setSp] = useSearchParams();
   const admin = can('admin');
-  const tab = admin && sp.get('tab') === 'schedules' ? 'schedules' : 'report';
+  // scheduled reports are mailed, so they only exist when SMTP is configured
+  const schedules = admin && !!meta?.smtp;
+  const tab = schedules && sp.get('tab') === 'schedules' ? 'schedules' : 'report';
   return (
     <div className="space-y-6">
       <PageHeader title={t('reports.title')} subtitle={t('reports.subtitle')} />
-      {admin && <Tabs tabs={[{ id: 'report', label: t('reports.tab.report') }, { id: 'schedules', label: t('reports.tab.schedules') }]} value={tab} onChange={(v) => setSp(v === 'report' ? {} : { tab: v }, { replace: true })} />}
+      {schedules && <Tabs tabs={[{ id: 'report', label: t('reports.tab.report') }, { id: 'schedules', label: t('reports.tab.schedules') }]} value={tab} onChange={(v) => setSp(v === 'report' ? {} : { tab: v }, { replace: true })} />}
       {tab === 'report' ? <Builder /> : <Schedules />}
     </div>
   );
@@ -127,7 +129,7 @@ type Draft = Omit<Schedule, 'id' | 'recipients' | 'lastRunAt'> & { id?: number; 
 const blank = (): Draft => ({ name: '', scopeType: 'all', scopeId: null, rangeDays: 30, cronExpr: PRESETS[1][0], timezone: localTz(), recipients: '', format: 'pdf', enabled: true });
 
 function Schedules() {
-  const t = useT(); const toast = useToast(); const confirm = useConfirm(); const qc = useQueryClient(); const meta = useMeta();
+  const t = useT(); const toast = useToast(); const confirm = useConfirm(); const qc = useQueryClient();
   const q = useQuery({ queryKey: ['report-schedules'], queryFn: () => get<Schedule[]>('/api/report-schedules') });
   const [draft, setDraft] = useState<Draft | null>(null);
   const inv = () => qc.invalidateQueries({ queryKey: ['report-schedules'] });
@@ -149,7 +151,6 @@ function Schedules() {
     <Card>
       <CardHeader title={<span className="inline-flex items-center gap-2"><CalendarClock className="h-4 w-4" aria-hidden />{t('reports.tab.schedules')}</span>}
         actions={<Button variant="primary" size="sm" onClick={() => setDraft(blank())}><Plus className="h-4 w-4" />{t('reports.sched.add')}</Button>} />
-      {meta && !meta.smtp && <div role="alert" className="m-4 flex items-start gap-2 rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />{t('reports.sched.noSmtp')}</div>}
       {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : !q.data?.length ? (
         <EmptyState icon={<CalendarClock className="h-8 w-8" />} title={t('reports.sched.empty')} body={t('reports.sched.emptyBody')} />
       ) : (
@@ -165,7 +166,7 @@ function Schedules() {
                 <div className="mt-1 truncate text-xs text-slate-500">{s.recipients.join(', ')}</div>
               </div>
               <Toggle checked={s.enabled} onChange={() => toggle.mutate(s)} label={s.enabled ? t('common.enabled') : t('common.disabled')} />
-              <Button size="sm" disabled={!meta?.smtp} loading={runNow.isPending && runNow.variables === s.id} onClick={() => runNow.mutate(s.id)}><Send className="h-3.5 w-3.5" />{t('reports.sched.runNow')}</Button>
+              <Button size="sm" loading={runNow.isPending && runNow.variables === s.id} onClick={() => runNow.mutate(s.id)}><Send className="h-3.5 w-3.5" />{t('reports.sched.runNow')}</Button>
               <Button size="sm" aria-label={`${t('common.edit')} ${s.name}`} onClick={() => setDraft({ ...s, recipients: s.recipients.join('\n') })}><Pencil className="h-3.5 w-3.5" /></Button>
               <Button size="sm" variant="danger" aria-label={`${t('common.delete')} ${s.name}`} onClick={async () => { if (await confirm({ title: t('common.delete'), body: s.name, danger: true, confirmLabel: t('common.delete') })) remove.mutate(s.id); }}><Trash2 className="h-3.5 w-3.5" /></Button>
             </li>

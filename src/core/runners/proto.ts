@@ -1,4 +1,3 @@
-import dgram from 'node:dgram';
 import http from 'node:http';
 import http2 from 'node:http2';
 import net from 'node:net';
@@ -8,7 +7,10 @@ import { connect } from '../conn';
 import { trustOptions } from '../trust';
 import { jsonCompare, type JsonOp } from '../jsonpath';
 import { CheckError, type CheckResult, type Runner } from '../types';
-import { fail, hrMs, ok, toCheckError } from '../util';
+import { fail, hrMs, ok, toCheckError, udpRequest } from '../util';
+
+/** Upper bound for what a protocol runner buffers from a remote server while waiting for a complete reply. */
+const MAX_REPLY = 1 << 20;
 
 const wrap = (e: unknown) => { const ce = toCheckError(e); return fail(ce.kind, ce.message, { details: ce.details }); };
 
@@ -153,7 +155,10 @@ const mqtt: Runner = {
           conn.sock.on('close', () => resolve(fail('network', 'Broker closed the connection')));
           conn.sock.on('error', (e) => resolve(wrap(e)));
           conn.sock.on('data', (d) => {
+            // a hostile or broken broker must end the check with an error, never throw out of an event handler
+            try {
             buf = Buffer.concat([buf, d]);
+            if (buf.length > MAX_REPLY) return resolve(fail('protocol', 'Broker reply too large'));
             for (const p of mparse(buf)) {
               buf = Buffer.from(p.rest);
               if (state === 'connack' && p.type === 2) {
@@ -170,6 +175,7 @@ const mqtt: Runner = {
                 if (!c.expect || payload.includes(c.expect)) return resolve(ok(hrMs(t0), { message: `Message on ${c.topic} (${payload.length} bytes)` }));
               }
             }
+            } catch (e) { resolve(wrap(e)); }
           });
         });
       } finally { conn.close(); }
@@ -237,13 +243,7 @@ const snmp: Runner = {
       const pdu = tlv(0xa0, Buffer.concat([bint(reqId), bint(0), bint(0), vb]));
       const msg = tlv(0x30, Buffer.concat([bint(1), tlv(0x04, Buffer.from(c.community)), pdu]));
       const t0 = process.hrtime.bigint();
-      const reply = await new Promise<Buffer>((resolve, reject) => {
-        const s = dgram.createSocket(addr.family === 6 ? 'udp6' : 'udp4');
-        const timer = setTimeout(() => { s.close(); reject(new CheckError('timeout', 'No SNMP response', { phase: 'response' })); }, ctx.timeoutMs);
-        s.on('error', (e) => { clearTimeout(timer); s.close(); reject(e); });
-        s.on('message', (m) => { clearTimeout(timer); s.close(); resolve(m); });
-        s.send(msg, c.port ?? 161, addr.address);
-      });
+      const reply = await udpRequest(addr, c.port ?? 161, msg, ctx.timeoutMs, 'SNMP', ctx.signal);
       const ms = hrMs(t0);
       let p = bread(reply, 0);
       p = bread(reply, p.start); // version
@@ -285,13 +285,7 @@ const minecraft: Runner = {
         const addr = (await ctx.guard.resolve(c.host))[0];
         const magic = Buffer.from('00ffff00fefefefefdfdfdfd12345678', 'hex');
         const pkt = Buffer.concat([Buffer.from([0x01]), Buffer.alloc(8), magic, Buffer.alloc(8)]);
-        const reply = await new Promise<Buffer>((resolve, reject) => {
-          const s = dgram.createSocket(addr.family === 6 ? 'udp6' : 'udp4');
-          const timer = setTimeout(() => { s.close(); reject(new CheckError('timeout', 'No Bedrock response', { phase: 'response' })); }, ctx.timeoutMs);
-          s.on('error', (e) => { clearTimeout(timer); s.close(); reject(e); });
-          s.on('message', (m) => { clearTimeout(timer); s.close(); resolve(m); });
-          s.send(pkt, c.port ?? 19132, addr.address);
-        });
+        const reply = await udpRequest(addr, c.port ?? 19132, pkt, ctx.timeoutMs, 'Bedrock', ctx.signal);
         const info = reply.subarray(35).toString('utf8').split(';');
         return ok(hrMs(t0), { message: `${info[1] ?? 'Bedrock'} - ${info[4] ?? '?'}/${info[5] ?? '?'} players`, details: { version: info[3], online: Number(info[4]), max: Number(info[5]) } });
       }
@@ -307,7 +301,9 @@ const minecraft: Runner = {
           conn.sock.on('close', () => reject(new CheckError('network', 'Server closed the connection')));
           conn.sock.on('error', reject);
           conn.sock.on('data', (d) => {
+            try {
             buf = Buffer.concat([buf, d]);
+            if (buf.length > MAX_REPLY) throw new CheckError('protocol', 'Server reply too large');
             const rd = (o: number): [number, number] | null => { let v = 0, s = 0, i = o; for (;;) { if (i >= buf.length) return null; const b = buf[i++]; v |= (b & 127) << s; s += 7; if (!(b & 128)) return [v, i]; if (s > 35) throw new CheckError('protocol', 'Bad VarInt'); } };
             const len = rd(0); if (!len) return;
             if (buf.length < len[1] + len[0]) return;
@@ -315,6 +311,7 @@ const minecraft: Runner = {
             const jl = rd(id[1]); if (!jl) return;
             if (buf.length < jl[1] + jl[0]) return;
             resolve(buf.subarray(jl[1], jl[1] + jl[0]).toString('utf8'));
+            } catch (e) { reject(e); }
           });
         });
         const st = JSON.parse(json);

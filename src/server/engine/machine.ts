@@ -55,9 +55,8 @@ export function step(s: MachineState, p: MachineParams, ok: boolean): MachineOut
     attempt = 0; consecutiveFail = 0; consecutiveOk++; counted = true; hb = 1;
     if (status === 'unknown' || status === 'pending' || status === 'up') status = 'up';
     else if (consecutiveOk >= p.upThreshold) status = 'up'; // down -> up needs confirmation
-  } else if (attempt < p.retries) {
-    attempt++; hb = 2; retry = true;
-    if (status !== 'down') status = 'pending';
+  } else if (status !== 'down' && attempt < p.retries) { // a monitor that is already down does not start another round of retries
+    attempt++; hb = 2; retry = true; status = 'pending';
   } else {
     attempt = 0; consecutiveFail++; consecutiveOk = 0; counted = true;
     if (consecutiveFail >= p.downThreshold) { status = 'down'; hb = 0; }

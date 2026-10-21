@@ -51,6 +51,10 @@ export async function insightRoutes(app: FastifyInstance) {
     const win = (q.windowMin ?? 15) * 60_000;
     const allowed = await accessibleMonitorIds(ctx, req.user!);
     if (anchorMonitor && allowed && !allowed.includes(anchorMonitor)) return reply.code(404).send({ error: 'not_found' });
+    if (q.incidentId && allowed) { // an incident is visible when it touches a monitor the user can see; manual ones without monitors are not
+      const touched = await db.selectFrom('incident_monitors').select('monitor_id').where('incident_id', '=', q.incidentId).where('monitor_id', 'in', allowed.concat(0)).executeTakeFirst();
+      if (!touched) return reply.code(404).send({ error: 'not_found' });
+    }
 
     let ev = db.selectFrom('events as e').innerJoin('monitors as m', 'm.id', 'e.monitor_id')
       .select(['e.id', 'e.monitor_id', 'e.ts', 'e.type', 'e.from_status', 'e.to_status', 'e.error_kind', 'e.message', 'm.name', 'm.group_id', 'm.config'])

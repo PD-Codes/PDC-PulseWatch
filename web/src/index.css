@@ -35,4 +35,7 @@
 
 /* uPlot theme hooks */
 .uplot, .uplot * { box-sizing: border-box; }
+/* the span that is being dragged out to zoom: clearly visible, crosshair cursor invites the drag */
+.uplot .u-over { cursor: crosshair; }
+.uplot .u-select { background: rgb(99 102 241 / 0.18); border: 1px solid rgb(99 102 241 / 0.7); }
 .u-legend { @apply text-xs text-slate-600 dark:text-slate-300; }

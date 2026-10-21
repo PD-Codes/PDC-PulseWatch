@@ -6,7 +6,7 @@ export type FieldKind = 'text' | 'number' | 'bool' | 'select' | 'textarea' | 'se
 export interface FieldDef {
   key: string; label: string; kind: FieldKind; required?: boolean; default?: unknown;
   options?: { value: string; label: string }[]; min?: number; max?: number; placeholder?: string; help?: string;
-  showIf?: { key: string; equals: unknown }; secretValues?: boolean;
+  showIf?: { key: string; equals: unknown }; secretValues?: boolean; multiline?: boolean;
 }
 export interface MonitorType { type: string; label: string; category: string; fields: FieldDef[] }
 
@@ -79,6 +79,7 @@ export function MonitorFields({ fields, values, onChange, idPrefix }: { fields: 
             {(id) => {
               const dom = `${idPrefix}-${f.key}-${id}`;
               if (f.kind === 'select') return <Select id={id} value={String(val)} onChange={(e) => onChange(f.key, e.target.value)}>{!f.required && !f.options?.some((o) => o.value === '') && <option value="" />}{f.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>;
+              if (f.kind === 'secret' && f.multiline) return <Textarea id={id} rows={5} value={String(val)} onChange={(e) => onChange(f.key, e.target.value)} placeholder={f.placeholder} spellCheck={false} autoComplete="off" className="font-mono text-xs [-webkit-text-security:disc]" />;
               if (f.kind === 'textarea' || f.kind === 'json') return <Textarea id={id} rows={f.kind === 'json' ? 10 : 4} value={String(val)} onChange={(e) => onChange(f.key, e.target.value)} placeholder={f.placeholder} spellCheck={false} className={f.kind === 'json' ? 'font-mono text-xs' : undefined} />;
               return <Input id={id} name={dom} type={f.kind === 'secret' ? 'password' : f.kind === 'number' ? 'number' : 'text'} autoComplete={f.kind === 'secret' ? 'new-password' : 'off'} min={f.min} max={f.max} step={f.kind === 'number' ? 'any' : undefined} value={String(val)} onChange={(e) => onChange(f.key, e.target.value)} placeholder={f.placeholder} required={f.required} />;
             }}

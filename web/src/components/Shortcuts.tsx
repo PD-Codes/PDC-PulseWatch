@@ -15,7 +15,7 @@ export function useShortcuts({ openPalette, openHelp }: { openPalette: () => voi
       if (typing(e) || e.ctrlKey || e.metaKey || e.altKey) return;
       if (pendingG.current && Date.now() - pendingG.current < 1200) {
         pendingG.current = 0;
-        const to = ({ d: '/', i: '/incidents', m: '/maintenance', s: '/status-pages', n: '/notifications', r: '/reports' } as Record<string, string>)[e.key];
+        const to = ({ d: '/dashboard', i: '/incidents', m: '/maintenance', s: '/status-pages', n: '/notifications', r: '/reports' } as Record<string, string>)[e.key];
         if (to) { e.preventDefault(); nav(to); }
         return;
       }

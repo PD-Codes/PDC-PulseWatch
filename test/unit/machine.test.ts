@@ -25,6 +25,12 @@ describe('state machine', () => {
     expect(o[2]).toMatchObject({ status: 'pending', hbStatus: 2, retryScheduled: true });
     expect(o[3]).toMatchObject({ status: 'down', hbStatus: 0, transition: { from: 'pending', to: 'down' } });
   });
+  it('a monitor that is already down does not start another round of retries', () => {
+    const out = run([true, false, false, false, false, false], { retries: 2 });
+    // up, then pending, pending, down; further failures stay down instead of going back to pending
+    expect(out.map((o) => o.hbStatus)).toEqual([1, 2, 2, 0, 0, 0]);
+    expect(out[5]!.retryScheduled).toBe(false);
+  });
   it('recovering during retries is silent', () => {
     const o = run([true, false, true], { retries: 2 });
     expect(o[2]).toMatchObject({ status: 'up', transition: null, attempt: 0 });

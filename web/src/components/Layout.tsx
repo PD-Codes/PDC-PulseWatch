@@ -47,7 +47,7 @@ export function Layout() {
   }, [openIncidents]);
 
   const main: Item[] = [
-    { to: '/', label: t('nav.dashboard'), icon: <LayoutDashboard className="h-4 w-4" />, end: true },
+    { to: '/dashboard', label: t('nav.dashboard'), icon: <LayoutDashboard className="h-4 w-4" />, end: true },
     { to: '/incidents', label: t('nav.incidents'), icon: <AlertTriangle className="h-4 w-4" />, badge: openIncidents },
     { to: '/maintenance', label: t('nav.maintenance'), icon: <Wrench className="h-4 w-4" /> },
     { to: '/status-pages', label: t('nav.statusPages'), icon: <Globe className="h-4 w-4" /> },

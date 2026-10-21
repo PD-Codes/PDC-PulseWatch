@@ -29,6 +29,10 @@ describe('tlsMessage', () => {
     expect(m).toContain('host a.example.com:443');
     expect(m).toContain('(CERT_HAS_EXPIRED)');
   });
+  it('names both problems when a certificate is expired and for another host', () => {
+    const m = tlsMessage(facts({ validTo: '2026-01-02T00:00:00Z', code: 'CERT_HAS_EXPIRED', nameMatches: false, altNames: ['DNS:other.example.com'] }));
+    expect(m).toMatch(/expired on 2026-01-02 \(\d+ days? ago\) and does not match a\.example\.com \(valid for DNS:other\.example\.com\)/);
+  });
   it('lists the names a mismatching certificate is valid for', () => {
     expect(tlsMessage(facts({ nameMatches: false, servername: 'b.example.com', altNames: ['DNS:a.example.com'] }))).toContain('does not match b.example.com (valid for DNS:a.example.com)');
   });

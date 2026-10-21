@@ -57,6 +57,8 @@ export interface FieldDef {
   help?: string;
   /** Only show/validate this field when another field has the given value. */
   showIf?: { key: string; equals: unknown };
+  /** For kind "secret": render a multi-line box (private keys) instead of a single-line password input. */
+  multiline?: boolean;
   /** For kind "kv": mask all values like secrets. */
   secretValues?: boolean;
 }

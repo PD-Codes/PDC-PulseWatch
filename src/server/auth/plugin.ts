@@ -20,7 +20,7 @@ export interface AuthUser {
 
 declare module 'fastify' {
   interface FastifyRequest { user: AuthUser | null; sessionToken?: string }
-  interface FastifyInstance { ctx: Ctx; requireAuth: (req: FastifyRequest, reply: FastifyReply) => Promise<void>; requireRole: (...roles: AuthUser['role'][]) => (req: FastifyRequest, reply: FastifyReply) => Promise<void> }
+  interface FastifyInstance { ctx: Ctx; requireAuth: (req: FastifyRequest, reply: FastifyReply) => Promise<void>; requireRole: (...roles: AuthUser['role'][]) => (req: FastifyRequest, reply: FastifyReply) => Promise<void>; requireSession: (req: FastifyRequest, reply: FastifyReply) => Promise<void> }
 }
 
 export const COOKIE = 'pw_session';
@@ -86,6 +86,13 @@ export default fp(async function authPlugin(app: FastifyInstance) {
       const ok = scopes.includes('admin') || scopes.includes(need) || (need === 'read' && scopes.includes('write'));
       if (!ok) return reply.code(403).send({ error: 'forbidden', message: `API token lacks the "${need}" scope` });
     }
+  });
+
+  /** For changes to the account itself (password, 2FA, passkeys, tokens): a browser session is needed, an API token is not enough. */
+  app.decorate('requireSession', async (req: FastifyRequest, reply: FastifyReply) => {
+    await app.requireAuth(req, reply);
+    if (reply.sent) return;
+    if (req.user!.tokenScopes) return reply.code(403).send({ error: 'forbidden', message: 'This action needs a signed-in browser session, an API token is not enough' });
   });
 
   app.decorate('requireRole', (...roles: AuthUser['role'][]) => async (req: FastifyRequest, reply: FastifyReply) => {

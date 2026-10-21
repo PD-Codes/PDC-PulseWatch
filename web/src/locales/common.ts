@@ -29,7 +29,7 @@ export const de = {
   'common.close': 'Schließen', 'common.back': 'Zurück', 'common.search': 'Suchen', 'common.actions': 'Aktionen', 'common.name': 'Name', 'common.status': 'Status', 'common.type': 'Typ', 'common.none': 'Keine',
   'common.yes': 'Ja', 'common.no': 'Nein', 'common.enabled': 'Aktiviert', 'common.disabled': 'Deaktiviert', 'common.active': 'Aktiv', 'common.description': 'Beschreibung', 'common.refresh': 'Aktualisieren',
   'common.saved': 'Gespeichert', 'common.deleted': 'Gelöscht', 'common.failed': 'Etwas ist schiefgelaufen', 'common.all': 'Alle', 'common.copy': 'Kopieren', 'common.copied': 'Kopiert', 'common.more': 'Mehr laden',
-  'common.test': 'Testen', 'common.optional': 'optional', 'common.never': 'nie', 'common.noResults': 'Keine Ergebnisse', 'common.deleteConfirm': '„{name}" löschen? Das kann nicht rückgängig gemacht werden.', 'common.download': 'Herunterladen',
+  'common.test': 'Testen', 'common.optional': 'optional', 'common.never': 'nie', 'common.noResults': 'Keine Ergebnisse', 'common.deleteConfirm': '„{name}“ löschen? Das kann nicht rückgängig gemacht werden.', 'common.download': 'Herunterladen',
   'common.created': 'Erstellt', 'common.updated': 'Aktualisiert', 'common.from': 'Von', 'common.to': 'Bis', 'common.details': 'Details', 'common.reset': 'Zurücksetzen', 'common.apply': 'Anwenden', 'common.import': 'Importieren', 'common.export': 'Exportieren',
   'status.up': 'Online', 'status.down': 'Offline', 'status.pending': 'Ausstehend', 'status.unknown': 'Unbekannt', 'status.maintenance': 'Wartung', 'status.suppressed': 'Unterdrückt', 'status.paused': 'Pausiert',
   'monitors.beatsLabel': '{up} der letzten {total} Prüfungen waren erfolgreich',

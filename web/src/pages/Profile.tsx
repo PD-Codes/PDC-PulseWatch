@@ -163,11 +163,12 @@ interface Passkey { id: number; name: string; createdAt: string }
 function PasskeysCard() {
   const t = useT(); const toast = useToast(); const confirm = useConfirm(); const qc = useQueryClient();
   const q = useQuery({ queryKey: ['passkeys'], queryFn: () => get<Passkey[]>('/api/auth/passkeys') });
-  const [name, setName] = useState('');
+  const { user } = useAuth();
+  const [name, setName] = useState(''); const [pw, setPw] = useState(''); const [code, setCode] = useState('');
   const inv = () => qc.invalidateQueries({ queryKey: ['passkeys'] });
   const add = useMutation({
-    mutationFn: () => passkeyRegister(name.trim() || t('profile.passkeyDefault')),
-    onSuccess: () => { setName(''); toast(t('profile.passkeyAdded')); inv(); },
+    mutationFn: () => passkeyRegister(name.trim() || t('profile.passkeyDefault'), pw, code.trim() || undefined),
+    onSuccess: () => { setName(''); setPw(''); setCode(''); toast(t('profile.passkeyAdded')); inv(); },
     onError: (e) => { if ((e as Error).name !== 'NotAllowedError') toast(errorMessage(e), 'error'); }, // the user dismissed the browser prompt
   });
   const remove = useMutation({ mutationFn: (id: number) => del(`/api/auth/passkeys/${id}`), onSuccess: () => { toast(t('common.deleted')); inv(); }, onError: (e) => toast(errorMessage(e), 'error') });
@@ -186,6 +187,8 @@ function PasskeysCard() {
       )}
       <form className="flex flex-wrap items-end gap-2 border-t border-slate-200 p-4 dark:border-slate-800" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
         <Field label={t('profile.passkeyName')} className="min-w-0 flex-1">{(id) => <Input id={id} maxLength={64} value={name} placeholder={t('profile.passkeyDefault')} onChange={(e) => setName(e.target.value)} />}</Field>
+        {user?.authSource === 'local' && <Field label={t('profile.current')} className="min-w-0 flex-1">{(id) => <Input id={id} type="password" required autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} />}</Field>}
+        {user?.totpEnabled && <Field label={t('profile.2faCode')} className="w-36">{(id) => <Input id={id} required inputMode="numeric" autoComplete="one-time-code" maxLength={8} value={code} onChange={(e) => setCode(e.target.value)} />}</Field>}
         <Button type="submit" variant="primary" loading={add.isPending}><Plus className="h-4 w-4" />{t('profile.passkeyAdd')}</Button>
       </form>
     </Card>

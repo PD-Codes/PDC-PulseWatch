@@ -96,15 +96,19 @@ export function Tabs<T extends string>({ tabs, value, onChange }: { tabs: { id: 
 
 /* ----------------------------------- modal ----------------------------------- */
 export function Modal({ open, onClose, title, children, footer, wide }: { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  // pages pass a fresh onClose on every render; depending on it would re-run the effect and steal focus on each keystroke
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;
     const node = ref.current;
     node?.querySelector<HTMLElement>('input,select,textarea,button:not([data-close])')?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
+      if (e.key === 'Escape') { e.stopPropagation(); closeRef.current(); }
       if (e.key === 'Tab' && node) { // keep focus inside the dialog
         const f = [...node.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input:not([disabled]),select,textarea,[tabindex]:not([tabindex="-1"])')];
         if (!f.length) return;
@@ -114,14 +118,14 @@ export function Modal({ open, onClose, title, children, footer, wide }: { open: 
     };
     document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('keydown', onKey); prev?.focus(); };
-  }, [open, onClose]);
+  }, [open]);
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 p-0 sm:items-center sm:p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} className={cx('card flex max-h-[92vh] w-full flex-col rounded-b-none sm:rounded-b-xl', wide ? 'sm:max-w-3xl' : 'sm:max-w-lg')}>
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
           <h2 id={titleId} className="text-base font-semibold">{title}</h2>
-          <button data-close type="button" onClick={onClose} className="btn btn-ghost btn-sm" aria-label="Close"><X className="h-4 w-4" /></button>
+          <button data-close type="button" onClick={onClose} className="btn btn-ghost btn-sm" aria-label={t('common.close')}><X className="h-4 w-4" /></button>
         </div>
         <div className="overflow-y-auto p-4">{children}</div>
         {footer && <div className="flex justify-end gap-2 border-t border-slate-200 px-4 py-3 dark:border-slate-800">{footer}</div>}

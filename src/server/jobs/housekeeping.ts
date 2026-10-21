@@ -120,12 +120,22 @@ export class Housekeeping {
 
   async start(): Promise<void> {
     await ensurePartitions(this.ctx.db);
-    const safe = (name: string, fn: () => Promise<unknown>) => () => fn().catch((e) => this.ctx.log.error({ err: e }, `${name} failed`));
-    this.timers.push(setInterval(safe('rollups', () => runRollups(this.ctx)), 30_000));
-    this.timers.push(setInterval(safe('retention', () => enforceRetention(this.ctx)), 3_600_000));
+    // A run that is still going when the next tick fires is skipped. Rollups and retention are idempotent, so a second process running them too is harmless.
+    const safe = (name: string, fn: () => Promise<unknown>) => {
+      let busy = false;
+      return () => {
+        if (busy) return Promise.resolve();
+        busy = true;
+        return fn().catch((e) => this.ctx.log.error({ err: e }, `${name} failed`)).finally(() => { busy = false; });
+      };
+    };
+    const rollups = safe('rollups', () => runRollups(this.ctx));
+    const retention = safe('retention', () => enforceRetention(this.ctx));
+    this.timers.push(setInterval(rollups, 30_000));
+    this.timers.push(setInterval(retention, 3_600_000));
     for (const t of this.timers) t.unref();
-    void safe('retention', () => enforceRetention(this.ctx))();
-    void safe('rollups', () => runRollups(this.ctx))();
+    void retention();
+    void rollups();
   }
   stop() { this.timers.forEach(clearInterval); }
 }

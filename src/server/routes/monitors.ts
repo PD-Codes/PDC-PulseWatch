@@ -1,19 +1,60 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
-import { getRunner, runners } from '../../core';
+import { getRunner, runners, SECRET_MASK } from '../../core';
 import { accessibleGroupIds, accessibleMonitorIds, canManageMonitor, canWrite, writeAudit } from '../auth/access';
+import { config } from '../config';
 import { parseJson } from '../db';
 import { BUILT_IN_DEFAULTS, DEFAULT_LIMITS, monitorDefaults, resetMonitorDefaults, saveMonitorDefaults, type MonitorDefaults } from '../monitors/defaults';
 import { parseMonitor } from '../monitors/model';
 import { listMonitors, loadMonitor, monitorDetail, saveMonitor, ValidationError } from '../monitors/service';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
-const RANGES: Record<string, { ms: number; src: 'raw' | 'minute' | 'hour' | 'day' }> = {
-  '1h': { ms: 3_600_000, src: 'raw' }, '24h': { ms: 86_400_000, src: 'minute' }, '7d': { ms: 7 * 86_400_000, src: 'hour' },
+type Src = 'raw' | 'minute' | 'hour' | 'day';
+const RANGES: Record<string, { ms: number; src: Src }> = {
+  '15m': { ms: 900_000, src: 'raw' }, '30m': { ms: 1_800_000, src: 'raw' }, '1h': { ms: 3_600_000, src: 'raw' }, '3h': { ms: 3 * 3_600_000, src: 'raw' }, '6h': { ms: 6 * 3_600_000, src: 'raw' },
+  '12h': { ms: 12 * 3_600_000, src: 'minute' }, '24h': { ms: 86_400_000, src: 'minute' }, '7d': { ms: 7 * 86_400_000, src: 'hour' },
   '30d': { ms: 30 * 86_400_000, src: 'hour' }, '90d': { ms: 90 * 86_400_000, src: 'day' }, '365d': { ms: 365 * 86_400_000, src: 'day' },
 };
+const DAY = 86_400_000;
+const PageQuery = { page: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })), pageSize: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })) };
+const COUNT_CAP = 10_000;
+/** Row count capped at COUNT_CAP so that paging a monitor with millions of checks stays cheap (the UI shows "10,000+"). */
+const cappedCount = async (db: any, q: { limit(n: number): any }): Promise<number> => Number((await db.selectFrom(q.limit(COUNT_CAP).as('t')).select((eb: any) => eb.fn.countAll().as('n')).executeTakeFirst())?.n ?? 0);
+const RollupKeep = { raw: config.retention.rawDays, minute: config.retention.minuteDays, hour: config.retention.hourDays, day: config.retention.dayDays } as const;
+/** The finest resolution that suits the span and that still exists for the start of the window (raw data and fine rollups expire first). */
+const sourceFor = (spanMs: number, fromMs: number, now = Date.now()): Src => {
+  const order: Src[] = ['raw', 'minute', 'hour', 'day'];
+  let i = order.indexOf(spanMs <= 6 * 3_600_000 ? 'raw' : spanMs <= 3 * DAY ? 'minute' : spanMs <= 45 * DAY ? 'hour' : 'day');
+  while (i < order.length - 1 && fromMs < now - RollupKeep[order[i]!] * DAY) i++;
+  return order[i]!;
+};
+const WindowQuery = { range: Type.Optional(Type.String()), from: Type.Optional(Type.String({ maxLength: 40 })), to: Type.Optional(Type.String({ maxLength: 40 })) };
+/** A named range ("15m", "7d") or an explicit from/to window picked by selecting in the chart; returns null for an invalid window. */
+function windowOf(q: { range?: string; from?: string; to?: string }, defRange: string): { key: string; from: Date; to: Date; src: Src; custom: boolean } | null {
+  const now = Date.now();
+  if (q.from || q.to) {
+    const from = new Date(q.from ?? ''), to = new Date(q.to ?? now);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to <= from || to.getTime() - from.getTime() < 60_000 || to.getTime() - from.getTime() > 400 * DAY) return null;
+    return { key: 'custom', from, to, src: sourceFor(to.getTime() - from.getTime(), from.getTime(), now), custom: true };
+  }
+  const key = q.range && Object.hasOwn(RANGES, q.range) ? q.range : defRange;
+  const spec = RANGES[key]!;
+  return { key, from: new Date(now - spec.ms), to: new Date(now), src: spec.src, custom: false };
+}
 const pct = (s: number[], p: number) => (s.length ? s[Math.min(s.length - 1, Math.max(0, Math.ceil((p / 100) * s.length) - 1))] : null);
+
+/** Config as a read-only viewer gets it: free-form fields are masked and credentials inside URLs are removed. */
+function viewerConfig(type: string, config: Record<string, any>): Record<string, any> {
+  const out = { ...config };
+  for (const f of getRunner(type)?.fields ?? []) {
+    const v = out[f.key];
+    if (v === undefined || v === null || v === '') continue;
+    if (f.kind === 'json' || f.kind === 'textarea') out[f.key] = SECRET_MASK;
+    else if (f.kind === 'text' && typeof v === 'string') out[f.key] = v.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/\s@]*@/i, '$1');
+  }
+  return out;
+}
 
 export async function monitorRoutes(app: FastifyInstance) {
   const ctx = app.ctx;
@@ -26,7 +67,12 @@ export async function monitorRoutes(app: FastifyInstance) {
     const id = Number(req.params.id);
     const exists = await db.selectFrom('monitors').select('id').where('id', '=', id).executeTakeFirst();
     if (!exists) { reply.code(404).send({ error: 'not_found', message: 'Monitor not found' }); return null; }
-    if (!(await canManageMonitor(ctx, req.user, id, level))) { reply.code(403).send({ error: 'forbidden', message: 'No access to this monitor' }); return null; }
+    if (!(await canManageMonitor(ctx, req.user, id, level))) {
+      // a monitor the user cannot even see answers like a missing one, so ids cannot be probed
+      if (level === 'manage' && (await canManageMonitor(ctx, req.user, id, 'view'))) reply.code(403).send({ error: 'forbidden', message: 'No access to this monitor' });
+      else reply.code(404).send({ error: 'not_found', message: 'Monitor not found' });
+      return null;
+    }
     return id;
   };
   const wrapValidation = async <T>(reply: any, fn: () => Promise<T>) => {
@@ -39,12 +85,31 @@ export async function monitorRoutes(app: FastifyInstance) {
   app.get('/api/monitor-types', { ...auth, schema: { tags: ['monitors'], summary: 'Monitor types with their form definitions' } }, async () =>
     [...runners.values()].map((r) => ({ type: r.type, label: r.label, category: r.category, fields: r.fields })));
 
-  app.get('/api/monitors', { ...auth, schema: { tags: ['monitors'], summary: 'List monitors with live state' } }, async (req) => listMonitors(ctx, await accessibleMonitorIds(ctx, req.user!)));
+  /**
+   * What a user may see of a monitor: the push token (a bearer secret for forging heartbeats) and the free-form parts of the config (query, body,
+   * steps, URL credentials) only for people who may manage it; dependencies only as far as they are visible to a scope-restricted user.
+   */
+  async function forUser<T extends { id: number; type?: string; pushToken?: string | null; dependsOn?: number[]; config?: Record<string, any> }>(req: any, items: T[]): Promise<T[]> {
+    const u = req.user;
+    const mine = u.role === 'viewer' ? [] : await accessibleMonitorIds(ctx, u, 'manage');
+    const seen = await accessibleMonitorIds(ctx, u);
+    return items.map((m) => {
+      const out = { ...m };
+      if (mine !== null && !mine.includes(m.id)) {
+        out.pushToken = null;
+        if (out.config && out.type) out.config = viewerConfig(out.type, out.config);
+      }
+      if (seen && out.dependsOn) out.dependsOn = out.dependsOn.filter((d) => seen.includes(d));
+      return out;
+    });
+  }
+  app.get('/api/monitors', { ...auth, schema: { tags: ['monitors'], summary: 'List monitors with live state' } }, async (req) => forUser(req, await listMonitors(ctx, await accessibleMonitorIds(ctx, req.user!))));
 
   const body = Type.Object({}, { additionalProperties: true });
   app.post('/api/monitors', { ...writer, schema: { tags: ['monitors'], body } }, async (req, reply) => {
     const input = req.body as any;
-    if (input.groupId && !(await canManageGroup(req, input.groupId))) return reply.code(403).send({ error: 'forbidden', message: 'No access to that group' });
+    const denied = await scopeProblem(req, input, true);
+    if (denied) return reply.code(403).send({ error: 'forbidden', message: denied });
     const id = await wrapValidation(reply, () => saveMonitor(ctx, input, req.user!.id));
     if (id === undefined) return;
     await writeAudit(ctx, req.user, 'monitor.created', { type: 'monitor', id }, { name: input.name, type: input.type }, req.ip);
@@ -57,15 +122,30 @@ export async function monitorRoutes(app: FastifyInstance) {
     return g === null || (groupId !== null && g.has(groupId));
   }
 
+  /**
+   * What a scope-restricted editor may not do with a monitor payload: place it outside their groups (including "no group") or make it depend on a
+   * monitor they cannot see. `creating` demands a group; on updates the group is checked only when the payload sets it.
+   */
+  async function scopeProblem(req: any, input: any, creating: boolean): Promise<string | null> {
+    if (!req.user.scopeRestricted || req.user.role === 'admin') return null;
+    if ((creating || input.groupId !== undefined) && !(await canManageGroup(req, input.groupId ?? null))) return input.groupId ? 'No access to that group' : 'Restricted users must pick a group';
+    if (input.dependsOn?.length) {
+      const seen = (await accessibleMonitorIds(ctx, req.user)) ?? [];
+      if (input.dependsOn.some((d: number) => !seen.includes(d))) return 'A monitor can only depend on monitors you can see';
+    }
+    return null;
+  }
+
   app.get('/api/monitors/:id', { ...auth, schema: { tags: ['monitors'], params: Id } }, async (req, reply) => {
     const id = await guardMonitor(req, reply, 'view'); if (!id) return;
-    return monitorDetail(ctx, id);
+    return (await forUser(req, [(await monitorDetail(ctx, id))!]))[0];
   });
 
   const update = async (req: any, reply: any) => {
     const id = await guardMonitor(req, reply, 'manage'); if (!id) return;
     const existing = (await loadMonitor(ctx, id))!;
-    if (req.body.groupId !== undefined && req.body.groupId !== existing.groupId && !(await canManageGroup(req, req.body.groupId))) return reply.code(403).send({ error: 'forbidden', message: 'No access to that group' });
+    const denied = await scopeProblem(req, req.body, false);
+    if (denied) return reply.code(403).send({ error: 'forbidden', message: denied });
     const ok = await wrapValidation(reply, () => saveMonitor(ctx, req.body, req.user!.id, existing));
     if (ok === undefined) return;
     await writeAudit(ctx, req.user, 'monitor.updated', { type: 'monitor', id }, { name: req.body.name ?? existing.name }, req.ip);
@@ -86,9 +166,12 @@ export async function monitorRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  /** A resumed push monitor gets a fresh grace period; otherwise its old last heartbeat makes it fail as "missed" the moment it resumes. */
+  const startPushGrace = (ids: number[]) => db.updateTable('monitor_state').set({ last_push_at: new Date() }).where('monitor_id', 'in', db.selectFrom('monitors').select('id').where('type', '=', 'push').where('id', 'in', ids)).execute();
   const setActive = (active: boolean) => async (req: any, reply: any) => {
     const id = await guardMonitor(req, reply, 'manage'); if (!id) return;
     await db.updateTable('monitors').set(active ? { active: 1, next_run_at: new Date(), attempt: 0, lease_until: null, lease_owner: null } : { active: 0 }).where('id', '=', id).execute();
+    if (active) await startPushGrace([id]);
     await writeAudit(ctx, req.user, active ? 'monitor.resumed' : 'monitor.paused', { type: 'monitor', id }, undefined, req.ip);
     ctx.bus.publish({ type: 'config', entity: 'monitor', id });
     return { ok: true };
@@ -140,9 +223,10 @@ export async function monitorRoutes(app: FastifyInstance) {
     const allowed = await accessibleMonitorIds(ctx, req.user!, 'manage');
     const ids: number[] = b.ids.filter((i: number) => allowed === null || allowed.includes(i));
     if (!ids.length) return { ok: true, affected: 0 };
-    if (b.action === 'patch' && b.patch?.groupId && !(await canManageGroup(req, b.patch.groupId))) return reply.code(403).send({ error: 'forbidden', message: 'No access to that group' });
+    const denied = b.action === 'patch' ? await scopeProblem(req, b.patch ?? {}, false) : null;
+    if (denied) return reply.code(403).send({ error: 'forbidden', message: denied });
     if (b.action === 'pause') await db.updateTable('monitors').set({ active: 0 }).where('id', 'in', ids).execute();
-    else if (b.action === 'resume') await db.updateTable('monitors').set({ active: 1, next_run_at: new Date(), attempt: 0 }).where('id', 'in', ids).execute();
+    else if (b.action === 'resume') { await db.updateTable('monitors').set({ active: 1, next_run_at: new Date(), attempt: 0 }).where('id', 'in', ids).execute(); await startPushGrace(ids); }
     else if (b.action === 'delete') { await db.deleteFrom('monitors').where('id', 'in', ids).execute(); for (const t of ['heartbeats', 'rollups', 'events'] as const) await db.deleteFrom(t).where('monitor_id', 'in', ids).execute(); }
     else {
       const p = b.patch ?? {};
@@ -181,9 +265,10 @@ export async function monitorRoutes(app: FastifyInstance) {
     const runner = getRunner(b.type);
     if (!runner) return reply.code(400).send({ error: 'validation', message: `Unknown monitor type "${b.type}"` });
     if (!runner.fields.some((f) => f.key === b.addressKey && (f.kind === 'text' || f.kind === 'secret'))) return reply.code(400).send({ error: 'validation', message: `"${b.addressKey}" is not a text field of this monitor type` });
-    if (b.template.groupId && !(await canManageGroup(req, b.template.groupId))) return reply.code(403).send({ error: 'forbidden', message: 'No access to that group' });
-    if (!b.template.groupId && req.user!.scopeRestricted) return reply.code(403).send({ error: 'forbidden', message: 'Restricted users must pick a group' });
-    const existing = new Set((await db.selectFrom('monitors').select('name').execute()).map((r) => r.name.toLowerCase()));
+    const denied = await scopeProblem(req, b.template, true);
+    if (denied) return reply.code(403).send({ error: 'forbidden', message: denied });
+    const visible = await accessibleMonitorIds(ctx, req.user!); // duplicates are judged among what the user can see, so hidden names stay hidden
+    const existing = new Set((await (visible ? db.selectFrom('monitors').select('name').where('id', 'in', visible.concat(0)) : db.selectFrom('monitors').select('name')).execute()).map((r) => r.name.toLowerCase()));
     const created: { index: number; id: number }[] = [];
     const skipped: { index: number; reason: string }[] = [];
     const failed: { index: number; errors: string[] }[] = [];
@@ -220,57 +305,77 @@ export async function monitorRoutes(app: FastifyInstance) {
   });
 
   /* ------------------------------- history ------------------------------- */
-  app.get('/api/monitors/:id/heartbeats', { ...auth, schema: { tags: ['monitors'], params: Id, querystring: Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })), before: Type.Optional(Type.String()), location: Type.Optional(Type.Integer()) }) } }, async (req, reply) => {
+  app.get('/api/monitors/:id/heartbeats', { ...auth, schema: { tags: ['monitors'], params: Id, querystring: Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })), before: Type.Optional(Type.String()), location: Type.Optional(Type.Integer()), ...PageQuery }) } }, async (req, reply) => {
     const id = await guardMonitor(req, reply, 'view'); if (!id) return;
-    const q = req.query as { limit?: number; before?: string; location?: number };
-    let s = db.selectFrom('heartbeats').select(['id', 'ts', 'status', 'latency_ms', 'error_kind', 'message', 'location_id']).where('monitor_id', '=', id).where('location_id', '=', q.location ?? 0).orderBy('ts', 'desc').limit(q.limit ?? 100);
+    const q = req.query as { limit?: number; before?: string; location?: number; page?: number; pageSize?: number };
+    const loc = q.location ?? 0;
+    const map = (r: any) => ({ id: r.id, ts: r.ts, status: r.status, latencyMs: r.latency_ms, errorKind: r.error_kind, message: r.message, locationId: r.location_id });
+    let s = db.selectFrom('heartbeats').select(['id', 'ts', 'status', 'latency_ms', 'error_kind', 'message', 'location_id']).where('monitor_id', '=', id).where('location_id', '=', loc).orderBy('ts', 'desc');
+    if (q.page) {
+      if (q.page * (q.pageSize ?? 5) > COUNT_CAP + (q.pageSize ?? 5)) return reply.code(400).send({ error: 'validation', message: `Paging stops at ${COUNT_CAP} entries, narrow the time range instead` });
+      const total = await cappedCount(db, db.selectFrom('heartbeats').select('id').where('monitor_id', '=', id).where('location_id', '=', loc));
+      return { total, page: q.page, pageSize: q.pageSize ?? 5, items: (await s.limit(q.pageSize ?? 5).offset((q.page - 1) * (q.pageSize ?? 5)).execute()).map(map) };
+    }
+    s = s.limit(q.limit ?? 100);
     if (q.before) s = s.where('ts', '<', new Date(q.before));
-    return (await s.execute()).map((r) => ({ id: r.id, ts: r.ts, status: r.status, latencyMs: r.latency_ms, errorKind: r.error_kind, message: r.message, locationId: r.location_id }));
+    return (await s.execute()).map(map);
   });
 
-  app.get('/api/monitors/:id/chart', { ...auth, schema: { tags: ['monitors'], params: Id, querystring: Type.Object({ range: Type.Optional(Type.String()) }) } }, async (req, reply) => {
+  app.get('/api/monitors/:id/chart', { ...auth, schema: { tags: ['monitors'], params: Id, querystring: Type.Object(WindowQuery) } }, async (req, reply) => {
     const id = await guardMonitor(req, reply, 'view'); if (!id) return;
-    const rangeKey = (req.query as any).range && RANGES[(req.query as any).range] ? (req.query as any).range : '24h';
-    const spec = RANGES[rangeKey];
-    const since = new Date(Date.now() - spec.ms);
+    const w = windowOf(req.query as any, '24h');
+    if (!w) return reply.code(400).send({ error: 'validation', message: 'Invalid time window (from/to must be dates, at least a minute and at most 400 days apart)' });
     let points: any[];
-    if (spec.src === 'raw') {
-      const rows = await db.selectFrom('heartbeats').select(['ts', 'status', 'latency_ms']).where('monitor_id', '=', id).where('location_id', '=', 0).where('ts', '>=', since).orderBy('ts').limit(5000).execute();
+    if (w.src === 'raw') {
+      const rows = await db.selectFrom('heartbeats').select(['ts', 'status', 'latency_ms']).where('monitor_id', '=', id).where('location_id', '=', 0).where('ts', '>=', w.from).where('ts', '<=', w.to).orderBy('ts').limit(5000).execute();
       points = rows.map((r) => ({ t: r.ts, avg: r.latency_ms, status: r.status }));
     } else {
-      const rows = await db.selectFrom('rollups').selectAll().where('monitor_id', '=', id).where('res', '=', spec.src).where('bucket', '>=', since).orderBy('bucket').execute();
-      points = rows.map((r) => ({ t: r.bucket, avg: r.lat_n ? Math.round(Number(r.lat_sum) / r.lat_n) : null, min: r.lat_min, max: r.lat_max, p50: r.lat_p50, p95: r.lat_p95, p99: r.lat_p99, up: r.up_n, down: r.down_n, maint: r.maint_n }));
+      const bucketMs = w.src === 'minute' ? 60_000 : w.src === 'hour' ? 3_600_000 : DAY; // include the bucket the window starts in
+      const rows = await db.selectFrom('rollups').selectAll().where('monitor_id', '=', id).where('res', '=', w.src).where('bucket', '>=', new Date(Math.floor(w.from.getTime() / bucketMs) * bucketMs)).where('bucket', '<=', w.to).orderBy('bucket').execute();
+      points = rows.map((r) => ({ t: r.bucket, n: r.lat_n, avg: r.lat_n ? Math.round(Number(r.lat_sum) / r.lat_n) : null, min: r.lat_min, max: r.lat_max, p50: r.lat_p50, p95: r.lat_p95, p99: r.lat_p99, up: r.up_n, down: r.down_n, maint: r.maint_n }));
     }
-    // exact percentiles from raw data while it is still retained, weighted rollup values for longer ranges
+    // exact percentiles from raw data while it is still retained, weighted rollup values for longer windows
+    const span = w.to.getTime() - w.from.getTime();
     let summary: Record<string, number | null>;
-    if (spec.ms <= 7 * 86_400_000) {
-      const lat = (await db.selectFrom('heartbeats').select('latency_ms').where('monitor_id', '=', id).where('location_id', '=', 0).where('status', '=', 1).where('ts', '>=', since).where('latency_ms', 'is not', null).orderBy('latency_ms').limit(400_000).execute()).map((r) => r.latency_ms as number);
+    if (span <= DAY && w.from.getTime() >= Date.now() - config.retention.rawDays * DAY) {
+      const lat = (await db.selectFrom('heartbeats').select('latency_ms').where('monitor_id', '=', id).where('location_id', '=', 0).where('status', '=', 1).where('ts', '>=', w.from).where('ts', '<=', w.to).where('latency_ms', 'is not', null).orderBy('latency_ms').execute()).map((r) => r.latency_ms as number);
       summary = { avg: lat.length ? Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) : null, min: lat[0] ?? null, max: lat[lat.length - 1] ?? null, p50: pct(lat, 50), p95: pct(lat, 95), p99: pct(lat, 99) };
     } else {
-      const w = (k: string) => { const xs = points.filter((p) => p[k] != null); return xs.length ? Math.round(xs.reduce((a, p) => a + p[k], 0) / xs.length) : null; };
-      summary = { avg: w('avg'), min: points.length ? Math.min(...points.filter((p) => p.min != null).map((p) => p.min)) : null, max: points.length ? Math.max(...points.filter((p) => p.max != null).map((p) => p.max)) : null, p50: w('p50'), p95: w('p95'), p99: w('p99') };
+      // every bucket counts as often as it has samples (a bucket with one check must not weigh as much as one with thousands)
+      const wavg = (k: string) => { const xs = points.filter((p) => p[k] != null && p.n > 0); const n = xs.reduce((a, p) => a + p.n, 0); return n ? Math.round(xs.reduce((a, p) => a + p[k] * p.n, 0) / n) : null; };
+      const mins = points.filter((p) => p.min != null).map((p) => p.min), maxs = points.filter((p) => p.max != null).map((p) => p.max);
+      summary = { avg: wavg('avg'), min: mins.length ? Math.min(...mins) : null, max: maxs.length ? Math.max(...maxs) : null, p50: wavg('p50'), p95: wavg('p95'), p99: wavg('p99') };
     }
     const up = points.reduce((a, p) => a + (p.up ?? (p.status === 1 ? 1 : 0)), 0), down = points.reduce((a, p) => a + (p.down ?? (p.status === 0 || p.status === 4 ? 1 : 0)), 0);
-    return { range: rangeKey, resolution: spec.src, points, summary, uptime: up + down ? Math.round((up / (up + down)) * 10000) / 100 : null };
+    return { range: w.key, resolution: w.src, from: w.from, to: w.to, points, summary, uptime: up + down ? Math.round((up / (up + down)) * 10000) / 100 : null };
   });
 
-  app.get('/api/monitors/:id/events', { ...auth, schema: { tags: ['monitors'], params: Id, querystring: Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })), before: Type.Optional(Type.Integer()) }) } }, async (req, reply) => {
+  app.get('/api/monitors/:id/events', { ...auth, schema: { tags: ['monitors'], params: Id, querystring: Type.Object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })), before: Type.Optional(Type.Integer()), ...PageQuery }) } }, async (req, reply) => {
     const id = await guardMonitor(req, reply, 'view'); if (!id) return;
-    const q = req.query as { limit?: number; before?: number };
-    let s = db.selectFrom('events').selectAll().where('monitor_id', '=', id).orderBy('id', 'desc').limit(q.limit ?? 100);
+    const q = req.query as { limit?: number; before?: number; page?: number; pageSize?: number };
+    const map = (e: any) => ({ id: e.id, ts: e.ts, type: e.type, from: e.from_status, to: e.to_status, errorKind: e.error_kind, message: e.message, details: parseJson(e.details, null) });
+    let s = db.selectFrom('events').selectAll().where('monitor_id', '=', id).orderBy('ts', 'desc').orderBy('id', 'desc');
+    if (q.page) {
+      if (q.page * (q.pageSize ?? 5) > COUNT_CAP + (q.pageSize ?? 5)) return reply.code(400).send({ error: 'validation', message: `Paging stops at ${COUNT_CAP} entries, narrow the time range instead` });
+      const total = await cappedCount(db, db.selectFrom('events').select('id').where('monitor_id', '=', id));
+      return { total, page: q.page, pageSize: q.pageSize ?? 5, items: (await s.limit(q.pageSize ?? 5).offset((q.page - 1) * (q.pageSize ?? 5)).execute()).map(map) };
+    }
+    s = s.limit(q.limit ?? 100);
     if (q.before) s = s.where('id', '<', q.before);
-    return (await s.execute()).map((e) => ({ id: e.id, ts: e.ts, type: e.type, from: e.from_status, to: e.to_status, errorKind: e.error_kind, message: e.message, details: parseJson(e.details, null) }));
+    return (await s.execute()).map(map);
   });
 
-  /** Up/down periods derived from status-change events. */
-  app.get('/api/monitors/:id/periods', { ...auth, schema: { tags: ['monitors'], params: Id, querystring: Type.Object({ range: Type.Optional(Type.String()) }) } }, async (req, reply) => {
+  /** Up/down periods derived from status-change events; the state that began before the window is carried in so short windows still show an ongoing outage. */
+  app.get('/api/monitors/:id/periods', { ...auth, schema: { tags: ['monitors'], params: Id, querystring: Type.Object(WindowQuery) } }, async (req, reply) => {
     const id = await guardMonitor(req, reply, 'view'); if (!id) return;
-    const spec = RANGES[(req.query as any).range ?? '30d'] ?? RANGES['30d'];
-    const since = new Date(Date.now() - spec.ms);
-    const evs = await db.selectFrom('events').select(['ts', 'to_status', 'error_kind', 'message']).where('monitor_id', '=', id).where('type', '=', 'status_change').where('ts', '>=', since).orderBy('ts').execute();
+    const w = windowOf(req.query as any, '30d');
+    if (!w) return reply.code(400).send({ error: 'validation', message: 'Invalid time window' });
+    const evs = (await db.selectFrom('events').select(['ts', 'to_status', 'error_kind', 'message']).where('monitor_id', '=', id).where('type', '=', 'status_change').where('ts', '>=', w.from).where('ts', '<=', w.to).orderBy('ts', 'desc').limit(5000).execute()).reverse(); // the newest 5000 changes of the window
+    const before = await db.selectFrom('events').select(['ts', 'to_status', 'error_kind', 'message']).where('monitor_id', '=', id).where('type', '=', 'status_change').where('ts', '<', w.from).orderBy('ts', 'desc').limit(1).executeTakeFirst();
+    const all = before ? [{ ...before, ts: w.from }, ...evs] : evs;
     const periods: { status: string; from: Date; to: Date | null; durationS: number; errorKind?: string | null; message?: string | null }[] = [];
-    for (const [i, e] of evs.entries()) {
-      const end = evs[i + 1]?.ts ?? null;
+    for (const [i, e] of all.entries()) {
+      const end = all[i + 1]?.ts ?? (w.custom ? new Date(Math.min(w.to.getTime(), Date.now())) : null);
       periods.push({ status: e.to_status ?? 'up', from: e.ts, to: end, durationS: Math.round(((end ?? new Date()).getTime() - e.ts.getTime()) / 1000), errorKind: e.error_kind, message: e.message });
     }
     return periods.reverse();
@@ -303,10 +408,14 @@ export async function monitorRoutes(app: FastifyInstance) {
   app.get('/api/tags', { ...auth, schema: { tags: ['monitors'] } }, async () => db.selectFrom('tags').selectAll().orderBy('name').execute());
   app.post('/api/tags', { ...writer, schema: { tags: ['monitors'], body: Type.Object({ name: Type.String({ minLength: 1, maxLength: 64 }), color: Type.Optional(Type.String({ pattern: '^#[0-9a-fA-F]{6}$' })) }) } }, async (req) => {
     const b = req.body as { name: string; color?: string };
-    await db.insertInto('tags').values({ name: b.name, color: b.color ?? '#6366f1' }).onDuplicateKeyUpdate({ color: b.color ?? '#6366f1' }).execute();
+    const q = db.insertInto('tags').values({ name: b.name, color: b.color ?? '#6366f1' });
+    // tags are shared by everyone: a scope-restricted editor can add one but not recolor an existing one
+    await (req.user!.scopeRestricted && req.user!.role !== 'admin' ? q.ignore() : q.onDuplicateKeyUpdate({ color: b.color ?? '#6366f1' })).execute();
     return db.selectFrom('tags').selectAll().where('name', '=', b.name).executeTakeFirst();
   });
-  app.delete('/api/tags/:id', { ...writer, schema: { tags: ['monitors'], params: Id } }, async (req) => { await db.deleteFrom('tags').where('id', '=', (req.params as any).id).execute(); return { ok: true }; });
+  app.delete('/api/tags/:id', { ...writer, schema: { tags: ['monitors'], params: Id } }, async (req, reply) => {
+    if (req.user!.scopeRestricted && req.user!.role !== 'admin') return reply.code(403).send({ error: 'forbidden', message: 'Restricted users cannot delete shared tags' });
+    await db.deleteFrom('tags').where('id', '=', (req.params as any).id).execute(); return { ok: true }; });
 
   app.get('/api/groups', { ...auth, schema: { tags: ['monitors'] } }, async (req) => {
     const g = await accessibleGroupIds(ctx, req.user!);
@@ -326,6 +435,13 @@ export async function monitorRoutes(app: FastifyInstance) {
     const id = (req.params as any).id; const b = req.body as any;
     if (!(await canManageGroup(req, id))) return reply.code(403).send({ error: 'forbidden' });
     if (b.parentId === id) return reply.code(400).send({ error: 'validation', message: 'A group cannot be its own parent' });
+    if (b.parentId) {
+      // walking up from the new parent must never reach this group, or the tree would loop and the access checks never end
+      const groups = new Map((await db.selectFrom('monitor_groups').select(['id', 'parent_id']).execute()).map((g) => [g.id, g.parent_id]));
+      if (!groups.has(b.parentId)) return reply.code(400).send({ error: 'validation', message: 'Unknown parent group' });
+      for (let at: number | null | undefined = b.parentId, hops = 0; at && hops < 1000; at = groups.get(at), hops++) if (at === id) return reply.code(400).send({ error: 'validation', message: 'A group cannot be moved below one of its own sub-groups' });
+      if (req.user!.scopeRestricted && !(await canManageGroup(req, b.parentId))) return reply.code(403).send({ error: 'forbidden', message: 'No access to that group' });
+    }
     const set: Record<string, unknown> = {};
     if (b.name !== undefined) set.name = b.name; if (b.parentId !== undefined) set.parent_id = b.parentId; if (b.description !== undefined) set.description = b.description; if (b.sort !== undefined) set.sort = b.sort;
     if (Object.keys(set).length) await db.updateTable('monitor_groups').set(set).where('id', '=', id).execute();

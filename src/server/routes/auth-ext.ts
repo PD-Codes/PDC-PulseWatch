@@ -5,6 +5,7 @@ import { maskSecrets, restoreSecrets, validateConfig } from '../../core';
 import { writeAudit } from '../auth/access';
 import { oidcFinish, oidcStart, providerRunner, samlAcsUrl, samlConfigErrors, samlEntityId, samlFinish, samlMetadata, samlStart } from '../auth/external';
 import { createSession, csrfFor } from '../auth/plugin';
+import { reauthError } from '../auth/reauth';
 import { config } from '../config';
 import { decryptJson, encryptJson, hmac, safeEqual } from '../crypto';
 import { bool, parseJson } from '../db';
@@ -82,7 +83,7 @@ export async function authExtRoutes(app: FastifyInstance) {
       if (!uid) { await writeAudit(ctx, null, 'login.failed', { type: 'oidc' }, { why: 'refused' }, req.ip); return loginError(reply, 'not_allowed'); }
       await createSession(ctx, uid, req, reply);
       await writeAudit(ctx, { id: uid, username: `user#${uid}` }, 'login.success', { type: 'user', id: uid }, { via: 'oidc' }, req.ip);
-      return reply.redirect('/');
+      return reply.redirect('/dashboard');
     } catch (e) { ctx.log.warn({ err: (e as Error).message }, 'OIDC callback failed'); return loginError(reply, 'sso_failed'); }
   });
 
@@ -111,7 +112,7 @@ export async function authExtRoutes(app: FastifyInstance) {
         if (!uid) { await writeAudit(ctx, null, 'login.failed', { type: 'saml' }, { why: 'refused' }, req.ip); return loginError(reply, 'not_allowed'); }
         await createSession(ctx, uid, req, reply);
         await writeAudit(ctx, { id: uid, username: `user#${uid}` }, 'login.success', { type: 'user', id: uid }, { via: 'saml' }, req.ip);
-        return reply.redirect('/', 303); // 303 turns the IdP's POST into a plain GET of the app
+        return reply.redirect('/dashboard', 303); // 303 turns the IdP's POST into a plain GET of the app
       } catch (e) {
         ctx.log.warn({ err: (e as Error).message }, 'SAML assertion rejected');
         await writeAudit(ctx, null, 'login.failed', { type: 'saml' }, { why: (e as Error).message.slice(0, 200) }, req.ip);
@@ -121,7 +122,7 @@ export async function authExtRoutes(app: FastifyInstance) {
   });
 
   /* --------------------------------- passkeys --------------------------------- */
-  const auth = { preHandler: app.requireAuth };
+  const auth = { preHandler: app.requireSession };
   app.get('/api/auth/passkeys', { ...auth, schema: { tags: ['auth'] } }, async (req) =>
     (await db.selectFrom('passkeys').select(['id', 'name', 'created_at']).where('user_id', '=', req.user!.id).orderBy('id').execute()).map((p) => ({ id: p.id, name: p.name, createdAt: p.created_at })));
   app.delete('/api/auth/passkeys/:id', { ...auth, schema: { tags: ['auth'], params: Id } }, async (req) => {
@@ -130,8 +131,12 @@ export async function authExtRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  app.post('/api/auth/passkeys/register/options', { ...auth, schema: { tags: ['auth'] } }, async (req, reply) => {
+  // A passkey signs in without password and authenticator code, so adding one needs both again (a hijacked session must not be able to plant one).
+  app.post('/api/auth/passkeys/register/options', { ...auth, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, schema: { tags: ['auth'], body: Type.Object({ password: Type.Optional(Type.String({ maxLength: 1000 })), code: Type.Optional(Type.String({ maxLength: 32 })) }) } }, async (req, reply) => {
     const u = req.user!;
+    const b = req.body as { password?: string; code?: string };
+    const bad = await reauthError(ctx, u.id, b.password, b.code);
+    if (bad) return reply.code(400).send({ error: 'invalid_credentials', message: bad });
     const existing = await db.selectFrom('passkeys').select(['credential_id', 'transports']).where('user_id', '=', u.id).execute();
     const options = await generateRegistrationOptions({
       rpName: config.brand.name, rpID, userName: u.username, userDisplayName: u.displayName, userID: new TextEncoder().encode(String(u.id)), attestationType: 'none',

@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { trustOptions } from '../core';
 import { config } from './config';
 
 export const mailConfigured = () => !!config.smtp.host;
@@ -9,6 +10,7 @@ export async function sendSystemMail(opts: { to: string | string[]; subject: str
   const t = nodemailer.createTransport({
     host: config.smtp.host, port: config.smtp.port, secure: config.smtp.secure,
     auth: config.smtp.user ? { user: config.smtp.user, pass: config.smtp.pass } : undefined, connectionTimeout: 15000, socketTimeout: 30000,
+    tls: trustOptions(),
   });
   try { await t.sendMail({ from: config.smtp.from, to: opts.to, subject: opts.subject, text: opts.text, html: opts.html, attachments: opts.attachments }); } finally { t.close(); }
 }

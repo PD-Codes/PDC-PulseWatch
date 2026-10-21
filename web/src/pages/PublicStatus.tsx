@@ -9,7 +9,7 @@ import { useT } from '../lib/i18n';
 
 type CompStatus = 'operational' | 'outage' | 'degraded' | 'maintenance' | 'unknown';
 interface Comp { monitorId: number; name: string; description: string | null; status: CompStatus; since: string | null; uptime: number | null; daily: { date: string; uptime: number | null }[] }
-interface Incident { id: number; title: string; status: string; severity: 'minor' | 'major' | 'critical'; startedAt: string; resolvedAt: string | null; updates: { ts: string; kind: string; body: string | null }[] }
+interface Incident { id: number; title: string; status: string; severity: 'minor' | 'major' | 'critical'; startedAt: string; resolvedAt: string | null; updates: { ts: string; kind: string; status?: string | null; body: string | null }[] }
 interface Page {
   slug: string; title: string; description: string | null; branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number;
   overall: 'operational' | 'partial' | 'outage' | 'degraded' | 'maintenance'; generatedAt: string; sections: { name: string; components: Comp[] }[]; components: Comp[];
@@ -54,15 +54,16 @@ function Component({ comp, history, days }: { comp: Comp; history: boolean; days
   );
 }
 
+const PHASES = new Set(['identified', 'fixing', 'monitoring']);
 function IncidentCard({ inc }: { inc: Incident }) {
   const t = useT();
   return (
     <article className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-      <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{inc.title}</h3><Badge tone={SEVERITY[inc.severity]}>{t(`public.severity.${inc.severity}`)}</Badge><Badge tone={inc.resolvedAt ? 'green' : 'amber'}>{inc.resolvedAt ? t('public.resolved') : t('public.ongoing')}</Badge></div>
+      <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold">{inc.title}</h3><Badge tone={SEVERITY[inc.severity]}>{t(`public.severity.${inc.severity}`)}</Badge><Badge tone={inc.resolvedAt ? 'green' : 'amber'}>{inc.resolvedAt ? t('public.resolved') : PHASES.has(inc.status) ? t(`public.phase.${inc.status}`) : t('public.ongoing')}</Badge></div>
       <p className="mt-1 text-xs text-slate-500">{fmtDateTime(inc.startedAt)}{inc.resolvedAt ? ` – ${fmtDateTime(inc.resolvedAt)}` : ''}</p>
       {inc.updates.length > 0 && (
         <ul className="mt-3 space-y-2 border-l-2 border-slate-200 pl-3 dark:border-slate-700">
-          {inc.updates.map((u, i) => <li key={i} className="text-sm"><span className="text-xs text-slate-500">{fmtDateTime(u.ts)}</span><p className="whitespace-pre-wrap">{u.body}</p></li>)}
+          {inc.updates.map((u, i) => <li key={i} className="text-sm"><span className="text-xs text-slate-500">{fmtDateTime(u.ts)}{u.status && u.kind !== 'note' && <> · <strong className="font-semibold">{t(`public.phase.${u.status}`)}</strong></>}</span><p className="whitespace-pre-wrap">{u.body}</p></li>)}
         </ul>
       )}
     </article>
@@ -106,12 +107,12 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
   const params = useParams();
   const slug = slugProp ?? params.slug ?? '';
   const [unlocked, setUnlocked] = useState(false);
-  const q = useQuery({ queryKey: ['public-status', slug], queryFn: () => get<Page>(`/api/public/status/${encodeURIComponent(slug)}`), refetchInterval: 30_000, retry: false });
+  const q = useQuery({ queryKey: ['public-status', slug], queryFn: () => get<Page>(`/api/public/status/${encodeURIComponent(slug)}`), refetchInterval: (query) => (query.state.data ? 30_000 : false), retry: false }); // no polling while the gate or an error is shown
   const page = q.data;
   useEffect(() => { if (page) document.title = page.title; }, [page]);
 
   if (q.isLoading) return <Loading />;
-  if (q.error) {
+  if (q.error && !page) { // a failed refresh keeps showing the last page
     const e = q.error as ApiError;
     const title: string | undefined = e.body?.title;
     if (e.status === 401 && e.code === 'password_required') return <Gate slug={slug} title={title} onUnlocked={() => { setUnlocked(true); void qc.invalidateQueries({ queryKey: ['public-status', slug] }); }} />;

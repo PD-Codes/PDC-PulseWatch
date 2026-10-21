@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { DEFAULT_DENY, getRunner, NetGuard, setExtraCa } from '../core';
 import type { CheckResult } from '../core';
+import { installCrashBackstop } from '../core/survive';
 import { toCheckError } from '../core/util';
 import pkg from '../../package.json';
 
@@ -93,6 +94,7 @@ async function flush(): Promise<void> {
 }
 
 const safe = (fn: () => Promise<void>, what: string) => () => void fn().catch((e) => log('warn', `${what} failed`, { error: (e as Error).message }));
+installCrashBackstop((kind, e) => log('error', kind, { error: (e as Error)?.message ?? String(e) }));
 log('info', 'probe starting', { version: pkg.version, server });
 safe(sync, 'job sync')();
 const t1 = setInterval(safe(sync, 'job sync'), fetchEverySec * 1000);

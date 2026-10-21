@@ -113,6 +113,9 @@ async function claim(ctx: Ctx, key: string, value: string): Promise<boolean> {
   return Number(r.numAffectedRows ?? 0) > 0;
 }
 
+/** A digest stays readable when a whole network goes down. */
+const LIST_MAX = 50;
+
 export async function buildDigest(ctx: Ctx): Promise<{ subject: string; text: string; html: string }> {
   const { db } = ctx;
   const since = new Date(Date.now() - DAY);
@@ -136,11 +139,12 @@ export async function buildDigest(ctx: Ctx): Promise<{ subject: string; text: st
   const lines = [
     `Overall uptime (24h): ${sla.overall ?? 'n/a'}%`,
     `Monitors down right now: ${down.length}`,
-    ...down.map((d) => `  - ${d.name}${targets.get(d.id) ? ` [${targets.get(d.id)}]` : ''}: ${d.last_message ?? 'no details'}`),
+    ...down.slice(0, LIST_MAX).map((d) => `  - ${d.name}${targets.get(d.id) ? ` [${targets.get(d.id)}]` : ''}: ${d.last_message ?? 'no details'}`),
+    ...(down.length > LIST_MAX ? [`  ... and ${down.length - LIST_MAX} more`] : []),
     `Incidents opened: ${opened.length}, resolved: ${resolved.length}`,
     ...(worst.length ? ['Lowest uptime: ' + worst.map((w) => `${w.name} ${w.uptime}%`).join('; ')] : []),
-    ...(flapping.length ? [`Flapping: ${flapping.map((f) => f.name).join(', ')}`] : []),
-    ...(certs.length ? ['Certificates expiring within 14 days:', ...certs.map((c) => `  - ${certLine(c)}`)] : []),
+    ...(flapping.length ? [`Flapping: ${flapping.slice(0, LIST_MAX).map((f) => f.name).join(', ')}${flapping.length > LIST_MAX ? `, ... and ${flapping.length - LIST_MAX} more` : ''}`] : []),
+    ...(certs.length ? ['Certificates expiring within 14 days:', ...certs.slice(0, LIST_MAX).map((c) => `  - ${certLine(c)}`), ...(certs.length > LIST_MAX ? [`  ... and ${certs.length - LIST_MAX} more`] : [])] : []),
   ];
   const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
   return {

@@ -146,7 +146,7 @@ export default function MonitorForm() {
     onSuccess: (r) => {
       void qc.invalidateQueries({ queryKey: ['monitors'] });
       toast(t('monitors.bulk.done', { created: r.created.length, skipped: r.skipped.length, failed: r.failed.length }));
-      if (!r.failed.length) return nav('/');
+      if (!r.failed.length) return nav('/dashboard');
       // keep only the failed lines so the user can fix and resend them
       setBulkText(r.failed.map((f) => bulkLines[f.index]!).map((l) => `${l.name} | ${l.address}`).join('\n'));
       setErrors(r.failed.map((f) => `${bulkLines[f.index]!.name}: ${f.errors.join('; ')}`));

@@ -3,9 +3,10 @@ import dgram from 'node:dgram';
 import dns from 'node:dns';
 import tls from 'node:tls';
 import { connect } from '../conn';
+import { compileRegex, regexInput } from '../regex';
 import { certFacts, tlsMessage } from '../tlsdetail';
 import { CheckError, type CheckResult, type Runner } from '../types';
-import { certExpiryError, fail, hrMs, ok, readUntil, toCheckError } from '../util';
+import { certExpiryError, closeDgram, fail, hrMs, ok, readUntil, toCheckError } from '../util';
 
 const hostPort = (defPort?: number) => [
   { key: 'host', label: 'Host', kind: 'text' as const, required: true, placeholder: 'example.com' },
@@ -55,10 +56,12 @@ const udp: Runner = {
       const t0 = process.hrtime.bigint();
       return await new Promise<CheckResult>((resolve) => {
         const s = dgram.createSocket(addr.family === 6 ? 'udp6' : 'udp4');
-        const done = (r: CheckResult) => { clearTimeout(timer); s.close(); resolve(r); };
+        let finished = false;
+        const done = (r: CheckResult) => { if (finished) return; finished = true; clearTimeout(timer); ctx.signal.removeEventListener('abort', onAbort); closeDgram(s); resolve(r); };
+        const onAbort = () => done(fail('timeout', 'Aborted'));
         const wait = c.expectResponse === false ? Math.min(ctx.timeoutMs, 1500) : ctx.timeoutMs;
         const timer = setTimeout(() => done(c.expectResponse === false ? ok(hrMs(t0), { message: 'No ICMP error received' }) : fail('timeout', 'No UDP response', { details: { phase: 'response' } })), wait);
-        ctx.signal.addEventListener('abort', () => done(fail('timeout', 'Aborted')), { once: true });
+        ctx.signal.addEventListener('abort', onAbort, { once: true });
         s.on('error', (e) => done((() => { const ce = toCheckError(e); return fail(ce.kind, ce.message); })()));
         s.on('message', (m) => {
           if (c.expect && !m.toString('latin1').includes(c.expect)) return done(fail('content', 'Response did not contain the expected text'));
@@ -135,7 +138,7 @@ const dnsRunner: Runner = {
       const ms = hrMs(t0);
       const mode = c.matchMode ?? 'any';
       const exp = String(c.expected ?? '');
-      const match = (a: string) => (mode === 'equals' ? a === exp : mode === 'contains' ? a.includes(exp) : new RegExp(exp).test(a));
+      const match = (a: string) => (mode === 'equals' ? a === exp : mode === 'contains' ? a.includes(exp) : compileRegex(exp).test(regexInput(a)));
       if (mode !== 'any' && exp && !answers.some(match)) return fail('content', `No ${t} answer ${mode === 'equals' ? 'equals' : mode === 'contains' ? 'contains' : 'matches'} "${exp}" (got ${answers.join(', ')})`, { latencyMs: Math.round(ms), details: { answers } });
       return ok(ms, { message: answers.slice(0, 3).join(', '), details: { answers } });
     } catch (e) { const ce = toCheckError(e); return fail(ce.kind, ce.message, { details: ce.details }); }

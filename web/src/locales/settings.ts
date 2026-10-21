@@ -28,7 +28,7 @@ export const en = {
 
   'reports.title': 'Reports', 'reports.subtitle': 'SLA reports and scheduled delivery', 'reports.tab.report': 'SLA report', 'reports.tab.schedules': 'Scheduled reports',
   'reports.scope': 'Scope', 'reports.scope.all': 'All monitors', 'reports.scope.group': 'Group', 'reports.scope.monitor': 'Monitor', 'reports.scope.tag': 'Tag', 'reports.pick': 'Select…', 'reports.range': 'Range',
-  'reports.days': '{n} days', 'reports.custom': 'Custom', 'reports.customDays': 'Days (1-730)', 'reports.run': 'Run report', 'reports.csv': 'CSV', 'reports.pdf': 'PDF', 'reports.overall': 'Overall uptime',
+  'reports.days': '{n} d', 'reports.custom': 'Custom', 'reports.customDays': 'Days (1-730)', 'reports.run': 'Run report', 'reports.csv': 'CSV', 'reports.pdf': 'PDF', 'reports.overall': 'Overall uptime',
   'reports.period': 'Period', 'reports.monitor': 'Monitor', 'reports.group': 'Group', 'reports.uptime': 'Uptime', 'reports.downtime': 'Downtime', 'reports.incidents': 'Incidents', 'reports.mttr': 'MTTR', 'reports.avg': 'Avg', 'reports.p95': 'p95', 'reports.checks': 'Checks',
   'reports.minutes': '{n} min', 'reports.empty': 'No monitors in this scope', 'reports.note': 'Downtime is estimated from the share of failed checks. Maintenance periods are excluded from uptime.',
   'reports.pickRequired': 'Pick a {scope} first',
@@ -83,7 +83,7 @@ export const de = {
 
   'reports.title': 'Berichte', 'reports.subtitle': 'SLA-Berichte und geplanter Versand', 'reports.tab.report': 'SLA-Bericht', 'reports.tab.schedules': 'Geplante Berichte',
   'reports.scope': 'Umfang', 'reports.scope.all': 'Alle Monitore', 'reports.scope.group': 'Gruppe', 'reports.scope.monitor': 'Monitor', 'reports.scope.tag': 'Tag', 'reports.pick': 'Auswählen…', 'reports.range': 'Zeitraum',
-  'reports.days': '{n} Tage', 'reports.custom': 'Benutzerdefiniert', 'reports.customDays': 'Tage (1-730)', 'reports.run': 'Bericht erstellen', 'reports.csv': 'CSV', 'reports.pdf': 'PDF', 'reports.overall': 'Gesamtverfügbarkeit',
+  'reports.days': '{n} T', 'reports.custom': 'Benutzerdefiniert', 'reports.customDays': 'Tage (1-730)', 'reports.run': 'Bericht erstellen', 'reports.csv': 'CSV', 'reports.pdf': 'PDF', 'reports.overall': 'Gesamtverfügbarkeit',
   'reports.period': 'Zeitraum', 'reports.monitor': 'Monitor', 'reports.group': 'Gruppe', 'reports.uptime': 'Verfügbarkeit', 'reports.downtime': 'Ausfallzeit', 'reports.incidents': 'Vorfälle', 'reports.mttr': 'MTTR', 'reports.avg': 'Ø', 'reports.p95': 'p95', 'reports.checks': 'Prüfungen',
   'reports.minutes': '{n} Min.', 'reports.empty': 'Keine Monitore in diesem Umfang', 'reports.note': 'Die Ausfallzeit wird aus dem Anteil fehlgeschlagener Prüfungen geschätzt. Wartungszeiten zählen nicht zur Verfügbarkeit.',
   'reports.pickRequired': 'Wähle zuerst: {scope}',

@@ -24,6 +24,26 @@ export async function api<T = any>(method: string, path: string, body?: unknown)
   return data as T;
 }
 
+/** POST a file as the raw body and report upload progress (fetch cannot). Errors look like those of api(). */
+export function upload<T = any>(path: string, file: Blob, onProgress: (loaded: number, total: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', path);
+    x.setRequestHeader('content-type', 'application/octet-stream');
+    if (csrf) x.setRequestHeader('x-csrf-token', csrf);
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded, e.total); };
+    x.onerror = () => reject(new ApiError(0, 'network', 'The upload was interrupted'));
+    x.onload = () => {
+      let data: any = x.responseText;
+      try { data = data ? JSON.parse(data) : null; } catch { /* keep text */ }
+      if (x.status >= 200 && x.status < 300) return resolve(data as T);
+      if (x.status === 401) window.dispatchEvent(new Event('pw:unauthorized'));
+      reject(new ApiError(x.status, data?.error ?? 'error', data?.message ?? x.statusText ?? 'Request failed', data));
+    };
+    x.send(file);
+  });
+}
+
 export const get = <T = any>(path: string) => api<T>('GET', path);
 export const post = <T = any>(path: string, body?: unknown) => api<T>('POST', path, body ?? {});
 export const put = <T = any>(path: string, body?: unknown) => api<T>('PUT', path, body ?? {});

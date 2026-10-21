@@ -79,3 +79,43 @@ test('adds several monitors at once with a live preview and creates a group inli
   await expect(page.getByText('Bulk Two').first()).toBeVisible();
   await expect(page.getByRole('button', { name: /^e2e group/ })).toBeVisible();
 });
+
+test('offers ranges down to 15 minutes and requests the chart for it', async ({ page }) => {
+  await login(page);
+  await page.getByText('Core router').first().click();
+  await expect(page).toHaveURL(/\/monitors\/\d+$/);
+  const req = page.waitForRequest((r) => /\/chart\?range=15m/.test(r.url()));
+  await page.getByLabel('Time range').selectOption({ label: 'Last 15 minutes' });
+  await req;
+});
+
+test('serves the home page at "/" and keeps the admin behind /admin', async ({ page, browser }) => {
+  await login(page);
+  await page.goto('/status-pages');
+  const row = page.getByRole('row', { name: /Demo Status/ });
+  await row.getByRole('button', { name: /home page/i }).click();
+  await expect(row.getByRole('button', { name: /home page/i })).toHaveAttribute('aria-pressed', 'true');
+
+  const anon = await browser.newContext();
+  const home = await anon.newPage();
+  await home.goto('/');
+  await expect(home.getByRole('heading', { name: 'Demo Status' })).toBeVisible();
+  await home.goto('/admin');
+  await expect(home).toHaveURL(/\/login/);
+  await anon.close();
+
+  await row.getByRole('button', { name: /home page/i }).click(); // leave the demo as it was
+  await expect(row.getByRole('button', { name: /home page/i })).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('offers the newer monitor types in their groups and shows their fields', async ({ page }) => {
+  await login(page);
+  await page.goto('/monitors/new');
+  const type = page.getByLabel('Type');
+  for (const [group, label] of [['Games', 'Pelican / Pterodactyl server'], ['Games', 'AMP game server (CubeCoders)'], ['Network', 'NTP server'], ['Identity', 'RADIUS'], ['Passive', 'Manual status']]) {
+    await expect(type.locator(`optgroup[label="${group}"] option`, { hasText: label })).toHaveCount(1);
+  }
+  await type.selectOption({ label: 'Pelican / Pterodactyl server' });
+  await expect(page.getByLabel(/^Panel URL/)).toBeVisible();
+  await expect(page.getByLabel(/^Client API key/)).toBeVisible();
+});

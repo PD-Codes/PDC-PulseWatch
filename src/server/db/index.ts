@@ -7,15 +7,14 @@ export type Database = Kysely<DB>;
 
 export function createDb(overrides: Partial<typeof config.db> = {}): Database {
   const c = { ...config.db, ...overrides };
-  return new Kysely<DB>({
-    dialect: new MysqlDialect({
-      pool: createPool({
-        host: c.host, port: c.port, user: c.user, password: c.password, database: c.database,
-        connectionLimit: c.pool, timezone: 'Z', dateStrings: false, supportBigNumbers: true, bigNumberStrings: false,
-        charset: 'utf8mb4', waitForConnections: true, enableKeepAlive: true,
-      }),
-    }),
+  const pool = createPool({
+    host: c.host, port: c.port, user: c.user, password: c.password, database: c.database,
+    connectionLimit: c.pool, timezone: 'Z', dateStrings: false, supportBigNumbers: true, bigNumberStrings: false,
+    charset: 'utf8mb4', waitForConnections: true, enableKeepAlive: true,
   });
+  // The driver reads DATETIME values as UTC, so the session must write them as UTC too (NOW(), CURRENT_TIMESTAMP, TIMESTAMPDIFF), whatever the server's own zone is.
+  pool.on('connection', (conn) => conn.query("SET time_zone = '+00:00'"));
+  return new Kysely<DB>({ dialect: new MysqlDialect({ pool }) });
 }
 
 /** Flag columns come back as 0/1 numbers. */

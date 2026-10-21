@@ -27,7 +27,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     const go = (name: string, to: string): Entry => ({ id: `go:${to}`, label: t('palette.go', { name }), group: t('palette.commands'), run: () => nav(to) });
     const list: Entry[] = [
       ...(can('editor') ? [{ id: 'new', label: t('palette.newMonitor'), group: t('palette.commands'), run: () => nav('/monitors/new') }] : []),
-      go(t('nav.dashboard'), '/'), go(t('nav.incidents'), '/incidents'), go(t('nav.maintenance'), '/maintenance'), go(t('nav.statusPages'), '/status-pages'), go(t('nav.insights'), '/insights'),
+      go(t('nav.dashboard'), '/dashboard'), go(t('nav.incidents'), '/incidents'), go(t('nav.maintenance'), '/maintenance'), go(t('nav.statusPages'), '/status-pages'), go(t('nav.insights'), '/insights'),
       go(t('nav.reports'), '/reports'), go(t('nav.notifications'), '/notifications'), go(t('nav.kiosk'), '/kiosk'), go(t('nav.profile'), '/profile'),
       { id: 'theme', label: t('palette.toggleTheme'), group: t('palette.commands'), run: () => setTheme(theme.dark ? 'light' : 'dark') },
       { id: 'lang', label: `${t('palette.language')} (${locale === 'en' ? 'Deutsch' : 'English'})`, group: t('palette.commands'), run: () => setLocale(locale === 'en' ? 'de' : 'en') },

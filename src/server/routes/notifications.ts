@@ -1,7 +1,7 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { maskSecrets, restoreSecrets, validateConfig } from '../../core';
-import { writeAudit } from '../auth/access';
+import { accessibleMonitorIds, writeAudit } from '../auth/access';
 import { decryptJson, encryptJson } from '../crypto';
 import { parseJson } from '../db';
 import { parseMonitor } from '../monitors/model';
@@ -44,6 +44,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     }
     const v = validateConfig(asRunner(b.type), cfg);
     if (v.errors.length) return reply.code(400).send({ error: 'validation', message: v.errors.join('; '), errors: v.errors });
+    if (b.quietHours?.timezone) { try { new Intl.DateTimeFormat('en', { timeZone: b.quietHours.timezone }); } catch { return reply.code(400).send({ error: 'validation', message: `Unknown time zone "${b.quietHours.timezone}" in quiet hours` }); } }
     const values = { name: b.name, type: b.type, config_enc: encryptJson(v.config), active: b.active === false ? 0 : 1, is_default: b.isDefault ? 1 : 0, quiet_hours: b.quietHours ? JSON.stringify(b.quietHours) : null, template_id: b.templateId ?? null };
     try {
       if (id) await db.updateTable('notification_channels').set(values).where('id', '=', id).execute();
@@ -96,7 +97,10 @@ export async function notificationRoutes(app: FastifyInstance) {
       .select(['d.id', 'd.ts', 'd.event', 'd.status', 'd.attempts', 'd.next_attempt_at', 'd.last_error', 'd.subject', 'd.monitor_id', 'd.incident_id', 'c.name as channel', 'c.type as channelType', 'm.name as monitor']).orderBy('d.id', 'desc').limit(q.limit ?? 100);
     if (q.status) s = s.where('d.status', '=', q.status);
     if (q.before) s = s.where('d.id', '<', q.before);
-    return (await s.execute()).map((d) => ({ id: d.id, ts: d.ts, event: d.event, status: d.status, attempts: d.attempts, nextAttemptAt: d.next_attempt_at, error: d.last_error, subject: d.subject, monitorId: d.monitor_id, monitor: d.monitor, incidentId: d.incident_id, channel: d.channel, channelType: d.channelType }));
+    const seen = await accessibleMonitorIds(ctx, req.user!);
+    if (seen) s = s.where('d.monitor_id', 'in', seen.concat(0)); // a restricted user only sees deliveries about monitors they can see
+    const admin = req.user!.role === 'admin'; // errors quote remote responses and internal endpoints
+    return (await s.execute()).map((d) => ({ id: d.id, ts: d.ts, event: d.event, status: d.status, attempts: d.attempts, nextAttemptAt: d.next_attempt_at, error: admin ? d.last_error : d.last_error ? 'Delivery failed' : null, subject: d.subject, monitorId: d.monitor_id, monitor: d.monitor, incidentId: d.incident_id, channel: d.channel, channelType: d.channelType }));
   });
   app.post('/api/notification-deliveries/:id/retry', { ...admin, schema: { tags: ['notifications'], params: Id } }, async (req) => {
     await db.updateTable('notification_deliveries').set({ status: 'pending', attempts: 0, next_attempt_at: new Date(), last_error: null }).where('id', '=', (req.params as any).id).where('status', 'in', ['failed', 'skipped']).execute();

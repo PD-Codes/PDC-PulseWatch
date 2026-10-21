@@ -1,4 +1,5 @@
-/** Minimal JSON path: $.a.b[0]["key with space"].c — enough for assertions without a dependency. */
+import { compileRegex, regexInput } from './regex';
+/** Minimal JSON path: $.a.b[0]["key with space"].c: enough for assertions without a dependency. */
 export function jsonGet(doc: unknown, path: string): unknown {
   let p = path.trim();
   if (p.startsWith('$')) p = p.slice(1);
@@ -32,7 +33,7 @@ export function jsonCompare(actual: unknown, op: JsonOp, expected: string): bool
     case 'eq': return a === expected;
     case 'ne': return a !== expected;
     case 'contains': return a.includes(expected);
-    case 'regex': return new RegExp(expected).test(a);
+    case 'regex': return compileRegex(String(expected)).test(regexInput(String(a)));
     default: {
       const x = Number(a), y = Number(expected);
       if (Number.isNaN(x) || Number.isNaN(y)) return false;

@@ -4,7 +4,9 @@ import { get, type Group, type MonitorItem, type Tag } from '../lib/api';
 import { useT } from '../lib/i18n';
 import { Badge, Input, cx, type Tone } from './ui';
 
-export const incidentTone: Record<string, Tone> = { open: 'red', acknowledged: 'amber', resolved: 'green' };
+export const incidentTone: Record<string, Tone> = { open: 'red', acknowledged: 'amber', identified: 'violet', fixing: 'blue', monitoring: 'brand', resolved: 'green' };
+/** Statuses an operator can set, in the order of an incident's life. */
+export const INCIDENT_STATUSES = ['open', 'acknowledged', 'identified', 'fixing', 'monitoring', 'resolved'] as const;
 export const severityTone: Record<string, Tone> = { minor: 'blue', major: 'amber', critical: 'red' };
 
 export function IncidentStatusBadge({ status }: { status: string }) { const t = useT(); return <Badge tone={incidentTone[status] ?? 'gray'}>{t(`incidents.status.${status}`)}</Badge>; }
@@ -35,6 +37,31 @@ export function CheckList<T extends number | string>({ items, value, onChange, s
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** Monitor checklist with one-click group chips: a chip (re)selects every monitor of that group and its subgroups. */
+export function MonitorPicker({ monitors, groups, value, onChange }: { monitors: MonitorItem[]; groups: Group[]; value: number[]; onChange: (v: number[]) => void }) {
+  const t = useT();
+  const chips = useMemo(() => {
+    const kids = new Map<number | null, number[]>();
+    for (const g of groups) kids.set(g.parentId, [...(kids.get(g.parentId) ?? []), g.id]);
+    const sub = (id: number, seen = new Set<number>()): number[] => (seen.has(id) ? [] : (seen.add(id), [id, ...(kids.get(id) ?? []).flatMap((k) => sub(k, seen))]));
+    return groups.map((g) => { const gs = new Set(sub(g.id)); return { g, ids: monitors.filter((m) => m.groupId != null && gs.has(m.groupId)).map((m) => m.id) }; }).filter((c) => c.ids.length);
+  }, [monitors, groups]);
+  const toggle = (ids: number[]) => onChange(ids.every((i) => value.includes(i)) ? value.filter((v) => !ids.includes(v)) : [...new Set([...value, ...ids])]);
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={t('picker.groups')}>
+        {chips.map(({ g, ids }) => {
+          const on = ids.every((i) => value.includes(i));
+          return <button key={g.id} type="button" aria-pressed={on} onClick={() => toggle(ids)} className={cx('inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500', on ? 'border-brand-600 bg-brand-50 text-brand-700 dark:bg-brand-950 dark:text-brand-200' : 'border-slate-300 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800')}>{g.name}<span className="text-slate-500">{ids.length}</span></button>;
+        })}
+        <button type="button" className="ml-auto text-xs underline" onClick={() => onChange(monitors.map((m) => m.id))}>{t('picker.all')}</button>
+        <button type="button" className="text-xs underline" onClick={() => onChange([])}>{t('picker.none')}</button>
+      </div>
+      <CheckList searchable items={monitors.map((m) => ({ id: m.id, label: m.name, hint: m.type }))} value={value} onChange={onChange} />
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { AlertTriangle, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { CheckList, IncidentStatusBadge, SeverityBadge, useMonitorsQ } from '../components/ops-shared';
+import { IncidentStatusBadge, INCIDENT_STATUSES, MonitorPicker, SeverityBadge, useGroupsQ, useMonitorsQ } from '../components/ops-shared';
 import { Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Textarea, Toggle, useToast } from '../components/ui';
 import { ApiError, get, post, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -37,6 +37,7 @@ export default function Incidents() {
 
   const [f, setF] = useState({ title: '', severity: 'major', body: '', public: false, monitorIds: [] as number[] });
   const monitors = useMonitorsQ();
+  const groups = useGroupsQ();
   const create = useMutation({
     mutationFn: () => post<{ id: number }>('/api/incidents', { title: f.title, severity: f.severity, body: f.body || undefined, public: f.public, monitorIds: f.monitorIds }),
     onSuccess: (r) => { void qc.invalidateQueries({ queryKey: ['incidents'] }); setCreating(false); nav(`/incidents/${r.id}`); },
@@ -61,7 +62,7 @@ export default function Incidents() {
       </div>
 
       <div className="mb-3 flex flex-wrap gap-1" role="group" aria-label={t('common.status')}>
-        {['', 'open', 'acknowledged', 'resolved'].map((s) => <Button key={s} size="sm" variant={status === s ? 'primary' : 'default'} aria-pressed={status === s} onClick={() => setStatus(s)}>{s ? t(`incidents.status.${s}`) : t('common.all')}</Button>)}
+        {['', 'active', ...INCIDENT_STATUSES].map((s) => <Button key={s} size="sm" variant={status === s ? 'primary' : 'default'} aria-pressed={status === s} onClick={() => setStatus(s)}>{s ? t(`incidents.status.${s}`) : t('common.all')}</Button>)}
       </div>
 
       <Card>
@@ -94,7 +95,7 @@ export default function Incidents() {
           <Field label={t('incidents.field.title')}>{(id) => <Input id={id} value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} maxLength={255} />}</Field>
           <Field label={t('incidents.field.severity')}>{(id) => <Select id={id} value={f.severity} onChange={(e) => setF({ ...f, severity: e.target.value })}>{['minor', 'major', 'critical'].map((s) => <option key={s} value={s}>{t(`incidents.severity.${s}`)}</option>)}</Select>}</Field>
           <Field label={t('incidents.field.description')}>{(id) => <Textarea id={id} value={f.body} onChange={(e) => setF({ ...f, body: e.target.value })} className="font-sans" />}</Field>
-          <div><span className="label">{t('incidents.field.monitors')}</span><CheckList searchable items={(monitors.data ?? []).map((m) => ({ id: m.id, label: m.name, hint: m.type }))} value={f.monitorIds} onChange={(v) => setF({ ...f, monitorIds: v })} /></div>
+          <div><span className="label">{t('incidents.field.monitors')}</span><MonitorPicker monitors={monitors.data ?? []} groups={groups.data ?? []} value={f.monitorIds} onChange={(v) => setF({ ...f, monitorIds: v })} /></div>
           <Toggle checked={f.public} onChange={(v) => setF({ ...f, public: v })} label={t('incidents.field.public')} />
         </div>
       </Modal>

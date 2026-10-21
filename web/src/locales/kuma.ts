@@ -1,0 +1,31 @@
+// Strings of the Uptime Kuma import (selection list, progress).
+export const en = {
+  'kuma.existsHint': 'Items marked "exists, updated" are not ticked, because importing them replaces what is here with the Uptime Kuma data. Tick them to update them.', 'kuma.read': 'Read and preview', 'kuma.reading': 'Reading the data…', 'kuma.connecting': 'Connecting to Uptime Kuma…', 'kuma.uploading': 'Uploading {pct}% ({done} of {total})',
+  'kuma.select.title': 'What should be imported?', 'kuma.select.hint': 'Everything is selected. Items that already exist here (same name or address) are updated, never duplicated.',
+  'kuma.select.all': 'select all', 'kuma.select.filter': 'Filter…', 'kuma.exists': 'exists, updated', 'kuma.new': 'new',
+  'kuma.hint.statusPages': 'A page with the same address replaces its components.', 'kuma.hint.monitors': 'Monitors of unchecked groups stay ungrouped or move to the parent group.',
+  'kuma.hint.groups': 'Unchecked groups are not created.', 'kuma.hint.channels': 'Same-named channels that exist here are still linked.', 'kuma.hint.tags': 'Unchecked tags are not attached.',
+  'kuma.apply': 'Import selection ({n})', 'kuma.nothingSelected': 'Select at least one item.', 'kuma.fixErrors': 'Fix the errors below before importing.',
+  'kuma.running': 'Importing {phase}: {done} of {total}', 'kuma.failed': 'The import failed: {msg}',
+  'kuma.phase.starting': 'starting', 'kuma.phase.channels': 'channels', 'kuma.phase.monitors': 'monitors', 'kuma.phase.maintenance': 'maintenance', 'kuma.phase.statusPages': 'status pages', 'kuma.phase.finishing': 'finishing',
+  'kuma.hint.maintenance': 'A window needs at least one monitor or group that is imported or already exists here.', 'kuma.notes.label': 'Details that were not carried over',
+  'kuma.unsupported.title': 'Cannot be imported ({n})', 'kuma.unsupported.hint': 'No equivalent here. Nothing is dropped silently: set these up by hand where it matters.', 'kuma.unsupported.copy': 'Copy list', 'kuma.unsupported.csv': 'Download CSV',
+  'kuma.unsupported.col.kind': 'Type', 'kuma.unsupported.col.name': 'Name', 'kuma.unsupported.col.reason': 'Reason',
+  'kuma.kind.monitor': 'Monitor', 'kuma.kind.notification': 'Notification channel', 'kuma.kind.maintenance': 'Maintenance', 'kuma.kind.setting': 'Setting', 'kuma.kind.proxy': 'Proxy', 'kuma.kind.dockerHost': 'Docker host',
+  'kuma.kind.apiKey': 'API key', 'kuma.kind.browser': 'Remote browser', 'kuma.kind.incident': 'Pinned incident', 'kuma.kind.statusPage': 'Status page',
+};
+export const de = {
+  'kuma.existsHint': 'Elemente mit „vorhanden, wird aktualisiert“ sind nicht angehakt, weil der Import sie mit den Daten aus Uptime Kuma überschreibt. Hake sie an, um sie zu aktualisieren.', 'kuma.read': 'Einlesen und Vorschau', 'kuma.reading': 'Daten werden eingelesen…', 'kuma.connecting': 'Verbindung zu Uptime Kuma wird aufgebaut…', 'kuma.uploading': 'Upload {pct} % ({done} von {total})',
+  'kuma.select.title': 'Was soll importiert werden?', 'kuma.select.hint': 'Alles ist vorausgewählt. Was hier schon existiert (gleicher Name bzw. gleiche Adresse), wird aktualisiert und nie doppelt angelegt.',
+  'kuma.select.all': 'alle auswählen', 'kuma.select.filter': 'Filtern…', 'kuma.exists': 'vorhanden, wird aktualisiert', 'kuma.new': 'neu',
+  'kuma.hint.statusPages': 'Eine Seite mit gleicher Adresse ersetzt ihre Komponenten.', 'kuma.hint.monitors': 'Monitore abgewählter Gruppen bleiben ohne Gruppe oder wandern in die übergeordnete.',
+  'kuma.hint.groups': 'Abgewählte Gruppen werden nicht angelegt.', 'kuma.hint.channels': 'Gleichnamige, hier vorhandene Kanäle werden trotzdem verknüpft.', 'kuma.hint.tags': 'Abgewählte Tags werden nicht zugewiesen.',
+  'kuma.apply': 'Auswahl importieren ({n})', 'kuma.nothingSelected': 'Wähle mindestens einen Eintrag aus.', 'kuma.fixErrors': 'Behebe zuerst die Fehler weiter unten.',
+  'kuma.running': 'Importiere {phase}: {done} von {total}', 'kuma.failed': 'Der Import ist fehlgeschlagen: {msg}',
+  'kuma.phase.starting': 'Start', 'kuma.phase.channels': 'Kanäle', 'kuma.phase.monitors': 'Monitore', 'kuma.phase.maintenance': 'Wartungen', 'kuma.phase.statusPages': 'Statusseiten', 'kuma.phase.finishing': 'Abschluss',
+  'kuma.hint.maintenance': 'Ein Fenster braucht mindestens einen Monitor oder eine Gruppe, die importiert wird oder hier schon existiert.', 'kuma.notes.label': 'Details, die nicht übernommen wurden',
+  'kuma.unsupported.title': 'Kann nicht importiert werden ({n})', 'kuma.unsupported.hint': 'Kein Gegenstück hier. Nichts fällt stillschweigend weg: richte es von Hand ein, wo es wichtig ist.', 'kuma.unsupported.copy': 'Liste kopieren', 'kuma.unsupported.csv': 'CSV herunterladen',
+  'kuma.unsupported.col.kind': 'Art', 'kuma.unsupported.col.name': 'Name', 'kuma.unsupported.col.reason': 'Grund',
+  'kuma.kind.monitor': 'Monitor', 'kuma.kind.notification': 'Benachrichtigungskanal', 'kuma.kind.maintenance': 'Wartung', 'kuma.kind.setting': 'Einstellung', 'kuma.kind.proxy': 'Proxy', 'kuma.kind.dockerHost': 'Docker-Host',
+  'kuma.kind.apiKey': 'API-Schlüssel', 'kuma.kind.browser': 'Remote-Browser', 'kuma.kind.incident': 'Angepinnter Vorfall', 'kuma.kind.statusPage': 'Statusseite',
+};

@@ -28,7 +28,7 @@ export default function Kiosk() {
   const groups = useQuery({ queryKey: ['groups'], queryFn: () => get<Group[]>('/api/groups'), enabled: groupId != null });
 
   useEffect(() => { document.title = `${t('kiosk.title')} · PulseWatch`; }, [t]);
-  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'Escape') nav('/'); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [nav]);
+  useEffect(() => { const h = (e: KeyboardEvent) => { if (e.key === 'Escape') nav('/dashboard'); }; window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h); }, [nav]);
   useEffect(() => { const i = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(i); }, []);
   useEffect(() => {
     const el = body.current;
@@ -70,7 +70,7 @@ export default function Kiosk() {
         {ok ? <CheckCircle2 className="h-10 w-10 shrink-0" aria-hidden /> : <TriangleAlert className="h-10 w-10 shrink-0" aria-hidden />}
         <h1 className="min-w-0 flex-1 truncate text-2xl font-bold sm:text-4xl">{ok ? t('kiosk.allUp') : t('kiosk.someDown', { n: down })}</h1>
         <time className="hidden text-3xl font-semibold tabular-nums sm:block" dateTime={now.toISOString()}>{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
-        <Button size="sm" onClick={() => nav('/')} aria-label={t('kiosk.exit')}><LogOut className="h-4 w-4" /><span className="hidden sm:inline">{t('kiosk.exit')} (Esc)</span></Button>
+        <Button size="sm" onClick={() => nav('/dashboard')} aria-label={t('kiosk.exit')}><LogOut className="h-4 w-4" /><span className="hidden sm:inline">{t('kiosk.exit')} (Esc)</span></Button>
       </header>
 
       <div ref={body} className="min-h-0 flex-1 p-4">

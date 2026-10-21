@@ -41,7 +41,20 @@ function Protected({ role, children }: { role?: 'editor' | 'admin'; children?: R
   return <StreamProvider>{children ?? <Layout />}</StreamProvider>;
 }
 
-const guard = (el: React.ReactElement, role?: 'editor' | 'admin') => (role ? <Protected role={role}>{el}</Protected> : el);
+/** "/" shows the status page marked as default; without one it hands over to the dashboard. */
+function Root() {
+  const def = useQuery({ queryKey: ['default-page'], queryFn: () => get<{ slug: string | null }>('/api/public/default-page'), staleTime: 30_000, retry: false });
+  if (def.isLoading) return <Loading />;
+  if (def.data?.slug) return <PublicStatus slug={def.data.slug} />;
+  return <Navigate to="/dashboard" replace />;
+}
+
+/** Role check for pages inside the signed-in layout (which already provides the session and the event stream). */
+function RoleOnly({ role, children }: { role: 'editor' | 'admin'; children: React.ReactElement }) {
+  const { can } = useAuth();
+  return can(role) ? children : <NotFound />;
+}
+const guard = (el: React.ReactElement, role?: 'editor' | 'admin') => (role ? <RoleOnly role={role}>{el}</RoleOnly> : el);
 
 export default function App() {
   // a status page served on its own domain replaces the whole app
@@ -56,8 +69,10 @@ export default function App() {
         <Route path="/setup" element={<Setup />} />
         <Route path="/status/:slug" element={<PublicStatus />} />
         <Route path="/kiosk" element={<Protected><Kiosk /></Protected>} />
+        <Route index element={<Root />} />
+        <Route path="/admin" element={<Navigate to="/dashboard" replace />} />
         <Route element={<Protected />}>
-          <Route index element={<Dashboard />} />
+          <Route path="dashboard" element={<Dashboard />} />
           <Route path="monitors/new" element={guard(<MonitorForm />, 'editor')} />
           <Route path="monitors/:id" element={<MonitorDetail />} />
           <Route path="monitors/:id/edit" element={guard(<MonitorForm />, 'editor')} />

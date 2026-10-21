@@ -15,9 +15,9 @@ export async function probeRoutes(app: FastifyInstance) {
   const admin = { preHandler: app.requireRole('admin') };
 
   /* ------------------------------ admin side ------------------------------ */
-  app.get('/api/probes', { ...auth, schema: { tags: ['probes'] } }, async () =>
+  app.get('/api/probes', { ...auth, schema: { tags: ['probes'] } }, async (req) =>
     (await db.selectFrom('probes').select(['id', 'name', 'location', 'version', 'last_seen_at', 'last_ip', 'enabled', 'created_at']).orderBy('name').execute())
-      .map((p) => ({ id: p.id, name: p.name, location: p.location, version: p.version, lastSeenAt: p.last_seen_at, lastIp: p.last_ip, enabled: !!p.enabled, createdAt: p.created_at, online: !!p.last_seen_at && Date.now() - p.last_seen_at.getTime() < 120_000 })));
+      .map((p) => ({ id: p.id, name: p.name, location: p.location, version: p.version, lastSeenAt: p.last_seen_at, lastIp: req.user!.role === 'admin' ? p.last_ip : null, enabled: !!p.enabled, createdAt: p.created_at, online: !!p.last_seen_at && Date.now() - p.last_seen_at.getTime() < 120_000 })));
 
   app.post('/api/probes', { ...admin, schema: { tags: ['probes'], body: Type.Object({ name: Type.String({ minLength: 1, maxLength: 128 }), location: Type.Optional(Type.String({ maxLength: 128 })) }) } }, async (req, reply) => {
     const b = req.body as { name: string; location?: string };

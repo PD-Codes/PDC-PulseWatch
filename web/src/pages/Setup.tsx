@@ -20,7 +20,7 @@ export default function Setup() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault(); setBusy(true); setError(null);
-    try { const r = await post<{ csrf: string }>('/api/setup', { username: f.username, password: f.password, displayName: f.displayName || undefined, email: f.email || undefined }); await afterLogin(r.csrf); nav('/', { replace: true }); }
+    try { const r = await post<{ csrf: string }>('/api/setup', { username: f.username, password: f.password, displayName: f.displayName || undefined, email: f.email || undefined }); await afterLogin(r.csrf); nav('/dashboard', { replace: true }); }
     catch (err) { setError(err); } finally { setBusy(false); }
   };
   return (

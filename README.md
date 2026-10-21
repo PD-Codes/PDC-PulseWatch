@@ -50,9 +50,9 @@ Useful endpoints: `/health` (liveness), `/ready` (database and scheduler), `/met
 
 ## Features
 
-**Monitoring:** HTTP(S) with method/headers/body/auth/status codes/redirects/TLS toggle, keyword and JSON path checks, multi-step HTTP flows, TCP, ICMP ping, UDP, DNS, TLS certificate expiry (with chain), domain/WHOIS expiry, SMTP, IMAP/POP3, SSH banner, WebSocket, gRPC, MQTT, SNMP, MariaDB/MySQL, PostgreSQL, MSSQL, Redis, MongoDB, Docker container state, Minecraft status and push/heartbeat monitors. Every monitor has interval, timeout, retries, up/down thresholds, flap detection, tags, groups, pause/clone/bulk edit and notification rules. Failure modes (DNS, refused, timeout, TLS, wrong status, ...) are distinct error kinds in the event log.
+**Monitoring:** HTTP(S) with method/headers/body/auth/status codes/redirects/TLS toggle, keyword and JSON path checks, multi-step HTTP flows, TCP, ICMP ping, UDP, DNS, TLS certificate expiry (with chain), domain/WHOIS expiry, SMTP, IMAP/POP3, SSH banner, SFTP (password or key login, optional pinned host key, file or directory presence, minimum size and maximum age), WebSocket, gRPC, MQTT, SNMP, NTP (clock offset), RADIUS, LDAP, FTP/FTPS, RDP, SIP, RabbitMQ, Kafka, MariaDB/MySQL, PostgreSQL, MSSQL, Oracle, Redis, MongoDB, Docker container state, PM2 processes, Globalping (ping/HTTP from a chosen country or city), game servers (Minecraft, Steam/Source, about 350 more through GameDig, Pelican/Pterodactyl panels, CubeCoders AMP) and push/heartbeat and manual-status monitors. Every monitor has interval, timeout, retries, up/down thresholds, flap detection, tags, groups, pause/clone/bulk edit and notification rules. Failure modes (DNS, refused, timeout, TLS, wrong status, ...) are distinct error kinds in the event log.
 
-**Operations:** nested groups with dependencies (children are suppressed while a parent is down), automatic and manual incidents with acknowledgement, assignee, notes, post-mortem and MTTR/MTTA, maintenance windows (once or cron, timezone-aware), status pages (custom domain, branding, custom CSS, password or login protection, email/RSS/webhook subscriptions).
+**Operations:** nested groups with dependencies (children are suppressed while a parent is down), automatic and manual incidents with six statuses (open, acknowledged, identified, being fixed, monitoring, resolved), groups as incident scope, assignee, notes, post-mortem and MTTR/MTTA, maintenance windows (once or cron, timezone-aware), status pages (custom domain, branding, custom CSS, password or login protection, email/RSS/webhook subscriptions).
 
 **Notifications:** email, Telegram, Discord, Slack, Microsoft Teams, ntfy, Gotify, Pushover and templated webhooks (plus a plugin hook, `registerChannelType`). Templates, escalation policies, quiet hours, per-channel test button and a delivery log with retry.
 
@@ -153,7 +153,7 @@ Everything is configured through environment variables. Any variable also accept
 
 ### Docker Compose variables
 
-`PW_IMAGE`, `PW_PROBE_IMAGE`, `PW_PUBLIC_PORT` (host port, default 3000) and `PW_DB_BUFFER_POOL` (MariaDB InnoDB buffer pool, default 256M) only affect the compose file.
+The compose file passes all `PW_RETENTION_*` variables through. `PW_IMAGE`, `PW_PROBE_IMAGE`, `PW_PUBLIC_PORT` (host port, default 3000) and `PW_DB_BUFFER_POOL` (MariaDB InnoDB buffer pool, default 256M) only affect the compose file.
 
 ## Architecture
 
@@ -205,7 +205,17 @@ Probe results are stored when they arrive. The combined verdict for a monitor is
 - **Inline group:** the folder button next to *Group* creates a (sub)group without leaving the form.
 - **Incident badge:** the menu shows the number of open incidents nobody has acknowledged; the same number prefixes the browser tab title. The top bar has a **+** button for a new monitor.
 
+## Home page and sign-in
+
+Mark a status page as *home page* (status page list, *Use as home page*) and it is served at `/` for everyone. The admin UI stays reachable at `/dashboard` and `/admin`, which ask for a login. Without a home page `/` goes to the dashboard as before. Only one page can be the home page; setting another one moves the mark. A page that is not public is never used.
+
+## Incidents
+
+An incident moves through *open*, *acknowledged*, *identified*, *being fixed*, *monitoring* and *resolved*; any status can follow any other one, and reopening clears the end time. In the incident dialog you can pick a whole monitor group instead of ticking every monitor. Notes you add are internal. Only status changes, the resolution and the post-mortem appear on the public status page, so write those for customers. Auto-resolve (the monitor recovered) leaves an incident in *monitoring* alone until someone resolves it; if the monitor fails again while monitoring, the incident reopens.
+
 ## Status page history and groups
+
+In the status page editor an announcement is one click away: pick *Info*, *Maintenance* or *Incident* (a notice with an optional start and end). *Subscribers* (mail subscriptions) only appears when SMTP is configured. The same rule hides every other function that sends mail (daily digest, scheduled reports) while `PW_SMTP_HOST` is empty.
 
 Each status page has its own history length (14, 30, 60, 90, 120, 150 or 180 days, default 90). In the editor, *Add a whole group* adds a monitor group, optionally with its subgroups, as sections; monitors already on the page are skipped.
 
@@ -262,52 +272,24 @@ Migrations run automatically at startup under a database lock, so several replic
 - **Database file:** upload `data/kuma.db` (SQLite, Kuma 1.x or 2.x). It is streamed to `PW_DATA_DIR/import-tmp`, opened read-only and deleted right after; only the configuration tables are read, so a multi-gigabyte heartbeat history is fine. Copy the file while Kuma is stopped (or together with its `-wal` file).
 - **Live API:** enter the URL, username and password of a running Kuma (and the two-factor code if the account has one). PulseWatch logs in over Kuma's Socket.IO API once, reads the lists Kuma pushes and logs out; the login is not stored. A Kuma that runs on MariaDB can only be imported this way.
 
-Both show a **preview** (what would be created or updated, plus warnings) and write nothing until you press apply; the preview is kept in memory for 15 minutes.
+Both show a **preview** (what would be created or updated, plus warnings) and write nothing until you press apply; the preview is kept in memory for 15 minutes. The import runs as a background job with a progress bar, so a large Kuma 2.x no longer blocks the page. The URL may carry a trailing slash or a page such as `/dashboard`; PulseWatch cuts it down to the base address.
 
-For a Kuma 1.x backup JSON use the second card on the same page: The importer converts monitors (including nested groups), tags and notification channels, reports what it skipped (unsupported monitor types are listed as warnings; maintenance windows and status pages are not imported) and merges by name, so it is safe to run twice. Credentials contained in the backup are re-encrypted with your key.
+**What gets imported:** groups, tags (with values), notification channels (email, Telegram, Discord, Slack, Teams, ntfy, Gotify, Pushover, webhook), monitors (including the protocols PulseWatch has runners for: NTP, RADIUS, RabbitMQ, Kafka, Steam, GameDig, manual, PM2, Oracle, Globalping, SFTP, SMTP, SNMP, ...; Docker hosts become the monitor's endpoint), **maintenance windows** (single, daily, weekly, monthly and cron ones, targets are the linked monitors) and **status pages** (sections, monitors, custom domain, title, description, the pinned incident as an announcement; the Kuma entry page becomes the home page). Kuma's server time zone becomes the default for maintenance windows, and its certificate-expiry days become the warning threshold of the imported monitors. In the preview each section has a master checkbox and per-item checkboxes, so you can import only the status pages or only some monitors, and rows where something changes on the way (for example "upside down mode is not supported") carry a note.
 
-## Config as code
+**What cannot be imported** is listed in its own section of the preview, with a reason per row, a copy button and a CSV download: Tailscale ping and unknown monitor types, notification types without an equivalent, manual and rarely repeating maintenance windows, settings that are environment variables here (data retention, trust proxy, base URL, ...), proxies, API keys and remote browsers. Secrets such as Kuma's JWT secret are never read. Existing items with the same name or slug are updated, nothing else is touched, so running it twice is safe.
 
-**Settings > Backup** (or `GET /api/config/export?format=yaml|json`) writes monitors, groups, tags, channels, maintenance windows and status pages as one document that references objects by name. Secrets are masked unless you ask for them. **Import** merges by name, supports a dry run and keeps stored secrets when the document contains the mask. This works for GitOps: keep the file in git and apply it with an API token (`POST /api/config/import`).
-
-## Security notes
-
-- Secrets (passwords, tokens, webhook URLs) are encrypted at rest and never returned in clear text by the API.
-- Outbound requests go through an SSRF guard that checks addresses after DNS resolution and on redirects. Private ranges are allowed by default because monitoring internal hosts is the main use case; switch to `public-only` or add allow/deny lists in Settings.
-- CSRF token per session, strict CSP and security headers, `HttpOnly` + `SameSite` cookies, rate limiting, schema validation on every endpoint, parameterized queries only.
-- Docker images run as a non-root user, the compose services run read-only with all capabilities dropped (only `NET_RAW` for ICMP ping).
-- Dependencies are pinned to exact versions with a lockfile. `npm audit --omit=dev` reports no known vulnerabilities at the time of writing.
-- Report vulnerabilities privately to the maintainers (PD-Codes) instead of opening a public issue.
-
-## Development and tests
-
-```bash
-npm ci
-# a MariaDB for development and tests
-docker run -d --name pw-dev-db -e MARIADB_ROOT_PASSWORD=dev -p 3306:3306 mariadb:11
-
-PW_DB_USER=root PW_DB_PASSWORD=dev npm run dev          # API + scheduler on :3000
-PW_DEV_API=http://localhost:3000 npx vite --config web/vite.config.ts   # UI dev server
-
-npm run typecheck && npx tsc -p tsconfig.web.json --noEmit
-npm run test:unit            # runners, state machine, telemetry (no database)
-npm run test:integration     # real MariaDB, one throwaway database per test file
-npm run build && npm run e2e # Playwright against the built server in demo mode
-npx tsx test/load/scheduler.ts 2000 30 60   # scheduler load test
-```
-
-Test database connection defaults to `root`/`dev` on `127.0.0.1:3306`; override with `PW_TEST_DB_HOST`, `PW_TEST_DB_PORT`, `PW_TEST_DB_USER`, `PW_TEST_DB_PASSWORD`. For e2e on a machine without the Playwright browser cache, set `PW_E2E_CHROMIUM` to a Chromium binary.
+For a Kuma 1.x backup JSON use the second card on the same page: The importer converts monitors (including nested groups), tags and notification channels, reports what it skipped (unsupported monitor types are listed as warnings) and merges by name. Credentials contained in the backup are re-encrypted with your key.
 
 ## Tested limits
 
 Measured with `test/load/scheduler.ts` on a 2 vCPU / 8 GB virtual machine, MariaDB 11 on the same machine, TCP monitors against a local listener, 75 s runs:
 
-| Monitors | Interval | Checks/s | Achieved vs. ideal | Peak scheduler lag | Peak RSS |
-| --- | --- | --- | --- | --- | --- |
-| 2,000 | 30 s | 66 | 99 % | 1.1 s | 196 MB |
-| 5,000 | 30 s | 164 | 99 % | 1.3 s | 257 MB |
+| Monitors | Interval | Checks/s | Achieved vs. ideal | Peak scheduler lag | Peak RSS | App CPU (share of one core) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2,000 | 30 s | 66 | 99 % | 1.3 s | 199 MB | 9 % (7.1 s CPU in 75 s) |
+| 5,000 | 30 s | 165 | 99 % | 1.1 s | 264 MB | 15 % (11.5 s CPU in 75 s) |
 
-These numbers measure the scheduler, database writes and rollup bookkeeping. Real checks are slower than a loopback TCP connect (HTTP with TLS, DNS) and hold a concurrency slot while they wait, so the practical ceiling depends on your targets' latency: with `PW_MAX_CONCURRENCY=200` and an average check time of 500 ms you can sustain about 400 checks per second. Raise the limit or add `PW_ROLE=worker` containers beyond that. Not tested: multi-day soak runs, more than 5,000 monitors, MariaDB on slow disks.
+"Achieved vs. ideal" is the number of checks that ran divided by the number the intervals call for (the run is cut off after 75 s, so a few checks of the last interval are not counted). CPU is the PulseWatch process only, MariaDB comes on top. These numbers measure the scheduler, database writes and rollup bookkeeping. Real checks are slower than a loopback TCP connect (HTTP with TLS, DNS) and hold a concurrency slot while they wait, so the practical ceiling depends on your targets' latency: with `PW_MAX_CONCURRENCY=200` and an average check time of 500 ms you can sustain about 400 checks per second. Raise the limit or add `PW_ROLE=worker` containers beyond that. Not tested: multi-day soak runs, more than 5,000 monitors, MariaDB on slow disks.
 
 ## Surprise features
 
@@ -331,6 +313,7 @@ These numbers measure the scheduler, database writes and rollup bookkeeping. Rea
 - OIDC, LDAP and passkeys are covered by code review and unit-level checks only; they have not been tested against live Keycloak/Entra ID/OpenLDAP servers or real authenticators. Try them on a staging instance first.
 - Probe-only monitors are evaluated on the monitor's schedule, not at the instant a probe reports.
 - Tracing exports one flat span per check (no parent/child context propagation).
-- The Kuma 2.x import (database file and API) is covered by tests with a generated SQLite file and a fake Socket.IO server that follows Kuma's protocol as documented, not by a real Kuma 2.x instance. Monitor types PulseWatch has no runner for (SNMP, RabbitMQ, real browser, ...), maintenance windows, status pages and history are not imported.
+- The Kuma 2.x import (database file and API) is covered by tests with a generated SQLite file and a fake Socket.IO server that follows Kuma's protocol as documented, not by a real Kuma 2.x instance. Kuma column names and units for the newer monitor types, maintenance strategies and settings are written from the documented schema, not checked against a real instance. Check history, proxies, API keys, remote browsers and Tailscale ping monitors are not imported.
+- The newer monitor types are tested against fake servers that follow the protocols as documented, not against the real products: NTP, RADIUS, FTP, RDP, SIP, LDAP, Kafka, RabbitMQ, Steam/A2S, GameDig (through a Source query), Pelican, AMP and Globalping. Pelican and AMP use their documented HTTP APIs (AMP instance states are taken from its public enum). Oracle is only tested against a closed port and has no TLS (TCPS) support. Kafka is a broker check (metadata and topic leaders, no SASL, no message is produced). PM2 needs the `pm2` command on the machine that runs the check, which the container image does not have: use a probe on the PM2 host. There is no real-browser monitor.
 - Two status-page widgets are simple by design: components cannot be reordered across sections by drag and drop, and the kiosk page skips paused monitors.
 - Only MariaDB 11 is supported (MySQL may work but is not tested).
