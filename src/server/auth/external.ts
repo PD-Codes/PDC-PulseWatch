@@ -11,6 +11,7 @@ import { bool } from '../db';
 /* Provider config schemas reuse the monitor field machinery (validation + secret masking). */
 const role = { key: 'defaultRole', label: 'Default role', kind: 'select', options: [{ value: 'viewer', label: 'Viewer' }, { value: 'editor', label: 'Editor' }], default: 'viewer' } as const satisfies FieldDef;
 const allowedGroups = { key: 'allowedGroups', label: 'Allowed groups (comma separated)', kind: 'text', help: 'Only members of these groups (or of the admin/editor groups below) may sign in. Leave empty to let everyone through. Everyone else is sent to the public status page, or sees a "no access" notice.' } as const satisfies FieldDef;
+const staffOnly = { key: 'staffOnly', label: 'Editors and admins only', kind: 'bool', default: false, help: 'Refuse everyone who would only become a viewer: a user needs one of the admin/editor groups below. Without those groups configured nobody can sign in through this provider (local accounts still work). Has no effect when the default role is Editor.' } as const satisfies FieldDef;
 const OIDC_FIELDS: FieldDef[] = [
   { key: 'issuer', label: 'Issuer URL', kind: 'text', required: true, help: 'e.g. https://login.microsoftonline.com/<tenant>/v2.0, https://accounts.google.com or https://keycloak/realms/<realm>' },
   { key: 'clientId', label: 'Client ID', kind: 'text', required: true },
@@ -18,6 +19,7 @@ const OIDC_FIELDS: FieldDef[] = [
   { key: 'scopes', label: 'Scopes', kind: 'text', default: 'openid profile email' },
   { key: 'groupsClaim', label: 'Groups claim', kind: 'text', default: 'groups' },
   allowedGroups,
+  staffOnly,
   { key: 'adminGroups', label: 'Admin groups (comma separated)', kind: 'text' },
   { key: 'editorGroups', label: 'Editor groups (comma separated)', kind: 'text' },
   role,
@@ -35,6 +37,7 @@ const LDAP_FIELDS: FieldDef[] = [
   { key: 'emailAttr', label: 'Email attribute', kind: 'text', default: 'mail' },
   { key: 'nameAttr', label: 'Display name attribute', kind: 'text', default: 'cn' },
   { key: 'allowedGroupDns', label: 'Allowed groups (DN, one per line)', kind: 'textarea', help: 'Only members of these groups (or of the admin/editor groups below) may sign in. Leave empty to let every directory user through. Everyone else is sent to the public status page, or sees a "no access" notice.' },
+  staffOnly,
   { key: 'adminGroupDn', label: 'Admin group DN (memberOf)', kind: 'text' },
   { key: 'editorGroupDn', label: 'Editor group DN (memberOf)', kind: 'text' },
   role,
@@ -49,6 +52,7 @@ const SAML_FIELDS: FieldDef[] = [
   { key: 'nameAttr', label: 'Display name attribute', kind: 'text', default: 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name' },
   { key: 'groupsAttr', label: 'Groups attribute', kind: 'text', default: 'http://schemas.microsoft.com/ws/2008/06/identity/claims/groups', help: 'Entra ID sends group object IDs unless the claim is configured otherwise.' },
   allowedGroups,
+  staffOnly,
   { key: 'adminGroups', label: 'Admin groups (comma separated)', kind: 'text' },
   { key: 'editorGroups', label: 'Editor groups (comma separated)', kind: 'text' },
   role,
@@ -67,15 +71,18 @@ export class GroupDenied extends Error { constructor() { super('User is not a me
 /** Returned by ldapLogin when the directory accepted the password but the user is in no allowed group. */
 export const NO_GROUP = 'no_group' as const;
 
+/** Staff-only applies unless the default role already makes everybody an editor. */
+const staffOnlyOn = (c: Record<string, any>) => !!c.staffOnly && (c.defaultRole ?? 'viewer') !== 'editor';
+
 /**
- * Group gate: with an allow-list set, the user needs one of those groups or one of the privileged (admin/editor) groups.
+ * Group gate: with an allow-list set, the user needs one of those groups or one of the privileged (admin/editor) groups; with staff-only, only the privileged ones count.
  * Someone who lost access also loses their open sessions right away instead of when the cookie expires.
  */
-async function enforceGroups(ctx: Ctx, source: 'oidc' | 'ldap' | 'saml', externalId: string, allowed: string[], privileged: string[], groups: string[], fold = false): Promise<void> {
-  if (!allowed.length) return;
+async function enforceGroups(ctx: Ctx, source: 'oidc' | 'ldap' | 'saml', externalId: string, allowed: string[], privileged: string[], groups: string[], staff: boolean, fold = false): Promise<void> {
+  if (!allowed.length && !staff) return;
   const norm = (g: string) => (fold ? g.toLowerCase() : g);
   const have = new Set(groups.map(norm));
-  if ([...allowed, ...privileged].some((g) => have.has(norm(g)))) return;
+  if ((staff ? privileged : [...allowed, ...privileged]).some((g) => have.has(norm(g)))) return;
   const u = await ctx.db.selectFrom('users').select('id').where('auth_source', '=', source).where('external_id', '=', externalId).executeTakeFirst();
   if (u) await ctx.db.deleteFrom('sessions').where('user_id', '=', u.id).execute();
   throw new GroupDenied();
@@ -134,7 +141,7 @@ export async function ldapLogin(ctx: Ctx, username: string, password: string): P
       try { if (c.startTls) await userClient.startTLS(tls); await userClient.bind(entry.dn, password); } finally { await userClient.unbind().catch(() => {}); }
       const groups = ([] as string[]).concat((entry.memberOf as string | string[] | undefined) ?? []).map((g) => g.toLowerCase());
       const str = (v: unknown) => (Array.isArray(v) ? String(v[0]) : v == null ? undefined : String(v));
-      await enforceGroups(ctx, 'ldap', entry.dn, lines(c.allowedGroupDns), [c.adminGroupDn, c.editorGroupDn].filter(Boolean).map(String), groups, true);
+      await enforceGroups(ctx, 'ldap', entry.dn, lines(c.allowedGroupDns), [c.adminGroupDn, c.editorGroupDn].filter(Boolean).map(String), groups, staffOnlyOn(c), true);
       const mapped: Role | undefined = c.adminGroupDn && groups.includes(String(c.adminGroupDn).toLowerCase()) ? 'admin' : c.editorGroupDn && groups.includes(String(c.editorGroupDn).toLowerCase()) ? 'editor' : c.adminGroupDn || c.editorGroupDn ? (c.defaultRole ?? 'viewer') : undefined;
       return await upsertExternal(ctx, 'ldap', entry.dn, { username, email: str(entry[c.emailAttr || 'mail']), displayName: str(entry[c.nameAttr || 'cn']), role: mapped, defaultRole: c.defaultRole ?? 'viewer', create: true });
     } catch (e) {
@@ -184,7 +191,7 @@ export async function oidcFinish(ctx: Ctx, currentUrl: URL, st: { s: string; n: 
   }
   const groups = ([] as unknown[]).concat(info[c.groupsClaim || 'groups'] ?? []).map(String);
   const admin = csv(c.adminGroups), editor = csv(c.editorGroups);
-  await enforceGroups(ctx, 'oidc', `${prov.id}:${claims.sub}`, csv(c.allowedGroups), [...admin, ...editor], groups);
+  await enforceGroups(ctx, 'oidc', `${prov.id}:${claims.sub}`, csv(c.allowedGroups), [...admin, ...editor], groups, staffOnlyOn(c));
   const mapped: Role | undefined = admin.some((g) => groups.includes(g)) ? 'admin' : editor.some((g) => groups.includes(g)) ? 'editor' : admin.length || editor.length ? (c.defaultRole ?? 'viewer') : undefined;
   if (info.email && info.email_verified === false) info.email = undefined; // never trust unverified addresses
   return upsertExternal(ctx, 'oidc', `${prov.id}:${claims.sub}`, {
@@ -282,7 +289,7 @@ export async function samlFinish(ctx: Ctx, body: Record<string, string>, st: { p
   const email = attr(c.emailAttr)[0] ?? (profile.nameIDFormat?.endsWith('emailAddress') ? profile.nameID : undefined);
   const groups = attr(c.groupsAttr);
   const admin = csv(c.adminGroups), editor = csv(c.editorGroups);
-  await enforceGroups(ctx, 'saml', `${prov.id}:${profile.nameID}`, csv(c.allowedGroups), [...admin, ...editor], groups);
+  await enforceGroups(ctx, 'saml', `${prov.id}:${profile.nameID}`, csv(c.allowedGroups), [...admin, ...editor], groups, staffOnlyOn(c));
   const mapped: Role | undefined = admin.some((g) => groups.includes(g)) ? 'admin' : editor.some((g) => groups.includes(g)) ? 'editor' : admin.length || editor.length ? (c.defaultRole ?? 'viewer') : undefined;
   return upsertExternal(ctx, 'saml', `${prov.id}:${profile.nameID}`, {
     username: String(email ?? profile.nameID).replace(/[^A-Za-z0-9._@-]/g, '_'), email, displayName: attr(c.nameAttr)[0],

@@ -163,3 +163,31 @@ describe('SAML group allow-list', () => {
     expect(r.headers.location).toBe('/dashboard');
   });
 });
+
+describe('SAML editors and admins only', () => {
+  const config = (extra: object) => ({ entryPoint: 'https://login.example.com/saml2', idpIssuer: IDP, idpCert: CRT, emailAttr: 'email', nameAttr: 'name', groupsAttr: 'groups', adminGroups: 'g-admin', editorGroups: 'g-edit', defaultRole: 'viewer', autoCreate: true, ...extra });
+  const login = async (name: string, groups: string[]) => {
+    const s = await start();
+    return post(s.c, { SAMLResponse: signedResponse({ inResponseTo: s.requestId, name, email: `${name}@example.com`, groups }), RelayState: s.relay });
+  };
+  let admin: ReturnType<TestApp['client']>;
+  beforeAll(async () => {
+    admin = t.client();
+    await admin.post('/api/auth/login', { username: 'admin', password: 'correct-horse-battery-1' });
+  });
+  const put = (extra: object) => admin.put(`/api/auth/providers/${pid}`, { kind: 'saml', name: 'Entra', enabled: true, config: config(extra) });
+
+  it('lets only members of the admin or editor groups in, even when an allowed group is listed', async () => {
+    expect((await put({ staffOnly: true, allowedGroups: 'g-staff' })).status).toBe(200);
+    expect((await login('staff-1', ['g-edit'])).headers.location).toBe('/dashboard');
+    expect((await login('staff-2', ['g-admin'])).headers.location).toBe('/dashboard');
+    // the status page created in the previous block is public, so refused users are sent there
+    expect((await login('staff-3', ['g-staff'])).headers.location).toBe('/status/public-one'); // would only be a viewer
+    expect((await login('staff-4', [])).headers.location).toBe('/status/public-one');
+  });
+
+  it('has no effect when everybody becomes an editor anyway', async () => {
+    expect((await put({ staffOnly: true, defaultRole: 'editor' })).status).toBe(200);
+    expect((await login('staff-5', [])).headers.location).toBe('/dashboard');
+  });
+});

@@ -172,7 +172,7 @@ function AuthTab() {
         <ul className="divide-y divide-slate-200 dark:divide-slate-800">
           {d.items.map((p) => (
             <li key={p.id} className="flex flex-wrap items-center gap-3 p-4">
-              <div className="min-w-0 flex-1"><div className="truncate font-medium">{p.name}</div><div className="mt-1 flex flex-wrap gap-1.5"><Badge tone="violet">{p.kind.toUpperCase()}</Badge>{(p.config.allowedGroups || p.config.allowedGroupDns) && <Badge tone="amber">{t('settings.auth.access.badge')}</Badge>}</div></div>
+              <div className="min-w-0 flex-1"><div className="truncate font-medium">{p.name}</div><div className="mt-1 flex flex-wrap gap-1.5"><Badge tone="violet">{p.kind.toUpperCase()}</Badge>{(p.config.allowedGroups || p.config.allowedGroupDns || p.config.staffOnly) && <Badge tone="amber">{t('settings.auth.access.badge')}</Badge>}</div></div>
               <Toggle checked={p.enabled} onChange={() => toggle.mutate(p)} label={p.enabled ? t('common.enabled') : t('common.disabled')} />
               <Button size="sm" aria-label={`${t('common.edit')} ${p.name}`} onClick={() => setDraft({ ...p, config: { ...defaults(d.fields[p.kind]), ...p.config } })}><Pencil className="h-3.5 w-3.5" />{t('common.edit')}</Button>
               <Button size="sm" variant="danger" aria-label={`${t('common.delete')} ${p.name}`} onClick={async () => { if (await confirm({ title: t('common.delete'), body: p.name, danger: true, confirmLabel: t('common.delete') })) remove.mutate(p.id); }}><Trash2 className="h-3.5 w-3.5" /></Button>
@@ -198,7 +198,7 @@ function AuthTab() {
                 <p className="hint">{t('settings.auth.saml.help')}</p>
               </div>
             )}
-            {fields.some((f) => f.key === 'allowedGroups' || f.key === 'allowedGroupDns') && (
+            {fields.some((f) => f.key === 'allowedGroups' || f.key === 'allowedGroupDns' || f.key === 'staffOnly') && (
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-800 dark:bg-slate-800/40"><div className="font-medium">{t('settings.auth.access.title')}</div><p className="mt-1 text-slate-600 dark:text-slate-300">{t('settings.auth.access.body')}</p></div>
             )}
             <FieldsForm fields={fields} value={draft.config} onChange={(config) => setDraft({ ...draft, config })} />

@@ -218,7 +218,7 @@ An incident moves through *open*, *acknowledged*, *identified*, *being fixed*, *
 
 ## Restricting sign-in to groups
 
-Each OIDC, SAML and LDAP provider has an allow-list (**Allowed groups**; for LDAP **Allowed group DNs**, one per line). Members of an allowed group, of the admin groups or of the editor groups can sign in. Everyone else gets no account or session and is sent to the first public status page (no password, no sign-in requirement) or sees a notice that they lack permission. An empty list restricts nobody. Refusals are audited as `login.denied`, and a user who loses the group has their sessions ended at the next sign-in attempt.
+Each OIDC, SAML and LDAP provider has an allow-list (**Allowed groups**; for LDAP **Allowed group DNs**, one per line). Members of an allowed group, of the admin groups or of the editor groups can sign in. Everyone else gets no account or session and is sent to the first public status page (no password, no sign-in requirement) or sees a notice that they lack permission. An empty list restricts nobody. The switch **Editors and admins only** goes further: only members of the admin or editor groups get in, plain viewers are refused (needs those groups to be set; no effect when the default role is Editor). Refusals are audited as `login.denied`, and a user who loses the group has their sessions ended at the next sign-in attempt.
 
 ## Status page extras
 
