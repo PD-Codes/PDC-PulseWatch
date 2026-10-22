@@ -220,6 +220,12 @@ An incident moves through *open*, *acknowledged*, *identified*, *being fixed*, *
 
 Each OIDC, SAML and LDAP provider has an allow-list (**Allowed groups**; for LDAP **Allowed group DNs**, one per line). Members of an allowed group, of the admin groups or of the editor groups can sign in. Everyone else gets no account or session and is sent to the first public status page (no password, no sign-in requirement) or sees a notice that they lack permission. An empty list restricts nobody. The switch **Editors and admins only** goes further: only members of the admin or editor groups get in, plain viewers are refused (needs those groups to be set; no effect when the default role is Editor). Refusals are audited as `login.denied`, and a user who loses the group has their sessions ended at the next sign-in attempt.
 
+## Report as down after (restarts and flapping)
+
+A monitor can be told to open an incident and alert only after it has been failing for a while (seconds or minutes), so restarts and short blips are ignored; a recovery inside the window never opens an incident. Set it per monitor (**Report as down after**) or instance-wide under **Settings > Defaults**; an empty monitor field follows the instance rule, and the instance rule applies live. While the window runs the monitor is re-checked at its retry interval.
+
+On a status page, the eye icon of a component hides that component's resolved incidents from the "past incidents" list (and the RSS feed). Open incidents stay visible.
+
 ## Status page extras
 
 The **Extras** tab of a status page adds blocks below the components: an uptime summary (24 h, 7, 30, 90 days), a daily heatmap (90, 180 or 365 days), days without an incident and free text blocks. Figures only cover the page's own components and are cached for 60 seconds.

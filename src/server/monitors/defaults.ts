@@ -3,14 +3,16 @@ import type { Ctx } from '../context';
 export interface MonitorDefaults {
   intervalS: number; timeoutS: number; retries: number; retryIntervalS: number;
   upThreshold: number; downThreshold: number; flapWindow: number; flapThreshold: number;
+  /** Instance-wide rule, applied live to every monitor that has no value of its own. */
+  downAfterS: number;
 }
 
-export const BUILT_IN_DEFAULTS: MonitorDefaults = { intervalS: 60, timeoutS: 10, retries: 0, retryIntervalS: 20, upThreshold: 1, downThreshold: 1, flapWindow: 10, flapThreshold: 6 };
+export const BUILT_IN_DEFAULTS: MonitorDefaults = { intervalS: 60, timeoutS: 10, retries: 0, retryIntervalS: 20, upThreshold: 1, downThreshold: 1, flapWindow: 10, flapThreshold: 6, downAfterS: 0 };
 
 /** Allowed range per field, shared by monitor validation and the settings endpoint. */
 export const DEFAULT_LIMITS: Record<keyof MonitorDefaults, [number, number]> = {
   intervalS: [5, 86400], timeoutS: [1, 300], retries: [0, 20], retryIntervalS: [5, 3600],
-  upThreshold: [1, 20], downThreshold: [1, 20], flapWindow: [4, 60], flapThreshold: [0, 60],
+  upThreshold: [1, 20], downThreshold: [1, 20], flapWindow: [4, 60], flapThreshold: [0, 60], downAfterS: [0, 86400],
 };
 
 const KEY = 'monitor.defaults';

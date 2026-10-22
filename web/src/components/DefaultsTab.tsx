@@ -1,17 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { DownDelayField } from './DownDelay';
 import { Button, Card, CardHeader, ErrorBox, Field, Input, Loading, useConfirm, useToast } from './ui';
 import { del, errorMessage, get, put } from '../lib/api';
 import { useT } from '../lib/i18n';
 
-type Key = 'intervalS' | 'timeoutS' | 'retries' | 'retryIntervalS' | 'upThreshold' | 'downThreshold' | 'flapWindow' | 'flapThreshold';
+type Key = 'intervalS' | 'timeoutS' | 'retries' | 'retryIntervalS' | 'upThreshold' | 'downThreshold' | 'flapWindow' | 'flapThreshold' | 'downAfterS';
 type Values = Record<Key, number>;
 interface Payload { defaults: Values; builtIn: Values; limits: Record<Key, [number, number]> }
 const ROWS: [Key, string][] = [
   ['intervalS', 'monitors.interval'], ['timeoutS', 'monitors.timeout'], ['retries', 'monitors.retries'], ['retryIntervalS', 'monitors.retryInterval'],
   ['upThreshold', 'monitors.upThreshold'], ['downThreshold', 'monitors.downThreshold'], ['flapWindow', 'monitors.flapWindow'], ['flapThreshold', 'monitors.flapThreshold'],
 ];
+
 
 /** Settings tab: instance-wide defaults that pre-fill the "new monitor" form and apply when an API call omits a value. */
 export function DefaultsTab() {
@@ -21,7 +23,7 @@ export function DefaultsTab() {
   useEffect(() => { if (q.data) setV(Object.fromEntries(Object.entries(q.data.defaults).map(([k, x]) => [k, String(x)])) as Record<Key, string>); }, [q.data]);
   const done = () => { void qc.invalidateQueries({ queryKey: ['monitor-defaults'] }); };
   const save = useMutation({
-    mutationFn: () => put('/api/settings/monitor-defaults', Object.fromEntries(ROWS.map(([k]) => [k, Number(v![k])]))),
+    mutationFn: () => put('/api/settings/monitor-defaults', Object.fromEntries([...ROWS.map(([k]) => k), 'downAfterS'].map((k) => [k, Number(v![k as Key])]))),
     onSuccess: () => { toast(t('common.saved')); done(); }, onError: (e) => toast(errorMessage(e), 'error'),
   });
   const reset = useMutation({ mutationFn: () => del('/api/settings/monitor-defaults'), onSuccess: () => { toast(t('settings.defaults.resetDone')); done(); }, onError: (e) => toast(errorMessage(e), 'error') });
@@ -37,6 +39,7 @@ export function DefaultsTab() {
               {(id) => <Input id={id} type="number" required min={limits[k][0]} max={limits[k][1]} value={v[k]} onChange={(e) => setV({ ...v, [k]: e.target.value })} />}
             </Field>
           ))}
+          <div className="sm:col-span-2"><DownDelayField value={v.downAfterS} onChange={(s) => setV({ ...v, downAfterS: s })} hint={t('delay.hintGlobal')} /></div>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button type="submit" variant="primary" loading={save.isPending}>{t('common.save')}</Button>

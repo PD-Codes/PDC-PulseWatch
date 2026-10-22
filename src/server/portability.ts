@@ -87,7 +87,7 @@ export async function exportConfig(ctx: Ctx, includeSecrets: boolean): Promise<C
       const runner = getRunner(m.type);
       return {
         name: m.name, type: m.type, group: m.groupId ? gpath(m.groupId) : null, description: m.description, config: runner ? maskCfg(m.type, runner, m.config) : m.config,
-        intervalS: m.intervalS, timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold,
+        intervalS: m.intervalS, timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, downAfterS: m.downAfterS,
         active: m.active, publicBadge: m.publicBadge, quorum: m.quorum, locations: m.locations?.map((l) => (l === 'local' ? 'local' : prname.get(l))).filter(Boolean) ?? null,
         // a plain tag is exported as its name, a name + value tag as { name, value }
         tags: mtags.filter((t) => t.monitor_id === m.id && tname.has(t.tag_id)).map((t) => (t.value ? { name: tname.get(t.tag_id)!, value: t.value } : tname.get(t.tag_id)!)),
@@ -101,8 +101,8 @@ export async function exportConfig(ctx: Ctx, includeSecrets: boolean): Promise<C
     })),
     statusPages: pages.map((p) => ({
       slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), ssoRequired: bool(p.sso_required), branding: parseJson(p.branding, {}), customCss: p.custom_css, blocks: normalizeBlocks(parseJson(p.blocks, [])), showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size,
-      sections: sections.filter((s) => s.page_id === p.id).map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name })).filter((c) => c.monitor) })),
-      components: comps.filter((c) => c.page_id === p.id && !c.section_id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name })).filter((c) => c.monitor),
+      sections: sections.filter((s) => s.page_id === p.id).map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name, ...(c.hide_incidents ? { hideIncidents: true } : {}) })).filter((c) => c.monitor) })),
+      components: comps.filter((c) => c.page_id === p.id && !c.section_id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name, ...(c.hide_incidents ? { hideIncidents: true } : {}) })).filter((c) => c.monitor),
     })),
   };
   const ssrf = await ctx.settings.get<SsrfSettings | null>('ssrf', null);
@@ -226,7 +226,7 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
     const notifications = (m.notifications ?? []).map((n: any) => ({ channelId: n.channel ? channelIds.get(n.channel) : null, policyId: n.policy ? policyIds.get(n.policy) : null, events: n.events })).filter((n: any) => n.channelId || n.policyId);
     const input = {
       name: m.name, type: m.type, groupId, description: m.description ?? null, config: existing ? m.config ?? {} : stripMasked(runner, m.config ?? {}), intervalS: m.intervalS, timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS,
-      upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, active: m.active, publicBadge: m.publicBadge, quorum: locations?.length ? m.quorum : 1,
+      upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, downAfterS: Number.isInteger(m.downAfterS) ? m.downAfterS : null, active: m.active, publicBadge: m.publicBadge, quorum: locations?.length ? m.quorum : 1,
       locations: locations as (number | 'local')[] | null, tagIds: [...new Set(allTags.filter((t) => !t.value).map((t) => t.tagId))], tagValues: allTags.filter((t) => t.value), notifications: existing && doc.merge && !notifications.length ? undefined : notifications.filter((n: any) => (n.channelId ?? 1) > 0 && (n.policyId ?? 1) > 0),
     };
     if (dryRun) {
@@ -281,7 +281,7 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
     step('statusPages');
     const id = pageIds.get(p.slug); count('statusPages', !!id);
     const values = { slug: p.slug, title: p.title, description: p.description ?? null, domain: p.domain ?? null, is_public: p.isPublic === false ? 0 : 1, sso_required: p.ssoRequired ? 1 : 0, branding: JSON.stringify(p.branding ?? {}), custom_css: p.customCss ?? null, ...(Array.isArray(p.blocks) ? { blocks: JSON.stringify(normalizeBlocks(p.blocks)) } : {}), show_history: p.showHistory === false ? 0 : 1, history_days: [14, 30, 60, 90, 120, 150, 180].includes(p.historyDays as number) ? (p.historyDays as number) : 90, ...(p.isDefault === true ? { is_default: 1 } : {}), ...(Number.isInteger(p.incidentDays) && p.incidentDays >= 0 && p.incidentDays <= 365 ? { incident_days: p.incidentDays as number } : {}), ...(Number.isInteger(p.incidentPageSize) && p.incidentPageSize >= 5 && p.incidentPageSize <= 50 ? { incident_page_size: p.incidentPageSize as number } : {}) };
-    const comp = (c: any) => { const mid = monitorIds.get(c.monitor); if (!mid) rep.warnings.push(`status page ${p.slug}: monitor "${c.monitor}" not found`); return mid ? { monitor_id: mid, display_name: c.displayName ?? null } : null; };
+    const comp = (c: any) => { const mid = monitorIds.get(c.monitor); if (!mid) rep.warnings.push(`status page ${p.slug}: monitor "${c.monitor}" not found`); return mid ? { monitor_id: mid, display_name: c.displayName ?? null, hide_incidents: c.hideIncidents ? 1 : 0 } : null; };
     await w(() => db.transaction().execute(async (trx) => {
       let pid = id;
       if (values.is_default === 1) await trx.updateTable('status_pages').set({ is_default: 0 }).execute(); // only one home page; the update below or the insert sets this one

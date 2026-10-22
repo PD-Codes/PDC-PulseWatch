@@ -190,7 +190,7 @@ export async function monitorRoutes(app: FastifyInstance) {
     const notes = await db.selectFrom('monitor_notifications').selectAll().where('monitor_id', '=', id).execute();
     const newId = await wrapValidation(reply, () => saveMonitor(ctx, {
       name: `${src.name} (copy)`, type: src.type, groupId: src.groupId, description: src.description, config: src.config, intervalS: src.intervalS, timeoutS: src.timeoutS,
-      retries: src.retries, retryIntervalS: src.retryIntervalS, upThreshold: src.upThreshold, downThreshold: src.downThreshold, flapWindow: src.flapWindow, flapThreshold: src.flapThreshold,
+      retries: src.retries, retryIntervalS: src.retryIntervalS, upThreshold: src.upThreshold, downThreshold: src.downThreshold, flapWindow: src.flapWindow, flapThreshold: src.flapThreshold, downAfterS: src.downAfterS,
       active: false, locations: src.locations, quorum: src.quorum, publicBadge: false, tagIds: tags.filter((t) => !t.value).map((t) => t.tag_id), tagValues: tags.filter((t) => t.value).map((t) => ({ tagId: t.tag_id, value: t.value })), dependsOn: deps.map((d) => d.depends_on_id),
       notifications: notes.map((n) => ({ channelId: n.channel_id, policyId: n.policy_id, events: n.events.split(',') })),
     }, req.user!.id));
@@ -244,7 +244,7 @@ export async function monitorRoutes(app: FastifyInstance) {
         patch: Type.Optional(Type.Object({
           intervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 86400 })), timeoutS: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })), retries: Type.Optional(Type.Integer({ minimum: 0, maximum: 20 })),
           retryIntervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 3600 })), upThreshold: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })), downThreshold: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
-          flapWindow: Type.Optional(Type.Integer({ minimum: 4, maximum: 60 })), flapThreshold: Type.Optional(Type.Integer({ minimum: 0, maximum: 60 })), publicBadge: Type.Optional(Type.Boolean()),
+          flapWindow: Type.Optional(Type.Integer({ minimum: 4, maximum: 60 })), flapThreshold: Type.Optional(Type.Integer({ minimum: 0, maximum: 60 })), downAfterS: Type.Optional(Type.Union([Type.Null(), Type.Integer({ minimum: 0, maximum: 86400 })])), publicBadge: Type.Optional(Type.Boolean()),
           groupId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), addTagIds: Type.Optional(Type.Array(Type.Integer())), removeTagIds: Type.Optional(Type.Array(Type.Integer())),
           notifications: Type.Optional(Type.Object({ mode: Type.Union([Type.Literal('add'), Type.Literal('replace')]), rules: Type.Array(ruleBody, { maxItems: 20 }) })),
         })),
@@ -262,7 +262,7 @@ export async function monitorRoutes(app: FastifyInstance) {
     else if (b.action === 'delete') { await db.deleteFrom('monitors').where('id', 'in', ids).execute(); for (const t of ['heartbeats', 'rollups', 'events'] as const) await db.deleteFrom(t).where('monitor_id', 'in', ids).execute(); }
     else {
       const p = b.patch ?? {};
-      const cols: Record<string, string> = { intervalS: 'interval_s', timeoutS: 'timeout_s', retries: 'retries', retryIntervalS: 'retry_interval_s', upThreshold: 'up_threshold', downThreshold: 'down_threshold', flapWindow: 'flap_window', flapThreshold: 'flap_threshold', groupId: 'group_id' };
+      const cols: Record<string, string> = { intervalS: 'interval_s', timeoutS: 'timeout_s', retries: 'retries', retryIntervalS: 'retry_interval_s', upThreshold: 'up_threshold', downThreshold: 'down_threshold', flapWindow: 'flap_window', flapThreshold: 'flap_threshold', downAfterS: 'down_after_s', groupId: 'group_id' };
       const set: Record<string, unknown> = {};
       for (const [k, col] of Object.entries(cols)) if (p[k] !== undefined) set[col] = p[k];
       if (p.publicBadge !== undefined) set.public_badge = p.publicBadge ? 1 : 0;
@@ -321,10 +321,10 @@ export async function monitorRoutes(app: FastifyInstance) {
   });
 
   /** Instance-wide defaults for new monitors (timings and thresholds). */
-  const defaultsBody = Type.Object(Object.fromEntries((Object.keys(DEFAULT_LIMITS) as (keyof typeof DEFAULT_LIMITS)[]).map((k) => [k, Type.Integer({ minimum: DEFAULT_LIMITS[k][0], maximum: DEFAULT_LIMITS[k][1] })])) as any);
+  const defaultsBody = Type.Object(Object.fromEntries((Object.keys(DEFAULT_LIMITS) as (keyof typeof DEFAULT_LIMITS)[]).map((k) => [k, k === 'downAfterS' ? Type.Optional(Type.Integer({ minimum: DEFAULT_LIMITS[k][0], maximum: DEFAULT_LIMITS[k][1] })) : Type.Integer({ minimum: DEFAULT_LIMITS[k][0], maximum: DEFAULT_LIMITS[k][1] })])) as any);
   app.get('/api/settings/monitor-defaults', { ...auth, schema: { tags: ['settings'], summary: 'Defaults for new monitors' } }, async () => ({ defaults: await monitorDefaults(ctx), builtIn: BUILT_IN_DEFAULTS, limits: DEFAULT_LIMITS }));
   app.put('/api/settings/monitor-defaults', { preHandler: app.requireRole('admin'), schema: { tags: ['settings'], body: defaultsBody } }, async (req, reply) => {
-    const d = req.body as MonitorDefaults;
+    const d = { ...BUILT_IN_DEFAULTS, ...(req.body as Partial<MonitorDefaults>) };
     if (d.timeoutS > d.intervalS) return reply.code(400).send({ error: 'validation', message: 'The timeout must not exceed the interval' });
     await saveMonitorDefaults(ctx, d);
     await writeAudit(ctx, req.user, 'settings.monitor_defaults', { type: 'settings' }, d as any, req.ip);

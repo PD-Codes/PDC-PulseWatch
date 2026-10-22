@@ -65,7 +65,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     const id = (req.params as any).id;
     const ch = await db.selectFrom('notification_channels').select('id').where('id', '=', id).executeTakeFirst();
     if (!ch) return reply.code(404).send({ error: 'not_found' });
-    const sample = parseMonitor({ id: 0, name: 'Test monitor', type: 'http', config: '{}', group_id: null, description: null, interval_s: 60, timeout_s: 10, retries: 0, retry_interval_s: 20, up_threshold: 1, down_threshold: 1, flap_window: 10, flap_threshold: 6, active: 1, locations: null, quorum: 1, push_token: null, public_badge: 0, next_run_at: null, lease_owner: null, lease_until: null, attempt: 0, created_by: null, created_at: new Date(), updated_at: new Date() });
+    const sample = parseMonitor({ id: 0, name: 'Test monitor', type: 'http', config: '{}', group_id: null, description: null, interval_s: 60, timeout_s: 10, retries: 0, retry_interval_s: 20, up_threshold: 1, down_threshold: 1, flap_window: 10, flap_threshold: 6, down_after_s: null, active: 1, locations: null, quorum: 1, push_token: null, public_badge: 0, next_run_at: null, lease_owner: null, lease_until: null, attempt: 0, created_by: null, created_at: new Date(), updated_at: new Date() });
     return ctx.notifier.test(id, sample);
   });
 

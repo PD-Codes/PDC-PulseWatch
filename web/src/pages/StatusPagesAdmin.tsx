@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, ExternalLink, Globe, Home, Lock, Megaphone, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ExternalLink, EyeOff, Globe, Home, Lock, Megaphone, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
@@ -9,7 +9,7 @@ import { fmtDateTime, slugify } from '../lib/format';
 import { useT } from '../lib/i18n';
 
 interface PageRow { id: number; slug: string; title: string; domain: string | null; isPublic: boolean; protected: boolean; isDefault: boolean }
-interface Comp { monitorId: number; displayName: string | null }
+interface Comp { monitorId: number; displayName: string | null; hideIncidents?: boolean }
 interface Full {
   id: number; slug: string; title: string; description: string | null; domain: string | null; isPublic: boolean; hasPassword: boolean; ssoRequired: boolean;
   branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number; isDefault: boolean; incidentDays: number; incidentPageSize: number; blocks: BlockCfg[];
@@ -126,7 +126,7 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
 
   const save = useMutation({
     mutationFn: () => {
-      const comp = (c: Comp) => ({ monitorId: c.monitorId, displayName: c.displayName?.trim() || null });
+      const comp = (c: Comp) => ({ monitorId: c.monitorId, displayName: c.displayName?.trim() || null, hideIncidents: !!c.hideIncidents });
       const body = {
         slug: f.slug.trim().toLowerCase(), title: f.title.trim(), description: f.description.trim() || null, domain: f.domain.trim().toLowerCase() || null, isPublic: f.isPublic, ssoRequired: f.ssoRequired, showHistory: f.showHistory, historyDays: f.historyDays, incidentDays: f.incidentDays, incidentPageSize: f.incidentPageSize,
         // only send the home-page flag when this form changed it, so a stale form cannot take the home page back from another page
@@ -283,6 +283,7 @@ function Components({ groups, onChange, monitors, loading, error }: { groups: Gr
               <li key={c.monitorId} className="flex flex-wrap items-center gap-2 p-2">
                 <span className="min-w-[8rem] flex-1 truncate text-sm font-medium">{nameOf(c.monitorId)}</span>
                 <Input className="min-w-[8rem] flex-1" aria-label={t('statuspages.displayName')} placeholder={t('statuspages.displayName')} value={c.displayName ?? ''} onChange={(e) => patchGroup(gi, (x) => ({ ...x, items: x.items.map((y, i) => (i === ci ? { ...y, displayName: e.target.value } : y)) }))} maxLength={255} />
+                <Button size="sm" variant={c.hideIncidents ? 'primary' : 'ghost'} title={`${t('statuspages.hideIncidents')}: ${t('statuspages.hideIncidentsHint')}`} aria-label={t('statuspages.hideIncidents')} aria-pressed={!!c.hideIncidents} onClick={() => patchGroup(gi, (x) => ({ ...x, items: x.items.map((y, i) => (i === ci ? { ...y, hideIncidents: !y.hideIncidents } : y)) }))}><EyeOff className="h-4 w-4" /></Button>
                 <Button size="sm" variant="ghost" aria-label={t('statuspages.moveUp')} disabled={ci === 0} onClick={() => patchGroup(gi, (x) => ({ ...x, items: move(x.items, ci, -1) }))}><ArrowUp className="h-4 w-4" /></Button>
                 <Button size="sm" variant="ghost" aria-label={t('statuspages.moveDown')} disabled={ci === g.items.length - 1} onClick={() => patchGroup(gi, (x) => ({ ...x, items: move(x.items, ci, 1) }))}><ArrowDown className="h-4 w-4" /></Button>
                 <Button size="sm" variant="ghost" aria-label={t('common.remove')} onClick={() => patchGroup(gi, (x) => ({ ...x, items: x.items.filter((_, i) => i !== ci) }))}><X className="h-4 w-4" /></Button>

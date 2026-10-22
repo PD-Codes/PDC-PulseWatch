@@ -34,7 +34,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
   const admin = { preHandler: app.requireRole('admin') };
 
   /* ------------------------------- admin API ------------------------------- */
-  const compBody = Type.Object({ monitorId: Type.Integer(), displayName: Type.Optional(Type.Union([Type.String({ maxLength: 255 }), Type.Null()])) });
+  const compBody = Type.Object({ monitorId: Type.Integer(), displayName: Type.Optional(Type.Union([Type.String({ maxLength: 255 }), Type.Null()])), hideIncidents: Type.Optional(Type.Boolean()) });
   const pageBody = Type.Object({
     slug: Type.String({ pattern: '^[a-z0-9][a-z0-9-]{0,62}$' }), title: Type.String({ minLength: 1, maxLength: 255 }), description: Type.Optional(Type.Union([Type.String({ maxLength: 5000 }), Type.Null()])),
     domain: Type.Optional(Type.Union([Type.String({ pattern: '^[a-z0-9.-]{3,255}$' }), Type.Null()])),
@@ -52,7 +52,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     if (!p) return null;
     const sections = await db.selectFrom('status_page_sections').selectAll().where('page_id', '=', id).orderBy('sort').execute();
     const comps = await db.selectFrom('status_page_components').selectAll().where('page_id', '=', id).orderBy('sort').execute();
-    const map = (c: typeof comps[number]) => ({ monitorId: c.monitor_id, displayName: c.display_name });
+    const map = (c: typeof comps[number]) => ({ monitorId: c.monitor_id, displayName: c.display_name, hideIncidents: bool(c.hide_incidents) });
     return {
       id: p.id, slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), hasPassword: !!p.password_hash, ssoRequired: bool(p.sso_required),
       branding: parseJson(p.branding, {}), customCss: p.custom_css, blocks: normalizeBlocks(parseJson(p.blocks, [])), showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size,
@@ -103,9 +103,9 @@ export async function statusPageRoutes(app: FastifyInstance) {
         let sort = 0;
         for (const [i, s] of (b.sections as any[]).entries()) {
           const sid = Number((await trx.insertInto('status_page_sections').values({ page_id: id!, name: s.name, sort: i }).executeTakeFirstOrThrow()).insertId);
-          for (const c of s.components) await trx.insertInto('status_page_components').values({ page_id: id!, section_id: sid, monitor_id: c.monitorId, display_name: c.displayName ?? null, sort: sort++ }).execute();
+          for (const c of s.components) await trx.insertInto('status_page_components').values({ page_id: id!, section_id: sid, monitor_id: c.monitorId, display_name: c.displayName ?? null, hide_incidents: c.hideIncidents ? 1 : 0, sort: sort++ }).execute();
         }
-        for (const c of b.components ?? []) await trx.insertInto('status_page_components').values({ page_id: id!, section_id: null, monitor_id: c.monitorId, display_name: c.displayName ?? null, sort: sort++ }).execute();
+        for (const c of b.components ?? []) await trx.insertInto('status_page_components').values({ page_id: id!, section_id: null, monitor_id: c.monitorId, display_name: c.displayName ?? null, hide_incidents: c.hideIncidents ? 1 : 0, sort: sort++ }).execute();
       });
     } catch (e: any) { if (e.code === 'ER_DUP_ENTRY') return reply.code(409).send({ error: 'conflict', message: 'Slug or domain is already used by another status page' }); throw e; }
     await writeAudit(ctx, req.user, 'status_page.saved', { type: 'status_page', id }, { slug: b.slug }, req.ip);
@@ -231,7 +231,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
   async function buildPage(p: Page) {
     const sections = await db.selectFrom('status_page_sections').selectAll().where('page_id', '=', p.id).orderBy('sort').execute();
     const comps = await db.selectFrom('status_page_components as c').innerJoin('monitors as m', 'm.id', 'c.monitor_id').leftJoin('monitor_state as s', 's.monitor_id', 'c.monitor_id')
-      .select(['c.section_id', 'c.display_name', 'c.monitor_id', 'm.name', 'm.description', 's.status', 's.overlay', 's.status_since']).where('c.page_id', '=', p.id).orderBy('c.sort').execute();
+      .select(['c.section_id', 'c.display_name', 'c.hide_incidents', 'c.monitor_id', 'm.name', 'm.description', 's.status', 's.overlay', 's.status_since']).where('c.page_id', '=', p.id).orderBy('c.sort').execute();
     const ids = comps.map((c) => c.monitor_id);
     const history = bool(p.show_history);
     const { since, by } = history ? await dailyUptime(ids, p.history_days) : { since: new Date(), by: new Map() };
@@ -249,7 +249,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const now = new Date();
     const announcements = await db.selectFrom('status_page_announcements').select(['id', 'kind', 'title', 'body', 'starts_at', 'ends_at']).where('page_id', '=', p.id).where('starts_at', '<=', now).where((eb) => eb.or([eb('ends_at', 'is', null), eb('ends_at', '>', now)])).orderBy('starts_at', 'desc').execute();
     const maint = ctx.maintenance.activeWindows().filter((w) => w.announce && ids.some((i) => w.monitorIds.has(i))).map((w) => ({ id: w.id, name: w.name, description: w.description, endsAt: w.endsAt }));
-    const incidents = ids.length ? await listIncidents(ids, new Date(now.getTime() - p.incident_days * DAY), new Map(comps.map((c) => [c.monitor_id, c.display_name || c.name]))) : [];
+    const incidents = ids.length ? await listIncidents(ids, new Date(now.getTime() - p.incident_days * DAY), new Map(comps.map((c) => [c.monitor_id, c.display_name || c.name])), new Set(comps.filter((c) => c.hide_incidents).map((c) => c.monitor_id))) : [];
     const all = comps.map((c) => publicStatus(c.status ? { status: c.status, overlay: c.overlay ?? 'none' } : undefined));
     const overall = all.includes('outage') ? (all.every((s) => s === 'outage') ? 'outage' : 'partial') : all.some((s) => s === 'degraded') ? 'degraded' : all.includes('maintenance') ? 'maintenance' : 'operational';
     return {
@@ -264,16 +264,17 @@ export async function statusPageRoutes(app: FastifyInstance) {
 
   /** Monitors on a page with the name the page shows for each. */
   async function pageMonitors(pageId: number) {
-    const rows = await db.selectFrom('status_page_components as c').innerJoin('monitors as m', 'm.id', 'c.monitor_id').select(['c.monitor_id', 'c.display_name', 'm.name']).where('c.page_id', '=', pageId).execute();
-    return { ids: rows.map((r) => r.monitor_id), names: new Map(rows.map((r) => [r.monitor_id, r.display_name || r.name] as [number, string])) };
+    const rows = await db.selectFrom('status_page_components as c').innerJoin('monitors as m', 'm.id', 'c.monitor_id').select(['c.monitor_id', 'c.display_name', 'c.hide_incidents', 'm.name']).where('c.page_id', '=', pageId).execute();
+    return { ids: rows.map((r) => r.monitor_id), hide: new Set(rows.filter((r) => r.hide_incidents).map((r) => r.monitor_id)), names: new Map(rows.map((r) => [r.monitor_id, r.display_name || r.name] as [number, string])) };
   }
 
   /** Incidents touching these monitors; manual incidents appear only when flagged public, and none the operator hid. */
-  async function listIncidents(monitorIds: number[], since: Date, names: Map<number, string>) {
+  /** `hide`: monitors whose resolved incidents this page does not list. */
+  async function listIncidents(monitorIds: number[], since: Date, names: Map<number, string>, hide: Set<number> = new Set()) {
     const rows = await db.selectFrom('incidents as i').innerJoin('incident_monitors as im', 'im.incident_id', 'i.id')
       .select(['i.id', 'i.title', 'i.status', 'i.severity', 'i.source', 'i.monitor_id', 'i.started_at', 'i.resolved_at', 'i.public']).distinct()
       .where('im.monitor_id', 'in', monitorIds).where('i.hidden', '=', 0).where((eb) => eb.or([eb('i.resolved_at', 'is', null), eb('i.resolved_at', '>=', since)])).orderBy('i.started_at', 'desc').limit(100).execute();
-    const visible = rows.filter((r) => r.source === 'auto' || bool(r.public));
+    const visible = rows.filter((r) => (r.source === 'auto' || bool(r.public)) && !(r.resolved_at && r.monitor_id && hide.has(r.monitor_id)));
     const updates = visible.length ? await db.selectFrom('incident_updates').select(['incident_id', 'ts', 'kind', 'status', 'body']).where('incident_id', 'in', visible.filter((r) => bool(r.public)).map((r) => r.id).concat(0)).where('kind', 'in', ['status', 'resolve', 'postmortem']).orderBy('ts', 'desc').execute() : [];
     // an automatic incident is titled with the internal monitor name, the page shows the name chosen for it
     return visible.map((r) => ({ id: r.id, title: r.source === 'auto' && r.monitor_id && names.has(r.monitor_id) ? `${names.get(r.monitor_id)} is down` : r.title, status: r.status, severity: r.severity, startedAt: r.started_at, resolvedAt: r.resolved_at, updates: updates.filter((u) => u.incident_id === r.id).map((u) => ({ ts: u.ts, kind: u.kind, status: u.status, body: u.body })) }));
@@ -295,8 +296,8 @@ export async function statusPageRoutes(app: FastifyInstance) {
   app.get('/api/public/status/:slug/rss', { ...pub, schema: { tags: ['public'], params: Slug } }, async (req, reply) => {
     const p = await gate(req, reply, (req.params as any).slug, true);
     if (!p) return;
-    const { ids, names } = await pageMonitors(p.id);
-    const inc = ids.length ? await listIncidents(ids, new Date(Date.now() - p.incident_days * DAY), names) : [];
+    const { ids, names, hide } = await pageMonitors(p.id);
+    const inc = ids.length ? await listIncidents(ids, new Date(Date.now() - p.incident_days * DAY), names, hide) : [];
     const link = `${config.baseUrl}/status/${p.slug}`;
     const items = inc.map((i) => `<item><title>${esc(`[${i.resolvedAt ? 'Resolved' : 'Ongoing'}] ${i.title}`)}</title><link>${esc(link)}</link><guid isPermaLink="false">${esc(`${p.slug}-incident-${i.id}-${i.resolvedAt ? 'r' : 'o'}`)}</guid><pubDate>${new Date(i.resolvedAt ?? i.startedAt).toUTCString()}</pubDate><description>${esc(i.updates[0]?.body ?? i.title)}</description></item>`).join('');
     return reply.type('application/rss+xml; charset=utf-8').send(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${esc(p.title)}</title><link>${esc(link)}</link><description>${esc(p.description ?? `${p.title} status`)}</description>${items}</channel></rss>`);
