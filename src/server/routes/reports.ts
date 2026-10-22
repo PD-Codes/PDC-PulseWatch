@@ -3,6 +3,7 @@ import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { accessibleMonitorIds, writeAudit } from '../auth/access';
 import { mailConfigured, sendSystemMail } from '../mail';
+import { LANGS, userLang, type Lang } from '../notify/texts';
 import { buildDigest, buildSla, DIGEST_DEFAULT, sendReport, slaCsv, slaPdf, type DigestSettings } from '../reports';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
@@ -14,13 +15,14 @@ export async function reportRoutes(app: FastifyInstance) {
   const auth = { preHandler: app.requireAuth };
   const admin = { preHandler: app.requireRole('admin') };
 
-  app.get('/api/reports/sla', { ...auth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } }, schema: { tags: ['reports'], summary: 'SLA report as JSON, CSV or PDF', querystring: Type.Object({ scope: Type.Optional(Scope), id: Type.Optional(Type.Integer()), days: Type.Optional(Type.Integer({ minimum: 1, maximum: 730 })), format: Type.Optional(Type.Union([Type.Literal('json'), Type.Literal('csv'), Type.Literal('pdf')])) }) } }, async (req, reply) => {
-    const q = req.query as { scope?: 'all' | 'group' | 'monitor' | 'tag'; id?: number; days?: number; format?: 'json' | 'csv' | 'pdf' };
+  app.get('/api/reports/sla', { ...auth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } }, schema: { tags: ['reports'], summary: 'SLA report as JSON, CSV or PDF', querystring: Type.Object({ scope: Type.Optional(Scope), id: Type.Optional(Type.Integer()), days: Type.Optional(Type.Integer({ minimum: 1, maximum: 730 })), format: Type.Optional(Type.Union([Type.Literal('json'), Type.Literal('csv'), Type.Literal('pdf')])), lang: Type.Optional(Type.Union(LANGS.map((l) => Type.Literal(l)))) }) } }, async (req, reply) => {
+    const q = req.query as { scope?: 'all' | 'group' | 'monitor' | 'tag'; id?: number; days?: number; format?: 'json' | 'csv' | 'pdf'; lang?: Lang };
     if (q.scope && q.scope !== 'all' && !q.id) return reply.code(400).send({ error: 'validation', message: 'id is required for this scope' });
     const rep = await buildSla(ctx, { type: q.scope ?? 'all', id: q.id }, q.days ?? 30, await accessibleMonitorIds(ctx, req.user!));
     const stamp = rep.to.slice(0, 10);
-    if (q.format === 'csv') return reply.type('text/csv; charset=utf-8').header('Content-Disposition', `attachment; filename="sla-${stamp}.csv"`).send(slaCsv(rep));
-    if (q.format === 'pdf') return reply.type('application/pdf').header('Content-Disposition', `attachment; filename="sla-${stamp}.pdf"`).send(await slaPdf(rep));
+    const lang = q.lang ?? (await userLang(ctx, req.user)); // the file speaks the language of the person downloading it unless told otherwise
+    if (q.format === 'csv') return reply.type('text/csv; charset=utf-8').header('Content-Disposition', `attachment; filename="sla-${stamp}.csv"`).send(slaCsv(rep, lang));
+    if (q.format === 'pdf') return reply.type('application/pdf').header('Content-Disposition', `attachment; filename="sla-${stamp}.pdf"`).send(await slaPdf(rep, lang));
     return rep;
   });
 
@@ -68,7 +70,7 @@ export async function reportRoutes(app: FastifyInstance) {
     return { ok: true };
   });
   app.post('/api/settings/digest/preview', { ...admin, schema: { tags: ['reports'], summary: 'Render the digest (and optionally email it to the caller)', body: Type.Object({ send: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
-    const m = await buildDigest(ctx);
+    const m = await buildDigest(ctx, await userLang(ctx, req.user)); // the preview is written for the person looking at it
     if ((req.body as any).send) {
       if (!mailConfigured()) return reply.code(400).send({ error: 'unavailable', message: 'SMTP is not configured (PW_SMTP_HOST)' });
       if (!req.user!.email) return reply.code(400).send({ error: 'validation', message: 'Your account has no email address' });

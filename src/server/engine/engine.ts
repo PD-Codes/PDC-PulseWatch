@@ -4,7 +4,7 @@ import { config } from '../config';
 import type { Ctx } from '../context';
 import { bool, parseJson } from '../db';
 import { recordSpan } from '../telemetry';
-import { monitorDefaults } from '../monitors/defaults';
+import { pickInfo } from '../monitors/info';
 import { isMultiLocation, LOCAL_LOCATION_ID, parseMonitor, type Monitor } from '../monitors/model';
 import { aggregate, anomalyStep, initialState, step, type AnomalyState, type LocationResult, type Overlay } from './machine';
 
@@ -127,12 +127,11 @@ export class Engine {
     if (maintenance.isActive(m.id)) overlay = 'maintenance';
     else if (!r.ok && (await this.suppressedByParent(m.id))) overlay = 'suppressed';
 
-    const downAfterS = m.downAfterS ?? (await monitorDefaults(this.ctx)).downAfterS;
     const result = await db.transaction().execute(async (trx) => {
       await trx.insertInto('monitor_state').values({ monitor_id: m.id }).ignore().execute();
       const st = await trx.selectFrom('monitor_state').selectAll().where('monitor_id', '=', m.id).forUpdate().executeTakeFirstOrThrow();
-      const prevMachine = { ...initialState(), status: st.status, consecutiveFail: st.consecutive_fail, consecutiveOk: st.consecutive_ok, attempt: m.attempt, outcomes: st.outcomes, flapping: bool(st.flapping), failSince: st.fail_since?.getTime() ?? null };
-      const o = step(prevMachine, { retries: m.retries, upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, overlay, downAfterS, nowMs: now.getTime() }, r.ok);
+      const prevMachine = { ...initialState(), status: st.status, consecutiveFail: st.consecutive_fail, consecutiveOk: st.consecutive_ok, attempt: m.attempt, outcomes: st.outcomes, flapping: bool(st.flapping) };
+      const o = step(prevMachine, { retries: m.retries, upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, overlay }, r.ok);
 
       const recent = parseJson<[number, number, number | null][]>(st.recent, []);
       recent.push([Math.floor(now.getTime() / 1000), o.hbStatus, r.latencyMs ?? null]);
@@ -156,13 +155,16 @@ export class Engine {
         certExpires = new Date(r.cert.validTo);
       }
 
+      const info = pickInfo(m.type, r.details);
       const statusChanged = o.status !== st.status;
       await trx.updateTable('monitor_state').set({
         status: o.status, overlay, status_since: statusChanged || !st.status_since ? now : st.status_since,
-        consecutive_fail: o.consecutiveFail, consecutive_ok: o.consecutiveOk, fail_since: o.failSince ? new Date(o.failSince) : null, last_check_at: now, last_latency_ms: r.latencyMs ?? null,
+        consecutive_fail: o.consecutiveFail, consecutive_ok: o.consecutiveOk, last_check_at: now, last_latency_ms: r.latencyMs ?? null,
         last_error_kind: r.ok ? null : r.errorKind ?? 'internal', last_message: r.message?.slice(0, 500) ?? null,
         flapping: o.flapping ? 1 : 0, outcomes: o.outcomes, recent: JSON.stringify(recent), cert_expires_at: certExpires, cert_info: certInfo,
         anomaly: anomaly ? JSON.stringify(anomaly) : null,
+        // game server details: cleared while the check fails, kept when a result carries none (multi-location aggregates)
+        ...(r.ok ? (info ? { info: JSON.stringify(info) } : {}) : { info: null }),
       }).where('monitor_id', '=', m.id).execute();
 
       await trx.insertInto('heartbeats').values({ monitor_id: m.id, location_id: 0, ts: now, status: o.hbStatus, latency_ms: r.latencyMs ?? null, error_kind: r.ok ? null : r.errorKind ?? 'internal', message: r.message?.slice(0, 500) ?? null }).execute();

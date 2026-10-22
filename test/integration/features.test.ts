@@ -206,7 +206,7 @@ describe('recent checks status filter', () => {
 });
 
 describe('past incidents on a status page', () => {
-  it('limits them by age, can switch them off, and drops incidents an operator hid', async () => {
+  it('limits them by age, can switch them off, and drops incidents an operator took off the status pages', async () => {
     const m = await push('pi-monitor', { active: false });
     const body = { slug: 'pi', title: 'Past incidents', isPublic: true, sections: [], components: [{ monitorId: m.json.id }] };
     const page = await c.post('/api/status-pages', body);
@@ -240,13 +240,13 @@ describe('past incidents on a status page', () => {
     expect((await c.put(`/api/status-pages/${page.json.id}`, { ...body, incidentDays: 400 })).status).toBe(400);
 
     await c.put(`/api/status-pages/${page.json.id}`, { ...body, incidentDays: 30 });
-    expect((await c.call('PATCH', `/api/incidents/${fresh}`, { hidden: true })).status).toBe(200);
+    expect((await c.call('PATCH', `/api/incidents/${fresh}`, { public: false })).status).toBe(200);
     expect(await titles()).toEqual(['twenty days ago']);
     const rss = (await t.client().get('/api/public/status/pi/rss')).body;
     expect(rss).not.toContain('two days ago');
     expect(rss).toContain('twenty days ago');
-    expect(((await c.get('/api/incidents')).json as { id: number; hidden: boolean }[]).find((x) => x.id === fresh)?.hidden).toBe(true); // still listed in the dashboard
-    await c.call('PATCH', `/api/incidents/${fresh}`, { hidden: false });
+    expect(((await c.get('/api/incidents')).json as { id: number; public: boolean }[]).find((x) => x.id === fresh)?.public).toBe(false); // still listed in the dashboard
+    await c.call('PATCH', `/api/incidents/${fresh}`, { public: true });
     expect(await titles()).toEqual(['two days ago', 'twenty days ago']);
     expect(mid).toBeGreaterThan(0);
     const exported = JSON.parse((await c.get('/api/config/export?format=json')).body).statusPages.find((x: any) => x.slug === 'pi');

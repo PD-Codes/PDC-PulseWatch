@@ -4,6 +4,7 @@ import { getRunner, maskSecrets, restoreSecrets, validateConfig } from '../../co
 import type { Ctx } from '../context';
 import { parseJson } from '../db';
 import { monitorDefaults } from './defaults';
+import type { ServerInfo } from './info';
 import { encryptConfig, parseMonitor, type Monitor } from './model';
 
 export interface TagValue { tagId: number; value: string }
@@ -11,7 +12,7 @@ export interface TagValue { tagId: number; value: string }
 export interface MonitorInput {
   name?: string; type?: string; groupId?: number | null; description?: string | null; config?: Record<string, any>;
   intervalS?: number; timeoutS?: number; retries?: number; retryIntervalS?: number; upThreshold?: number; downThreshold?: number;
-  flapWindow?: number; flapThreshold?: number; downAfterS?: number | null; active?: boolean; locations?: (number | 'local')[] | null; quorum?: number; publicBadge?: boolean;
+  flapWindow?: number; flapThreshold?: number; active?: boolean; locations?: (number | 'local')[] | null; quorum?: number; publicBadge?: boolean;
   tagIds?: number[]; tagValues?: TagValue[]; dependsOn?: number[]; notifications?: { channelId?: number | null; policyId?: number | null; events?: string[] }[];
 }
 
@@ -62,15 +63,12 @@ export async function saveMonitor(ctx: Ctx, input: MonitorInput, userId: number 
   const d = await monitorDefaults(ctx);
   const intervalS = num(input.intervalS ?? existing?.intervalS, d.intervalS, 5, 86400, 'Interval', errors);
   const timeoutS = num(input.timeoutS ?? existing?.timeoutS, d.timeoutS, 1, 300, 'Timeout', errors);
-  const downAfterS = input.downAfterS !== undefined ? input.downAfterS : existing?.downAfterS ?? null;
-  if (downAfterS !== null && !(Number.isInteger(downAfterS) && downAfterS >= 0 && downAfterS <= 86400)) errors.push('Down delay must be between 0 and 86400 seconds');
   const row = {
     name, type: runner.type, group_id: input.groupId === undefined ? existing?.groupId ?? null : input.groupId, description: input.description === undefined ? existing?.description ?? null : input.description,
     config: JSON.stringify(encryptConfig(runner, v.config)), interval_s: intervalS, timeout_s: timeoutS,
     retries: num(input.retries ?? existing?.retries, d.retries, 0, 20, 'Retries', errors), retry_interval_s: num(input.retryIntervalS ?? existing?.retryIntervalS, d.retryIntervalS, 5, 3600, 'Retry interval', errors),
     up_threshold: num(input.upThreshold ?? existing?.upThreshold, d.upThreshold, 1, 20, 'Up threshold', errors), down_threshold: num(input.downThreshold ?? existing?.downThreshold, d.downThreshold, 1, 20, 'Down threshold', errors),
     flap_window: num(input.flapWindow ?? existing?.flapWindow, d.flapWindow, 4, 60, 'Flap window', errors), flap_threshold: num(input.flapThreshold ?? existing?.flapThreshold, d.flapThreshold, 0, 60, 'Flap threshold', errors),
-    down_after_s: downAfterS,
     active: (input.active ?? existing?.active ?? true) ? 1 : 0, public_badge: (input.publicBadge ?? existing?.publicBadge ?? false) ? 1 : 0,
   };
   let locations = input.locations === undefined ? existing?.locations ?? null : input.locations;
@@ -171,7 +169,7 @@ export async function listMonitors(ctx: Ctx, ids: number[] | null) {
   const { db } = ctx;
   if (ids && !ids.length) return [];
   let q = db.selectFrom('monitors as m').leftJoin('monitor_state as s', 's.monitor_id', 'm.id')
-    .select(['m.id', 'm.name', 'm.type', 'm.group_id', 'm.active', 'm.interval_s', 'm.description', 'm.public_badge', 'm.locations', 'm.push_token', 's.status', 's.overlay', 's.status_since', 's.last_check_at', 's.last_latency_ms', 's.last_error_kind', 's.last_message', 's.flapping', 's.recent', 's.cert_expires_at', 's.anomaly'])
+    .select(['m.id', 'm.name', 'm.type', 'm.group_id', 'm.active', 'm.interval_s', 'm.description', 'm.public_badge', 'm.locations', 'm.push_token', 's.status', 's.overlay', 's.status_since', 's.last_check_at', 's.last_latency_ms', 's.last_error_kind', 's.last_message', 's.flapping', 's.recent', 's.cert_expires_at', 's.anomaly', 's.info'])
     .orderBy('m.name');
   if (ids) q = q.where('m.id', 'in', ids);
   const rows = await q.execute();
@@ -186,7 +184,7 @@ export async function listMonitors(ctx: Ctx, ids: number[] | null) {
     status: r.status ?? 'unknown', overlay: r.overlay ?? 'none', statusSince: r.status_since, lastCheckAt: r.last_check_at, latencyMs: r.last_latency_ms,
     errorKind: r.last_error_kind, message: r.last_message, flapping: !!r.flapping, recent: parseJson<unknown[]>(r.recent, []),
     certExpiresAt: r.cert_expires_at, anomaly: !!parseJson<{ flagged?: boolean }>(r.anomaly, {}).flagged, publicBadge: !!r.public_badge,
-    locations: parseJson(r.locations, null), pushToken: r.push_token,
+    locations: parseJson(r.locations, null), pushToken: r.push_token, info: parseJson<ServerInfo | null>(r.info, null),
     tags: tags.filter((t) => t.monitor_id === r.id).map((t) => ({ id: t.id, name: t.name, color: t.color, value: t.value })),
     dependsOn: deps.filter((d) => d.monitor_id === r.id).map((d) => d.depends_on_id),
     uptime: uptime.get(r.id) ?? { h24: null, d7: null, d30: null, d90: null, d365: null },
@@ -208,7 +206,7 @@ export async function monitorDetail(ctx: Ctx, id: number) {
   return {
     ...list[0],
     config: maskSecrets(runner, m.config), timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold, downThreshold: m.downThreshold,
-    flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, downAfterS: m.downAfterS, quorum: m.quorum,
+    flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, quorum: m.quorum,
     notifications: notifications.map((n) => ({ channelId: n.channel_id, policyId: n.policy_id, events: n.events.split(',') })),
     locationStates: locStates.map((l) => ({ locationId: l.location_id, name: l.location_id === 4294967295 ? 'Server' : probes.find((p) => p.id === l.location_id)?.name ?? `Probe ${l.location_id}`, ok: !!l.ok, ts: l.ts, latencyMs: l.latency_ms, errorKind: l.error_kind, message: l.message })),
     cert: parseJson(st?.cert_info, null), anomalyState: parseJson(st?.anomaly, null),

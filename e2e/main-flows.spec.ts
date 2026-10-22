@@ -1,4 +1,15 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+
+/** Logs the API client in and returns the CSRF header plus the first monitor on the demo status page. */
+async function apiSetup(request: APIRequestContext) {
+  const auth = await request.post('/api/auth/login', { data: { username: 'admin', password: 'e2e-password-1' } });
+  const headers = { 'x-csrf-token': (await auth.json()).csrf };
+  const pages = await (await request.get('/api/status-pages')).json();
+  const demo = pages.find((p: { slug: string }) => p.slug === 'demo');
+  const full = await (await request.get(`/api/status-pages/${demo.id}`)).json();
+  const monitorId = [...full.sections.flatMap((s: { components: unknown[] }) => s.components), ...full.components][0].monitorId;
+  return { headers, demo, full, monitorId };
+}
 
 async function login(page: Page) {
   await page.goto('/login');
@@ -11,7 +22,7 @@ async function login(page: Page) {
 test('logs in and shows the demo monitors live', async ({ page }) => {
   await login(page);
   await expect(page.getByText('Core router').first()).toBeVisible();
-  await expect(page.getByText('9 monitors')).toBeVisible();
+  await expect(page.getByText('10 monitors')).toBeVisible();
 });
 
 test('rejects a wrong password', async ({ page }) => {
@@ -193,16 +204,18 @@ test('fills the status page slug from the title until it is edited by hand', asy
   await expect(slug).toHaveValue('oeffentliche-dienste'); // an emptied slug follows the title again
 });
 
-test('hides an incident from the dashboard and tunes the past-incident settings', async ({ page }) => {
+test('shows or hides an incident with one switch and tunes the past-incident settings', async ({ page, request }) => {
+  const { headers, monitorId } = await apiSetup(request);
+  const title = `visibility-test ${Date.now()}`;
+  await request.post('/api/incidents', { headers, data: { title, severity: 'minor', monitorIds: [monitorId], public: true } });
   await login(page);
   await page.goto('/incidents');
-  const rows = page.locator('tbody tr');
-  await expect(rows.first()).toBeVisible();
-  const first = rows.first();
-  await first.getByRole('button', { name: 'Hide from status pages' }).click();
-  await expect(first.getByText('Hidden')).toBeVisible();
-  await first.getByRole('button', { name: 'Show on status pages' }).click();
-  await expect(first.getByText('Hidden')).toBeHidden();
+  const row = page.locator('tbody tr').filter({ hasText: title });
+  await expect(row.getByText('On status page')).toBeVisible();
+  await row.getByRole('button', { name: 'Hide from status pages' }).click();
+  await expect(row.getByText('On status page')).toBeHidden();
+  await row.getByRole('button', { name: 'Show on status pages' }).click();
+  await expect(row.getByText('On status page')).toBeVisible();
 
   await page.goto('/status-pages');
   await page.getByRole('button', { name: 'Edit: Demo Status' }).click();
@@ -214,12 +227,7 @@ test('hides an incident from the dashboard and tunes the past-incident settings'
 });
 
 test('pages the past incidents on the public status page', async ({ page, request }) => {
-  const auth = await request.post('/api/auth/login', { data: { username: 'admin', password: 'e2e-password-1' } });
-  const headers = { 'x-csrf-token': (await auth.json()).csrf };
-  const pages = await (await request.get('/api/status-pages')).json();
-  const demo = pages.find((p: { slug: string }) => p.slug === 'demo');
-  const full = await (await request.get(`/api/status-pages/${demo.id}`)).json();
-  const monitorId = [...full.sections.flatMap((s: { components: unknown[] }) => s.components), ...full.components][0].monitorId;
+  const { headers, monitorId } = await apiSetup(request);
   for (let n = 1; n <= 7; n++) {
     const inc = await (await request.post('/api/incidents', { headers, data: { title: `pager-test ${n}`, severity: 'minor', monitorIds: [monitorId], public: true } })).json();
     expect((await request.post(`/api/incidents/${inc.id}/resolve`, { headers })).ok()).toBe(true);
@@ -231,4 +239,155 @@ test('pages the past incidents on the public status page', async ({ page, reques
   await expect(cards).toHaveCount(5);
   await page.getByRole('button', { name: 'Next page' }).click();
   await expect(cards).toHaveCount(2);
+});
+
+test('keeps new notes internal until they are shown, and lets you edit them afterwards', async ({ page, request }) => {
+  const { headers, monitorId } = await apiSetup(request);
+  const title = `notes-test ${Date.now()}`;
+  const inc = await (await request.post('/api/incidents', { headers, data: { title, severity: 'minor', monitorIds: [monitorId], public: true } })).json();
+  await login(page);
+  await page.goto(`/incidents/${inc.id}`);
+  await page.getByLabel('Add a note').fill('We are looking into the cache layer');
+  await page.getByRole('button', { name: 'Save note' }).click();
+  const entry = page.locator('li').filter({ hasText: 'We are looking into the cache layer' });
+  await expect(entry.getByText('Internal')).toBeVisible();
+  await page.goto('/status/demo');
+  await expect(page.getByText(title)).toBeVisible();
+  await expect(page.getByText('We are looking into the cache layer')).toHaveCount(0);
+
+  await page.goto(`/incidents/${inc.id}`);
+  await entry.getByRole('button', { name: 'Edit' }).click();
+  await page.getByRole('textbox', { name: 'Edit' }).fill('Cache layer restarted, watching it');
+  await page.locator('ol').getByRole('switch', { name: /^Show on the status page/ }).click();
+  await page.locator('ol').getByRole('button', { name: 'Save', exact: true }).click();
+  const edited = page.locator('li').filter({ hasText: 'Cache layer restarted, watching it' });
+  await expect(edited.getByText('On status page')).toBeVisible();
+  await expect(edited.getByText('edited')).toBeVisible();
+  await page.goto('/status/demo');
+  await expect(page.getByText('Cache layer restarted, watching it')).toBeVisible();
+});
+
+test('detected incidents stay internal unless the setting says otherwise', async ({ page, request }) => {
+  const { headers } = await apiSetup(request);
+  expect((await (await request.get('/api/settings/incidents')).json()).autoPublish).toBe(false);
+  await login(page);
+  await page.goto('/settings');
+  await page.getByRole('tab', { name: 'Incidents' }).click();
+  const sw = page.getByRole('switch', { name: 'Show detected incidents on status pages' });
+  await expect(sw).toHaveAttribute('aria-checked', 'false');
+  await sw.click();
+  await expect.poll(async () => (await (await request.get('/api/settings/incidents')).json()).autoPublish).toBe(true);
+  await request.put('/api/settings/incidents', { headers, data: { autoPublish: false } });
+});
+
+test('the status page language can be fixed or left to the visitor', async ({ browser, request }) => {
+  const { headers, demo, full } = await apiSetup(request);
+  const ctx = await browser.newContext({ locale: 'en-US' });
+  const page = await ctx.newPage();
+  await page.goto('/status/demo');
+  await expect(page.getByRole('heading', { name: 'Past incidents' })).toBeVisible();
+  await page.getByRole('group', { name: 'Language' }).getByRole('button', { name: 'DE' }).click();
+  await expect(page.getByRole('heading', { name: 'Vergangene Störungen' })).toBeVisible();
+  await page.goto('/status/demo?lang=en');
+  await expect(page.getByRole('heading', { name: 'Past incidents' })).toBeVisible();
+
+  const save = (language: string | null) => request.put(`/api/status-pages/${demo.id}`, { headers, data: { ...full, language } });
+  expect((await save('de')).ok()).toBe(true);
+  try {
+    await page.goto('/status/demo');
+    await expect(page.getByRole('heading', { name: 'Vergangene Störungen' })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Sprache' })).toHaveCount(0); // a fixed language needs no switch
+    expect(await (await request.get('/api/public/status/demo/rss')).text()).toMatch(/\[(Laufend|Behoben)\]/);
+  } finally {
+    await save(null);
+    await ctx.close();
+  }
+});
+
+test('shows the players of a game server on the dashboard and the status page', async ({ page, request, browser }) => {
+  await apiSetup(request);
+  await expect.poll(async () => ((await (await request.get('/api/monitors')).json()) as { name: string; info: unknown }[]).find((m) => m.name === 'Survival server')?.info != null, { timeout: 60_000 }).toBe(true);
+  await login(page);
+  await expect(page.locator('.card').filter({ hasText: 'Survival server' }).first().getByText(/\d+\/50|\d+ of 50 players/)).toBeVisible();
+  const ctx = await browser.newContext();
+  const pub = await ctx.newPage();
+  await pub.goto('/status/demo');
+  await expect(pub.getByText(/\d+ of 50 players online/)).toBeVisible();
+  await expect(pub.getByText('1.21.1')).toBeVisible();
+  await ctx.close();
+});
+
+test('the wall display keeps its settings in the address and rotates through the tiles', async ({ page }) => {
+  await login(page);
+  await page.goto('/kiosk?size=s&rotate=0&theme=light&view=problems');
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  await page.keyboard.press('s');
+  const dialog = page.getByRole('dialog', { name: 'Wall display settings' });
+  await expect(dialog.getByLabel('Tile size')).toHaveValue('s');
+  await expect(dialog.getByLabel('Show', { exact: true })).toHaveValue('problems');
+  await dialog.getByLabel('Show', { exact: true }).selectOption('all');
+  await dialog.getByLabel('Switch pages').selectOption('0');
+  await dialog.getByLabel('Tile size').selectOption('l');
+  await expect(page).toHaveURL(/size=l/);
+  await expect(page).not.toHaveURL(/view=/);
+  await dialog.getByText('Close', { exact: true }).click();
+  await expect(page.getByText(/^Page 1 of \d+$/)).toBeVisible(); // large tiles do not fit on one page
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByText(/^Page 2 of \d+$/)).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(/\/dashboard/);
+});
+
+test('the wall display shows only the picked monitors, grouped with a heading per group', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1200 }); // tall enough for every group on one page
+  await login(page);
+  await page.goto('/kiosk?layout=grouped&rotate=0&size=s');
+  for (const g of ['Web', 'Web / APIs', 'Infrastructure', 'Data']) await expect(page.getByRole('heading', { level: 2, name: g, exact: true })).toBeVisible(); // a subgroup carries its path
+  await expect(page.getByText(/^\d+ of \d+ up$/).first()).toBeVisible();
+
+  await page.keyboard.press('s');
+  const dialog = page.getByRole('dialog', { name: 'Wall display settings' });
+  await dialog.getByRole('checkbox', { name: /Core router/ }).check();
+  await dialog.getByRole('checkbox', { name: /Marketing site/ }).check();
+  await expect(page).toHaveURL(/monitors=\d+%2C\d+/);
+  await dialog.getByText('Close', { exact: true }).click();
+  await expect(page.getByRole('heading', { level: 2, name: 'Infrastructure', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 2, name: 'Web', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 2, name: 'Data', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Public API')).toHaveCount(0);
+
+  await page.reload(); // the address alone restores the whole display
+  await expect(page.getByRole('heading', { level: 2, name: 'Web', exact: true })).toBeVisible();
+  await expect(page.getByText('Public API')).toHaveCount(0);
+});
+
+test('the wall display zoom scales the whole page, can be changed by key and is undone on exit', async ({ page }) => {
+  await login(page);
+  const fontSize = () => page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
+  await page.goto('/kiosk?zoom=150');
+  await expect.poll(fontSize).toBe('24px');
+  await page.keyboard.press('-');
+  await expect.poll(fontSize).toBe('22.4px');
+  await expect(page).toHaveURL(/zoom=140/);
+  await page.keyboard.press('0');
+  await expect.poll(fontSize).toBe('16px');
+  await page.keyboard.press('+');
+  await expect.poll(fontSize).toBe('17.6px');
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL(/\/dashboard/);
+  await expect.poll(fontSize).toBe('16px');
+  await page.goto('/kiosk?zoom=999'); // out of range: ignored
+  await expect.poll(fontSize).toBe('16px');
+});
+
+test('sets the language of notifications and emails on the notifications page', async ({ page, request }) => {
+  const { headers } = await apiSetup(request);
+  await login(page);
+  await page.goto('/notifications');
+  const select = page.getByLabel('Language of notifications and emails');
+  await select.selectOption('de');
+  await expect.poll(async () => (await (await request.get('/api/settings/notifications')).json()).language).toBe('de');
+  await page.reload();
+  await expect(select).toHaveValue('de');
+  await request.put('/api/settings/notifications', { headers, data: { language: 'en' } });
 });

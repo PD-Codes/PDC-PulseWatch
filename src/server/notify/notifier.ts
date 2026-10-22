@@ -6,6 +6,7 @@ import { decryptJson, encryptJson } from '../crypto';
 import { bool, parseJson } from '../db';
 import type { Monitor } from '../monitors/model';
 import { channelTypes, render, type Message } from './channels';
+import { fill, notifyLang, TEXTS, type Lang } from './texts';
 
 export type NotifyEvent = 'down' | 'up' | 'flap' | 'cert' | 'test';
 
@@ -59,16 +60,18 @@ export class Notifier {
   }
 
   /** Default human readable message; a channel template may override subject/body. */
-  buildMessage(i: NotifyInput, tpl?: { subject: string; body: string } | null): Message {
+  buildMessage(i: NotifyInput, tpl?: { subject: string; body: string } | null, lang: Lang = 'en'): Message {
     const v = this.vars(i);
     const name = i.monitor.name;
+    const T = TEXTS[lang];
+    const tag = `[${T.tag[i.event] ?? i.event.toUpperCase()}] ${name}`;
     let subject: string, text: string;
     switch (i.event) {
-      case 'down': subject = `[DOWN] ${name}`; text = `${name} is down.${v.target ? `\nTarget: ${v.target}` : ''}\nReason: ${v.message || 'unknown'}${v.errorKind ? ` (${v.errorKind})` : ''}\n${v.url}`; break;
-      case 'up': subject = `[UP] ${name}`; text = `${name} is back up.${v.latency ? `\nResponse time: ${v.latency}` : ''}\n${v.url}`; break;
-      case 'flap': subject = `[FLAPPING] ${name}`; text = `${name} keeps changing state. Alerts are muted until it is stable again.\n${v.url}`; break;
-      case 'cert': subject = `[CERTIFICATE] ${name}`; text = `${i.result?.cert ? certNotice(i.result.cert, i.monitor.config) : v.message}\n${v.url}`; break;
-      default: subject = `[TEST] ${name}`; text = `This is a test notification from ${config.brand.name}.\n${v.url}`;
+      case 'down': subject = tag; text = `${fill(T.down, { name })}${v.target ? `\n${fill(T.target, { v: v.target })}` : ''}\n${fill(T.reason, { v: v.message || T.unknown })}${v.errorKind ? ` (${v.errorKind})` : ''}\n${v.url}`; break;
+      case 'up': subject = tag; text = `${fill(T.up, { name })}${v.latency ? `\n${fill(T.latency, { v: v.latency })}` : ''}\n${v.url}`; break;
+      case 'flap': subject = tag; text = `${fill(T.flap, { name })}\n${v.url}`; break;
+      case 'cert': subject = tag; text = `${i.result?.cert ? certNotice(i.result.cert, i.monitor.config, lang) : v.message}\n${v.url}`; break;
+      default: subject = tag; text = `${fill(T.test, { brand: config.brand.name })}\n${v.url}`;
     }
     if (tpl) { subject = render(tpl.subject, { ...v, event: i.event }); text = render(tpl.body, { ...v, event: i.event }); }
     const html = `<p><strong>${escapeHtml(subject)}</strong></p><p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>`;
@@ -95,7 +98,7 @@ export class Notifier {
     const ch = await db.selectFrom('notification_channels').selectAll().where('id', '=', channelId).executeTakeFirst();
     if (!ch || (!bool(ch.active) && !opts.force)) return;
     const tpl = ch.template_id ? await db.selectFrom('notification_templates').select(['subject', 'body']).where('id', '=', ch.template_id).executeTakeFirst() : null;
-    const msg = this.buildMessage(i, tpl);
+    const msg = this.buildMessage(i, tpl, (await notifyLang(this.ctx)).lang);
     let due = new Date();
     let status: 'pending' | 'skipped' = 'pending';
     let note: string | null = null;
@@ -138,7 +141,8 @@ export class Notifier {
       if (!step || !mrow) { await db.updateTable('escalation_runs').set({ active: 0 }).where('id', '=', run.id).execute(); continue; }
       const { parseMonitor } = await import('../monitors/model');
       const st = await db.selectFrom('monitor_state').select(['last_message', 'last_error_kind']).where('monitor_id', '=', run.monitor_id).executeTakeFirst();
-      const input: NotifyInput = { event: 'down', monitor: parseMonitor(mrow), incidentId: run.incident_id, result: { ok: false, message: `Escalation step ${run.next_step + 1}: ${st?.last_message ?? 'monitor is still down'}`, errorKind: (st?.last_error_kind ?? undefined) as any } };
+      const lang = (await notifyLang(this.ctx)).lang;
+      const input: NotifyInput = { event: 'down', monitor: parseMonitor(mrow), incidentId: run.incident_id, result: { ok: false, message: fill(TEXTS[lang].escalation, { n: run.next_step + 1, msg: st?.last_message ?? TEXTS[lang].stillDown }), errorKind: (st?.last_error_kind ?? undefined) as any } };
       for (const cid of step.channelIds) await this.queue(cid, input);
       const next = policy.steps[run.next_step + 1];
       if (next) await db.updateTable('escalation_runs').set({ next_step: run.next_step + 1, next_at: new Date(Date.now() + next.delayMin * 60_000) }).where('id', '=', run.id).execute();
@@ -187,7 +191,7 @@ export class Notifier {
   /** Test button: sends immediately and records the attempt in the delivery log. */
   async test(channelId: number, monitor: Monitor): Promise<{ ok: boolean; error?: string }> {
     const input: NotifyInput = { event: 'test', monitor };
-    const msg = this.buildMessage(input);
+    const msg = this.buildMessage(input, null, (await notifyLang(this.ctx)).lang);
     let error: string | undefined;
     try { await this.send(channelId, msg); } catch (e) { error = (e as Error).message; }
     await this.ctx.db.insertInto('notification_deliveries').values({ channel_id: channelId, monitor_id: null, event: 'test', status: error ? 'failed' : 'sent', attempts: 1, last_error: error?.slice(0, 900) ?? null, subject: msg.subject.slice(0, 255), payload: JSON.stringify(msg) }).execute();

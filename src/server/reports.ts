@@ -5,12 +5,13 @@ import { config } from './config';
 import type { Ctx } from './context';
 import { bool, parseJson } from './db';
 import { mailConfigured, sendSystemMail } from './mail';
+import { fill, groupByLang, notifyLang, TEXTS, type Lang } from './notify/texts';
 import { describeTarget } from '../core';
 import { parseMonitor } from './monitors/model';
 
 export type Scope = { type: 'all' | 'group' | 'monitor' | 'tag'; id?: number | null };
 export interface SlaRow { monitorId: number; name: string; group: string | null; uptime: number | null; downtimeMin: number; incidents: number; mttrMin: number | null; avgMs: number | null; p95Ms: number | null; checks: number }
-export interface SlaReport { generatedAt: string; from: string; to: string; days: number; scope: string; rows: SlaRow[]; overall: number | null }
+export interface SlaReport { generatedAt: string; from: string; to: string; days: number; scope: string; scopeType: Scope['type']; scopeId: number | null; rows: SlaRow[]; overall: number | null }
 
 const DAY = 86_400_000;
 
@@ -63,7 +64,7 @@ export async function buildSla(ctx: Ctx, scope: Scope, days: number, limit: numb
     }
   }
   const scopeName = scope.type === 'all' ? 'All monitors' : `${scope.type} #${scope.id}`;
-  return { generatedAt: to.toISOString(), from: from.toISOString(), to: to.toISOString(), days, scope: scopeName, rows, overall: up + down ? Math.round((up / (up + down)) * 10000) / 100 : null };
+  return { generatedAt: to.toISOString(), from: from.toISOString(), to: to.toISOString(), days, scope: scopeName, scopeType: scope.type, scopeId: scope.id ?? null, rows, overall: up + down ? Math.round((up / (up + down)) * 10000) / 100 : null };
 }
 
 const csvCell = (v: unknown) => {
@@ -72,20 +73,25 @@ const csvCell = (v: unknown) => {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-export function slaCsv(r: SlaReport): string {
-  const head = ['Monitor', 'Group', 'Uptime %', 'Downtime (min)', 'Incidents', 'MTTR (min)', 'Avg latency (ms)', 'p95 latency (ms)', 'Checks'];
-  return [head, ...r.rows.map((x) => [x.name, x.group, x.uptime, x.downtimeMin, x.incidents, x.mttrMin, x.avgMs, x.p95Ms, x.checks])].map((row) => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
+/** shortcut: a byte order mark is added for German only, so Excel reads the umlauts of the headings; English stays byte-identical. */
+export function slaCsv(r: SlaReport, lang: Lang = 'en'): string {
+  const head = TEXTS[lang].csvHead;
+  return (lang === 'de' ? '\uFEFF' : '') + [head, ...r.rows.map((x) => [x.name, x.group, x.uptime, x.downtimeMin, x.incidents, x.mttrMin, x.avgMs, x.p95Ms, x.checks])].map((row) => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
 
-export function slaPdf(r: SlaReport): Promise<Buffer> {
+/** The scope in words, in the language of the document. */
+const scopeLabel = (r: SlaReport, T: (typeof TEXTS)[Lang]) => (r.scopeType === 'all' ? T.scope.all : `${T.scope[r.scopeType]} #${r.scopeId}`);
+
+export function slaPdf(r: SlaReport, lang: Lang = 'en'): Promise<Buffer> {
+  const T = TEXTS[lang];
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 40, layout: 'landscape', info: { Title: `${config.brand.name} SLA report`, Author: config.brand.vendor ?? config.brand.name } });
+    const doc = new PDFDocument({ size: 'A4', margin: 40, layout: 'landscape', info: { Title: fill(T.pdfTitle, { brand: config.brand.name }), Author: config.brand.vendor ?? config.brand.name } });
     const chunks: Buffer[] = [];
     doc.on('data', (c: Buffer) => chunks.push(c)).on('end', () => resolve(Buffer.concat(chunks))).on('error', reject);
-    doc.fontSize(20).text(`${config.brand.name} SLA report`);
-    doc.moveDown(0.3).fontSize(10).fillColor('#555').text(`${r.scope} | last ${r.days} days | ${r.from.slice(0, 10)} to ${r.to.slice(0, 10)} (UTC) | overall uptime ${r.overall ?? 'n/a'}%`).fillColor('#000');
+    doc.fontSize(20).text(fill(T.pdfTitle, { brand: config.brand.name }));
+    doc.moveDown(0.3).fontSize(10).fillColor('#555').text(fill(T.pdfSub, { scope: scopeLabel(r, T), days: r.days, from: r.from.slice(0, 10), to: r.to.slice(0, 10), v: r.overall ?? T.na })).fillColor('#000');
     doc.moveDown();
-    const cols = [{ t: 'Monitor', w: 230 }, { t: 'Group', w: 110 }, { t: 'Uptime', w: 55 }, { t: 'Downtime', w: 65 }, { t: 'Incid.', w: 45 }, { t: 'MTTR', w: 50 }, { t: 'Avg ms', w: 55 }, { t: 'p95 ms', w: 55 }];
+    const cols = [230, 110, 55, 65, 45, 50, 55, 55].map((w, i) => ({ t: T.pdfCols[i], w }));
     const row = (vals: (string | number | null)[], bold = false) => {
       if (doc.y > doc.page.height - 60) doc.addPage();
       const y = doc.y; let x = 40;
@@ -96,7 +102,7 @@ export function slaPdf(r: SlaReport): Promise<Buffer> {
     row(cols.map((c) => c.t), true);
     doc.moveTo(40, doc.y - 3).lineTo(40 + cols.reduce((a, c) => a + c.w, 0), doc.y - 3).strokeColor('#999').stroke();
     for (const x of r.rows) row([x.name, x.group, x.uptime == null ? null : `${x.uptime}%`, `${x.downtimeMin} min`, x.incidents, x.mttrMin == null ? null : `${x.mttrMin} min`, x.avgMs, x.p95Ms]);
-    doc.moveDown().font('Helvetica').fontSize(8).fillColor('#777').text('Downtime is estimated from the share of failed checks. Maintenance periods are excluded from uptime.', 40);
+    doc.moveDown().font('Helvetica').fontSize(8).fillColor('#777').text(T.pdfNote, 40);
     doc.end();
   });
 }
@@ -116,8 +122,10 @@ async function claim(ctx: Ctx, key: string, value: string): Promise<boolean> {
 /** A digest stays readable when a whole network goes down. */
 const LIST_MAX = 50;
 
-export async function buildDigest(ctx: Ctx): Promise<{ subject: string; text: string; html: string }> {
+export async function buildDigest(ctx: Ctx, lang?: Lang): Promise<{ subject: string; text: string; html: string }> {
   const { db } = ctx;
+  const T = TEXTS[lang ?? (await notifyLang(ctx)).lang];
+  const brand = { brand: config.brand.name };
   const since = new Date(Date.now() - DAY);
   const [down, opened, resolved, flapping, certs] = await Promise.all([
     db.selectFrom('monitor_state as s').innerJoin('monitors as m', 'm.id', 's.monitor_id').select(['m.id', 'm.name', 's.status_since', 's.last_message']).where('m.active', '=', 1).where('s.status', '=', 'down').execute(),
@@ -133,32 +141,36 @@ export async function buildDigest(ctx: Ctx): Promise<{ subject: string; text: st
     const info = parseJson<{ subject?: string; issuer?: string } | null>(c.cert_info, null);
     const when = c.cert_expires_at!;
     const left = Math.floor((when.getTime() - Date.now()) / DAY);
-    return `${c.name}${targets.get(c.id) ? ` [${targets.get(c.id)}]` : ''}: ${left < 0 ? `expired on ${when.toISOString().slice(0, 10)}` : `expires on ${when.toISOString().slice(0, 10)} (in ${left} day(s))`}${info?.subject ? `, subject ${info.subject}` : ''}${info?.issuer ? `, issuer ${info.issuer}` : ''}`;
+    return `${c.name}${targets.get(c.id) ? ` [${targets.get(c.id)}]` : ''}: ${left < 0 ? fill(T.certExpired, { d: when.toISOString().slice(0, 10) }) : fill(T.certExpires, { d: when.toISOString().slice(0, 10), n: left })}${info?.subject ? fill(T.certSubject, { v: info.subject }) : ''}${info?.issuer ? fill(T.certIssuer, { v: info.issuer }) : ''}`;
   };
   const worst = [...sla.rows].filter((r) => r.uptime != null && r.uptime < 100).sort((a, b) => a.uptime! - b.uptime!).slice(0, 5);
   const lines = [
-    `Overall uptime (24h): ${sla.overall ?? 'n/a'}%`,
-    `Monitors down right now: ${down.length}`,
-    ...down.slice(0, LIST_MAX).map((d) => `  - ${d.name}${targets.get(d.id) ? ` [${targets.get(d.id)}]` : ''}: ${d.last_message ?? 'no details'}`),
-    ...(down.length > LIST_MAX ? [`  ... and ${down.length - LIST_MAX} more`] : []),
-    `Incidents opened: ${opened.length}, resolved: ${resolved.length}`,
-    ...(worst.length ? ['Lowest uptime: ' + worst.map((w) => `${w.name} ${w.uptime}%`).join('; ')] : []),
-    ...(flapping.length ? [`Flapping: ${flapping.slice(0, LIST_MAX).map((f) => f.name).join(', ')}${flapping.length > LIST_MAX ? `, ... and ${flapping.length - LIST_MAX} more` : ''}`] : []),
-    ...(certs.length ? ['Certificates expiring within 14 days:', ...certs.slice(0, LIST_MAX).map((c) => `  - ${certLine(c)}`), ...(certs.length > LIST_MAX ? [`  ... and ${certs.length - LIST_MAX} more`] : [])] : []),
+    fill(T.uptime24, { v: sla.overall ?? T.na }),
+    fill(T.downNow, { n: down.length }),
+    ...down.slice(0, LIST_MAX).map((d) => `  - ${d.name}${targets.get(d.id) ? ` [${targets.get(d.id)}]` : ''}: ${d.last_message ?? T.noDetails}`),
+    ...(down.length > LIST_MAX ? [fill(T.more, { n: down.length - LIST_MAX })] : []),
+    fill(T.incidents, { a: opened.length, b: resolved.length }),
+    ...(worst.length ? [fill(T.lowest, { v: worst.map((w) => `${w.name} ${w.uptime}%`).join('; ') })] : []),
+    ...(flapping.length ? [fill(T.flapping, { v: `${flapping.slice(0, LIST_MAX).map((f) => f.name).join(', ')}${flapping.length > LIST_MAX ? fill(T.moreInline, { n: flapping.length - LIST_MAX }) : ''}` })] : []),
+    ...(certs.length ? [T.certsHead, ...certs.slice(0, LIST_MAX).map((c) => `  - ${certLine(c)}`), ...(certs.length > LIST_MAX ? [fill(T.more, { n: certs.length - LIST_MAX })] : [])] : []),
   ];
   const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!);
   return {
-    subject: `${config.brand.name} daily digest: ${down.length ? `${down.length} down` : 'all clear'}`,
-    text: `${config.brand.name} daily digest\n\n${lines.join('\n')}\n\n${config.baseUrl}`,
-    html: `<h2>${esc(config.brand.name)} daily digest</h2><ul>${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><p><a href="${esc(config.baseUrl)}">Open ${esc(config.brand.name)}</a></p>`,
+    subject: fill(T.digestSubject, { ...brand, what: down.length ? fill(T.digestDown, { n: down.length }) : T.digestClear }),
+    text: `${fill(T.digestTitle, brand)}\n\n${lines.join('\n')}\n\n${config.baseUrl}`,
+    html: `<h2>${esc(fill(T.digestTitle, brand))}</h2><ul>${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul><p><a href="${esc(config.baseUrl)}">${esc(fill(T.digestOpen, brand))}</a></p>`,
   };
 }
 
 export async function sendReport(ctx: Ctx, s: { name: string; scope_type: Scope['type']; scope_id: number | null; range_days: number; recipients: string; format: 'pdf' | 'csv' }): Promise<void> {
   const rep = await buildSla(ctx, { type: s.scope_type, id: s.scope_id }, s.range_days);
   const stamp = rep.to.slice(0, 10);
-  const file = s.format === 'pdf' ? { filename: `sla-${stamp}.pdf`, content: await slaPdf(rep), contentType: 'application/pdf' } : { filename: `sla-${stamp}.csv`, content: slaCsv(rep), contentType: 'text/csv' };
-  await sendSystemMail({ to: s.recipients.split(',').map((x) => x.trim()).filter(Boolean), subject: `${config.brand.name} SLA report: ${s.name}`, text: `SLA report "${s.name}" (${rep.scope}, last ${rep.days} days). Overall uptime: ${rep.overall ?? 'n/a'}%.\nSee the attachment for details.`, attachments: [file] });
+  // one mail per language: every recipient gets text and attachment in the language of their own profile
+  for (const [lang, to] of await groupByLang(ctx, s.recipients.split(',').map((x) => x.trim()).filter(Boolean))) {
+    const T = TEXTS[lang];
+    const file = s.format === 'pdf' ? { filename: `sla-${stamp}.pdf`, content: await slaPdf(rep, lang), contentType: 'application/pdf' } : { filename: `sla-${stamp}.csv`, content: slaCsv(rep, lang), contentType: 'text/csv; charset=utf-8' };
+    await sendSystemMail({ to, subject: fill(T.reportSubject, { brand: config.brand.name, name: s.name }), text: fill(T.reportBody, { name: s.name, scope: scopeLabel(rep, T), days: rep.days, v: rep.overall ?? T.na }), attachments: [file] });
+  }
 }
 
 /** Checks once a minute for due report schedules and the daily digest. */
@@ -187,8 +199,7 @@ export class ReportJobs {
       const part = (t: string) => local.find((p) => p.type === t)!.value;
       const day = `${part('year')}-${part('month')}-${part('day')}`;
       if (Number(part('hour')) >= d.hour && (await claim(this.ctx, 'digest_last', day))) {
-        const m = await buildDigest(this.ctx);
-        await sendSystemMail({ to: d.recipients, ...m });
+        for (const [lang, to] of await groupByLang(this.ctx, d.recipients)) await sendSystemMail({ to, ...(await buildDigest(this.ctx, lang)) });
       }
     }
   }

@@ -35,7 +35,7 @@ docker compose up -d --build
 
 Open `http://localhost:3000`. The first visit shows the setup page where you create the administrator account.
 
-Want to look around first? Start with sample data (9 monitors, 90 days of history, a status page at `/status/demo`):
+Want to look around first? Start with sample data (10 monitors, 90 days of history, a status page at `/status/demo`):
 
 ```bash
 PW_DEMO=true PW_DEMO_PASSWORD=demo-demo-1 docker compose up -d --build
@@ -214,25 +214,7 @@ Mark a status page as *home page* (status page list, *Use as home page*) and it 
 
 ## Incidents
 
-An incident moves through *open*, *acknowledged*, *identified*, *being fixed*, *monitoring* and *resolved*; any status can follow any other one, and reopening clears the end time. In the incident dialog you can pick a whole monitor group instead of ticking every monitor. Notes you add are internal. Only status changes, the resolution and the post-mortem appear on the public status page, so write those for customers. Auto-resolve (the monitor recovered) leaves an incident in *monitoring* alone until someone resolves it; if the monitor fails again while monitoring, the incident reopens.
-
-## Restricting sign-in to groups
-
-Each OIDC, SAML and LDAP provider has an allow-list (**Allowed groups**; for LDAP **Allowed group DNs**, one per line). Members of an allowed group, of the admin groups or of the editor groups can sign in. Everyone else gets no account or session and is sent to the first public status page (no password, no sign-in requirement) or sees a notice that they lack permission. An empty list restricts nobody. The switch **Editors and admins only** goes further: only members of the admin or editor groups get in, plain viewers are refused (needs those groups to be set; no effect when the default role is Editor). Refusals are audited as `login.denied`, and a user who loses the group has their sessions ended at the next sign-in attempt.
-
-## Report as down after (restarts and flapping)
-
-A monitor can be told to open an incident and alert only after it has been failing for a while (seconds or minutes), so restarts and short blips are ignored; a recovery inside the window never opens an incident. Set it per monitor (**Report as down after**) or instance-wide under **Settings > Defaults**; an empty monitor field follows the instance rule, and the instance rule applies live. While the window runs the monitor is re-checked at its retry interval.
-
-On a status page, the eye icon of a component hides that component's resolved incidents from the "past incidents" list (and the RSS feed). Open incidents stay visible.
-
-## Status page extras
-
-The **Extras** tab of a status page adds blocks below the components: an uptime summary (24 h, 7, 30, 90 days), a daily heatmap (90, 180 or 365 days), days without an incident and free text blocks. Figures only cover the page's own components and are cached for 60 seconds.
-
-## HTTP(S) JSON monitors
-
-In the monitor form, **Fetch result** calls the URL once with the form's settings (same SSRF rules, masked secrets restored from the saved monitor) and shows the response as a tree. Click a value to fill path, comparison and expected value.
+An incident moves through *open*, *acknowledged*, *identified*, *being fixed*, *monitoring* and *resolved*; any status can follow any other one, and reopening clears the end time. In the incident dialog you can pick a whole monitor group instead of ticking every monitor. **One switch decides what visitors see:** *Show on status pages* on the incident (the eye button in *Incidents* does the same). It is off by default: new incidents stay internal, and so do the incidents PulseWatch opens by itself when a monitor goes down. To publish those right away, turn on *Show detected incidents on status pages* in *Settings > Incidents*. An incident that is shown appears on the status pages and the RSS feed, and subscribers get its status changes by email; one that is not shown appears nowhere and nothing is sent. Each timeline entry has its own visibility: status changes and the resolution are always shown, a plain note is internal unless you tick *Show on the status page* when you add it. Entries written by people can be edited afterwards, text and visibility alike (*Edit* below the entry; edited entries carry an *edited* label, also for visitors). Entries PulseWatch writes itself (detected, assigned, acknowledged) cannot be edited, and the public page only says that a post-mortem was written, never what it says. Auto-resolve (the monitor recovered) leaves an incident in *monitoring* alone until someone resolves it; if the monitor fails again while monitoring, the incident reopens.
 
 ## Status page history and groups
 
@@ -242,7 +224,11 @@ Each status page has its own history length (14, 30, 60, 90, 120, 150 or 180 day
 
 The *Address (slug)* of a new status page follows the title as you type (`Public Services` becomes `public-services`, umlauts become `ae`, `oe`, `ue`, `ss`) until you edit it by hand; clearing the field makes it follow the title again.
 
-**Past incidents:** the public page lists resolved incidents of the last 1, 3, 7, 14, 30 (default), 60, 90, 180 or 365 days, or none at all (switch *Show past incidents* off). Ongoing incidents always show. Long lists are paged (5, 10, 20 or 50 per page, default 10); visitors can change the page size themselves. The RSS feed follows the same age limit. A single incident can be taken off every status page and feed without deleting it: use the eye button in *Incidents* or the *Hide from status pages* switch on the incident (hidden ones carry a *Hidden* badge). The settings are part of the configuration export and import.
+**Past incidents:** the public page lists resolved incidents of the last 1, 3, 7, 14, 30 (default), 60, 90, 180 or 365 days, or none at all (switch *Show past incidents* off). Ongoing incidents always show. Long lists are paged (5, 10, 20 or 50 per page, default 10); visitors can change the page size themselves. The RSS feed follows the same age limit. The settings are part of the configuration export and import.
+
+**Language:** each status page has a *Language* setting. *English* or *Deutsch* fixes it for the page, its emails, its confirmation pages and its RSS feed. *Visitor decides* (the default) follows the browser language and shows an EN/DE switch; a link with `?lang=de` or `?lang=en` opens the page in that language.
+
+**Game servers:** Minecraft (Java and Bedrock) and the other game monitors (Steam/Source, GameDig, Pelican, AMP) report players online, version and, where the server tells, message of the day and player names. The dashboard, the monitor page, the kiosk and the status page show them. Per status page, *Game server details* chooses: *Hidden*, *Players online, version and message of the day* (default) or *Also show the names of players online*. A server that is down shows no player data.
 
 ## Certificates and TLS errors
 
@@ -323,13 +309,12 @@ Measured with `test/load/scheduler.ts` on a 2 vCPU / 8 GB virtual machine, Maria
 - **Uptime heatmap calendar** (Insights): one square per day, up to a year.
 - **Uptime badges:** SVG badges (`/badge/<id>/status.svg`, `uptime-30d.svg`, `ping.svg`) for READMEs, opt-in per monitor.
 - **Daily digest:** one summary mail per day (Settings > Daily digest, with preview).
-- **Kiosk mode:** `/kiosk` wall display with large tiles that rotates through pages.
+- **Language of notifications:** alerts (down, up, flapping, certificate, test), the daily digest, the SLA report mail and its PDF/CSV attachment are written in English or German. Choose the instance-wide language on *Notifications* (*Language of notifications and emails*); without a saved choice the language of the first administrator profile that has one is used, otherwise English. People who pick a language in their own profile get emails, report attachments and SLA downloads in that language (*Automatic* follows the instance); a report goes out as one mail per language. `GET /api/reports/sla` accepts `lang=en|de` to override it. German CSV files start with a byte order mark so Excel shows the umlauts. In German the subject tags read `[OFFLINE]`, `[ONLINE]`, `[INSTABIL]`, `[ZERTIFIKAT]` instead of `[DOWN]`, `[UP]`, `[FLAPPING]`, `[CERTIFICATE]`. Templates you wrote yourself are sent as written, and the error text of a check (for example a timeout message) stays English.
+- **Kiosk mode:** `/kiosk` is a wall display. A colored header band states the overall situation (with counts, 24-hour availability, average response time and a clock), active incidents run in a strip below it, and the tiles show group, how long a state has lasted, heartbeat bar, response time and, for game servers, the players. Problems come first, and a new outage jumps to page 1. Press `S` (or the gear) for settings: which monitors to show (groups and tags that follow changes, or single monitors picked by hand, with one-click group chips), *All / Problems only / Everything but only problems while there are any*, the layout (*All tiles together* or *Grouped*, one heading per group with its path, how many of its monitors are up and a colored dot; a group that continues on the next page repeats its heading), tile size, a stepless zoom of 50 to 200 percent for the whole page (also `+`, `-` and `0` for 100 percent), page switch interval, dark or light look, the history bars, incident strip and clock. The settings live in the address (`/kiosk?groups=2&layout=grouped&size=l&zoom=120&rotate=20&theme=light`, `monitors=1,2,3` for hand-picked ones), so a copied link sets up another screen; older `?group=` links keep working. `Space` pauses, `←` `→` change pages, `F` is full screen, `Esc` leaves. The screen is kept awake while it is open and the mouse pointer hides itself.
 - **Command palette and shortcuts:** `Ctrl/Cmd+K` jumps to any monitor or page.
 - **Dead-man's switch:** `PW_DEADMAN_URL` makes PulseWatch ping an external service so you notice when PulseWatch itself is down.
 - **Saved views and flap detection** on the dashboard and per monitor.
 - **Bulk-add preview:** pasted spreadsheet columns are parsed live, duplicates are flagged before anything is created, failed lines stay in the box.
-- **Days without an incident** and a heatmap as optional status page blocks.
-- **JSON suggestions:** *Fetch result* proposes checks for typical status fields (`status`, `healthy`, `ok`, ...).
 - **Open-incident count in the tab title,** so a background tab shows `(2) Dashboard`.
 - **Whole-group import for status pages,** including subgroups.
 

@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Eye, FileText, MessageSquare, PlayCircle, Search, UserCheck } from 'lucide-react';
+import { CheckCircle2, Eye, FileText, Globe, Lock, MessageSquare, Pencil, PlayCircle, Search, UserCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { IncidentStatusBadge, INCIDENT_STATUSES, SeverityBadge } from '../components/ops-shared';
-import { Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Field, Loading, PageHeader, Select, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
+import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Field, Loading, PageHeader, Select, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
 import { ApiError, del, errorMessage, get, patch, post } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { fmtDateTime, fmtDuration, relTime } from '../lib/format';
@@ -11,13 +11,54 @@ import { useT } from '../lib/i18n';
 
 interface Detail {
   id: number; title: string; status: string; severity: string; source: string; startedAt: string; acknowledgedAt: string | null; acknowledgedBy: string | null; resolvedAt: string | null;
-  assignee: { id: number; name: string } | null; public: boolean; hidden: boolean; postmortem: string | null; monitors: { id: number; name: string }[];
-  updates: { id: number; ts: string; kind: string; status: string | null; body: string | null; author: string | null }[];
+  assignee: { id: number; name: string } | null; public: boolean; postmortem: string | null; monitors: { id: number; name: string }[];
+  updates: Update[];
 }
+interface Update { id: number; ts: string; kind: string; status: string | null; body: string | null; author: string | null; public: boolean; editedAt: string | null; editable: boolean }
+/** Entries that can appear on a status page; the rest is the system's record. */
+const PUBLISHABLE = new Set(['note', 'status', 'resolve', 'postmortem']);
 const KIND_ICON: Record<string, React.ReactNode> = {
   note: <MessageSquare className="h-4 w-4" />, ack: <Eye className="h-4 w-4" />, resolve: <CheckCircle2 className="h-4 w-4 text-emerald-600" />, assign: <UserCheck className="h-4 w-4" />,
   postmortem: <FileText className="h-4 w-4" />, auto: <PlayCircle className="h-4 w-4 text-red-600" />, status: <PlayCircle className="h-4 w-4" />,
 };
+
+/** One timeline entry: its text, whether it is on the status page, and (for people's entries) an inline editor for both. */
+function Entry({ u, incidentId, canEdit }: { u: Update; incidentId: number; canEdit: boolean }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(u.body ?? '');
+  const [shown, setShown] = useState(u.public);
+  const save = useMutation({
+    mutationFn: () => patch(`/api/incidents/${incidentId}/updates/${u.id}`, { ...(text.trim() && text.trim() !== (u.body ?? '') ? { body: text } : {}), ...(shown !== u.public ? { public: shown } : {}) }),
+    onSuccess: () => { setEditing(false); void qc.invalidateQueries({ queryKey: ['incidents'] }); },
+    onError: (e) => toast(e instanceof ApiError ? e.message : t('common.failed'), 'error'),
+  });
+  const open = () => { setText(u.body ?? ''); setShown(u.public); setEditing(true); };
+  return (
+    <li className="flex gap-3">
+      <span className="mt-0.5 text-slate-500" aria-hidden>{KIND_ICON[u.kind] ?? KIND_ICON.status}</span>
+      <div className="min-w-0 flex-1">
+        {editing ? (
+          <div className="space-y-2">
+            <Textarea aria-label={t('incidents.entry.edit')} value={text} onChange={(e) => setText(e.target.value)} rows={3} maxLength={10000} className="font-sans" autoFocus />
+            <Toggle checked={shown} onChange={setShown} label={t('incidents.showOnPage')} />
+            <div className="flex gap-2"><Button size="sm" variant="primary" loading={save.isPending} disabled={!text.trim()} onClick={() => save.mutate()}>{t('common.save')}</Button><Button size="sm" onClick={() => setEditing(false)}>{t('common.cancel')}</Button></div>
+          </div>
+        ) : (
+          <div className="whitespace-pre-wrap break-words text-sm">{u.status && u.kind !== 'note' && <span className="mr-2 align-middle"><IncidentStatusBadge status={u.status} /></span>}{u.body}</div>
+        )}
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+          <span>{u.author ?? t('incidents.system')} · <time dateTime={u.ts} title={fmtDateTime(u.ts)}>{relTime(u.ts)}</time></span>
+          {u.editedAt && <span title={fmtDateTime(u.editedAt)}>· {t('incidents.entry.edited')}</span>}
+          {PUBLISHABLE.has(u.kind) && (u.public ? <Badge tone="blue"><Globe className="h-3 w-3" aria-hidden />{t('incidents.onPage')}</Badge> : <Badge tone="gray"><Lock className="h-3 w-3" aria-hidden />{t('incidents.entry.internal')}</Badge>)}
+          {canEdit && u.editable && !editing && <button type="button" className="inline-flex items-center gap-1 underline" onClick={open}><Pencil className="h-3 w-3" aria-hidden />{t('incidents.entry.edit')}</button>}
+        </div>
+      </div>
+    </li>
+  );
+}
 
 export default function IncidentDetail() {
   const t = useT();
@@ -33,7 +74,7 @@ export default function IncidentDetail() {
   const users = useQuery({ queryKey: ['users-directory'], queryFn: () => get<{ id: number; displayName: string }[]>('/api/users/directory'), staleTime: 60_000 });
   const [note, setNote] = useState('');
   const [next, setNext] = useState<string | null>(null); // status chosen for the next update, null = unchanged
-  const [onPage, setOnPage] = useState(true); // a message without a status change: show it on the status page or keep it internal
+  const [onPage, setOnPage] = useState(false); // a message without a status change stays internal unless the author marks it for the status page
   const [pm, setPm] = useState('');
   useEffect(() => { if (q.data) setPm(q.data.postmortem ?? ''); }, [q.data?.postmortem]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -65,12 +106,7 @@ export default function IncidentDetail() {
           <Card>
             <CardHeader title={t('incidents.timeline')} />
             <ol className="space-y-3 p-4">
-              {i.updates.map((u) => (
-                <li key={u.id} className="flex gap-3">
-                  <span className="mt-0.5 text-slate-500" aria-hidden>{KIND_ICON[u.kind] ?? KIND_ICON.status}</span>
-                  <div className="min-w-0 flex-1"><div className="whitespace-pre-wrap break-words text-sm">{u.status && u.kind !== 'note' && <span className="mr-2 align-middle"><IncidentStatusBadge status={u.status} /></span>}{u.body}</div><div className="text-xs text-slate-500">{u.author ?? t('incidents.system')} · <time dateTime={u.ts} title={fmtDateTime(u.ts)}>{relTime(u.ts)}</time></div></div>
-                </li>
-              ))}
+              {i.updates.map((u) => <Entry key={u.id} u={u} incidentId={id} canEdit={editor} />)}
             </ol>
             {editor && (
               <form className="space-y-3 border-t border-slate-200 p-4 dark:border-slate-800" onSubmit={(e) => {
@@ -78,15 +114,15 @@ export default function IncidentDetail() {
                 const status = next ?? i.status;
                 if (!note.trim() && status === i.status) return;
                 run.mutate(async () => {
-                  if (note.trim()) await post(`/api/incidents/${id}/notes`, { body: note, ...(status !== i.status ? { status } : { public: i.public && onPage }) });
+                  if (note.trim()) await post(`/api/incidents/${id}/notes`, { body: note, ...(status !== i.status ? { status } : { public: onPage }) });
                   else await post(`/api/incidents/${id}/status`, { status });
-                  setNote(''); setNext(null);
+                  setNote(''); setNext(null); setOnPage(false);
                 });
               }}>
                 <h3 className="label">{t('incidents.postUpdate')}</h3>
                 <div className="grid gap-3 sm:grid-cols-[14rem_1fr]">
                   <Field label={t('common.status')}>{(fid) => <Select id={fid} value={next ?? i.status} onChange={(e) => setNext(e.target.value)}>{INCIDENT_STATUSES.map((s) => <option key={s} value={s}>{t(`incidents.status.${s}`)}</option>)}</Select>}</Field>
-                  <Field label={t('incidents.addNote')} hint={i.public ? t('incidents.updatePublic') : undefined}>{(fid) => <Textarea id={fid} value={note} onChange={(e) => setNote(e.target.value)} className="font-sans" maxLength={10000} rows={3} />}</Field>
+                  <Field label={t('incidents.addNote')} hint={i.public && (next ?? i.status) !== i.status ? t('incidents.updatePublic') : undefined}>{(fid) => <Textarea id={fid} value={note} onChange={(e) => setNote(e.target.value)} className="font-sans" maxLength={10000} rows={3} />}</Field>
                 </div>
                 {i.public && (next ?? i.status) === i.status && <Toggle checked={onPage} onChange={setOnPage} label={t('incidents.showOnPage')} />}
                 {(next ?? i.status) === 'monitoring' && i.source === 'auto' && <p className="hint">{t('incidents.monitoringHint')}</p>}
@@ -126,8 +162,7 @@ export default function IncidentDetail() {
                 </Select>
                 {editor && !i.assignee && user && <button type="button" className="mt-1 text-xs underline" onClick={() => upd({ assigneeId: user.id })}>{t('incidents.assignMe')}</button>}
               </div>
-              <Toggle disabled={!editor} checked={i.public} onChange={(v) => upd({ public: v })} label={t('incidents.field.public')} />
-              <div><Toggle disabled={!editor} checked={i.hidden} onChange={(v) => upd({ hidden: v })} label={t('incidents.field.hidden')} /><p className="hint">{t('incidents.hiddenHint')}</p></div>
+              <div><Toggle disabled={!editor} checked={i.public} onChange={(v) => upd({ public: v })} label={t('incidents.field.public')} /><p className="hint">{t(i.public ? 'incidents.publicOn' : 'incidents.publicOff')}</p></div>
             </div>
           </Card>
           <Card>

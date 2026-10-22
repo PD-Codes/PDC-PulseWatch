@@ -287,7 +287,7 @@ const minecraft: Runner = {
         const pkt = Buffer.concat([Buffer.from([0x01]), Buffer.alloc(8), magic, Buffer.alloc(8)]);
         const reply = await udpRequest(addr, c.port ?? 19132, pkt, ctx.timeoutMs, 'Bedrock', ctx.signal);
         const info = reply.subarray(35).toString('utf8').split(';');
-        return ok(hrMs(t0), { message: `${info[1] ?? 'Bedrock'} - ${info[4] ?? '?'}/${info[5] ?? '?'} players`, details: { version: info[3], online: Number(info[4]), max: Number(info[5]) } });
+        return ok(hrMs(t0), { message: `${info[1] ?? 'Bedrock'} - ${info[4] ?? '?'}/${info[5] ?? '?'} players`, details: { version: info[3], online: Number(info[4]), max: Number(info[5]), motd: info[1], map: info[7] } });
       }
       const conn = await connect({ host: c.host, port: c.port ?? 25565, signal: ctx.signal, guard: ctx.guard });
       try {
@@ -317,7 +317,7 @@ const minecraft: Runner = {
         const st = JSON.parse(json);
         const d = st.description;
         const motd = (typeof d === 'string' ? d : d?.text ?? (d?.extra ?? []).map((x: any) => x.text ?? '').join('')).replace(/§./g, '').trim();
-        return ok(hrMs(t0), { message: `${motd || 'Minecraft'} - ${st.players?.online ?? '?'}/${st.players?.max ?? '?'} players (${st.version?.name ?? '?'})`, details: { online: st.players?.online, max: st.players?.max, version: st.version?.name } });
+        return ok(hrMs(t0), { message: `${motd || 'Minecraft'} - ${st.players?.online ?? '?'}/${st.players?.max ?? '?'} players (${st.version?.name ?? '?'})`, details: { online: st.players?.online, max: st.players?.max, version: st.version?.name, motd, names: (st.players?.sample ?? []).map((p: any) => p?.name) } }); // the sample is what the server chooses to reveal, often not everyone
       } finally { conn.close(); }
     } catch (e) { return wrap(e); }
   },

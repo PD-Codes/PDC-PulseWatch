@@ -5,7 +5,7 @@ import type { Monitor } from './monitors/model';
 export interface IncidentRef { id: number; started: boolean }
 
 export class IncidentService {
-  constructor(private ctx: Pick<Ctx, 'db' | 'bus'>) {}
+  constructor(private ctx: Pick<Ctx, 'db' | 'bus' | 'settings'>) {}
 
   /** Open an automatic incident for a monitor that went down (idempotent). */
   async openFor(m: Monitor, r: CheckResult): Promise<IncidentRef> {
@@ -23,7 +23,9 @@ export class IncidentService {
       return { id: existing.id, started: false };
     }
     const now = new Date();
-    const res = await db.insertInto('incidents').values({ title: `${m.name} is down`, severity: 'major', source: 'auto', monitor_id: m.id, started_at: now }).executeTakeFirstOrThrow();
+    // nothing reaches a status page (or its subscribers) unless an admin chose to publish detected incidents
+    const pub = (await this.ctx.settings.get('incidents.autoPublish', false)) ? 1 : 0;
+    const res = await db.insertInto('incidents').values({ title: `${m.name} is down`, severity: 'major', source: 'auto', monitor_id: m.id, started_at: now, public: pub }).executeTakeFirstOrThrow();
     const id = Number(res.insertId);
     await db.insertInto('incident_monitors').values({ incident_id: id, monitor_id: m.id }).execute();
     await db.insertInto('incident_updates').values({ incident_id: id, kind: 'auto', status: 'open', body: r.message ?? 'Monitor went down', ts: now }).execute();
@@ -43,7 +45,7 @@ export class IncidentService {
       if (!Number(moved.numUpdatedRows)) continue;
       done.push(i.id);
       const mins = Math.max(1, Math.round((now.getTime() - i.started_at.getTime()) / 60000));
-      await db.insertInto('incident_updates').values({ incident_id: i.id, kind: 'resolve', status: 'resolved', body: `Monitor recovered after ${mins} min`, ts: now }).execute();
+      await db.insertInto('incident_updates').values({ incident_id: i.id, kind: 'resolve', status: 'resolved', body: `Monitor recovered after ${mins} min`, ts: now, public: 1 }).execute();
       this.ctx.bus.publish({ type: 'incident', incidentId: i.id, monitorId: m.id, status: 'resolved' });
     }
     return done;

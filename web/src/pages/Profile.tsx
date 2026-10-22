@@ -62,7 +62,7 @@ function PrefsCard() {
     <Card>
       <CardHeader title={t('profile.prefs')} />
       <div className="grid gap-4 p-4 sm:grid-cols-2">
-        <Field label={t('profile.language')}>{(id) => (
+        <Field label={t('profile.language')} hint={t('profile.languageHint')}>{(id) => (
           <Select id={id} value={user.locale ?? 'auto'} onChange={(e) => { const l = e.target.value === 'auto' ? null : (e.target.value as 'en' | 'de'); setLocale(l); persist.mutate({ locale: l }); }}>
             <option value="auto">{t('profile.langAuto')}</option><option value="en">English</option><option value="de">Deutsch</option>
           </Select>

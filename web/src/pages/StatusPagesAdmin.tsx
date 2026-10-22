@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, ExternalLink, EyeOff, Globe, Home, Lock, Megaphone, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ExternalLink, Globe, Home, Lock, Megaphone, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
@@ -9,31 +9,26 @@ import { fmtDateTime, slugify } from '../lib/format';
 import { useT } from '../lib/i18n';
 
 interface PageRow { id: number; slug: string; title: string; domain: string | null; isPublic: boolean; protected: boolean; isDefault: boolean }
-interface Comp { monitorId: number; displayName: string | null; hideIncidents?: boolean }
+interface Comp { monitorId: number; displayName: string | null }
 interface Full {
   id: number; slug: string; title: string; description: string | null; domain: string | null; isPublic: boolean; hasPassword: boolean; ssoRequired: boolean;
-  branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number; isDefault: boolean; incidentDays: number; incidentPageSize: number; blocks: BlockCfg[];
+  branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number; isDefault: boolean; incidentDays: number; incidentPageSize: number; language: 'en' | 'de' | null; serverInfo: number;
   sections: { name: string; components: Comp[] }[]; components: Comp[];
 }
-type BlockCfg = { type: 'summary' } | { type: 'streak' } | { type: 'heatmap'; days: 90 | 180 | 365 } | { type: 'text'; title: string; body: string };
-const BLOCK_TYPES = ['summary', 'heatmap', 'streak', 'text'] as const;
-const MAX_BLOCKS = 12; // keep in sync with src/server/status-blocks.ts
-const newBlock = (type: (typeof BLOCK_TYPES)[number]): BlockCfg => (type === 'heatmap' ? { type, days: 365 } : type === 'text' ? { type, title: '', body: '' } : { type });
 /** Editor model: group 0 is always the ungrouped list (name === null). */
 interface Grp { name: string | null; items: Comp[] }
 interface Form {
-  slug: string; title: string; description: string; domain: string; isPublic: boolean; ssoRequired: boolean; showHistory: boolean; historyDays: number; isDefault: boolean; incidentDays: number; incidentPageSize: number;
-  pwMode: 'keep' | 'set' | 'remove'; password: string; logoUrl: string; primaryColor: string; footer: string; customCss: string; groups: Grp[]; blocks: BlockCfg[];
+  slug: string; title: string; description: string; domain: string; isPublic: boolean; ssoRequired: boolean; showHistory: boolean; historyDays: number; isDefault: boolean; incidentDays: number; incidentPageSize: number; language: '' | 'en' | 'de'; serverInfo: number;
+  pwMode: 'keep' | 'set' | 'remove'; password: string; logoUrl: string; primaryColor: string; footer: string; customCss: string; groups: Grp[];
 }
 const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180];
 const INCIDENT_DAYS = [1, 3, 7, 14, 30, 60, 90, 180, 365];
 const INCIDENT_PAGE_SIZES = [5, 10, 20, 50];
-type Tab = 'general' | 'components' | 'blocks' | 'appearance' | 'announcements' | 'subscribers';
+type Tab = 'general' | 'components' | 'appearance' | 'announcements' | 'subscribers';
 
 const toForm = (p?: Full): Form => ({
-  slug: p?.slug ?? '', title: p?.title ?? '', description: p?.description ?? '', domain: p?.domain ?? '', isPublic: p?.isPublic ?? true, ssoRequired: p?.ssoRequired ?? false, showHistory: p?.showHistory ?? true, historyDays: p?.historyDays ?? 90, incidentDays: p?.incidentDays ?? 30, incidentPageSize: p?.incidentPageSize ?? 10, isDefault: p?.isDefault ?? false,
+  slug: p?.slug ?? '', title: p?.title ?? '', description: p?.description ?? '', domain: p?.domain ?? '', isPublic: p?.isPublic ?? true, ssoRequired: p?.ssoRequired ?? false, showHistory: p?.showHistory ?? true, historyDays: p?.historyDays ?? 90, incidentDays: p?.incidentDays ?? 30, incidentPageSize: p?.incidentPageSize ?? 10, language: p?.language ?? '', serverInfo: p?.serverInfo ?? 1, isDefault: p?.isDefault ?? false,
   pwMode: 'keep', password: '', logoUrl: p?.branding.logoUrl ?? '', primaryColor: p?.branding.primaryColor ?? '', footer: p?.branding.footer ?? '', customCss: p?.customCss ?? '',
-  blocks: p?.blocks ?? [],
   groups: [{ name: null, items: p?.components ?? [] }, ...(p?.sections ?? []).map((s) => ({ name: s.name, items: s.components }))],
 });
 
@@ -126,15 +121,14 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
 
   const save = useMutation({
     mutationFn: () => {
-      const comp = (c: Comp) => ({ monitorId: c.monitorId, displayName: c.displayName?.trim() || null, hideIncidents: !!c.hideIncidents });
+      const comp = (c: Comp) => ({ monitorId: c.monitorId, displayName: c.displayName?.trim() || null });
       const body = {
-        slug: f.slug.trim().toLowerCase(), title: f.title.trim(), description: f.description.trim() || null, domain: f.domain.trim().toLowerCase() || null, isPublic: f.isPublic, ssoRequired: f.ssoRequired, showHistory: f.showHistory, historyDays: f.historyDays, incidentDays: f.incidentDays, incidentPageSize: f.incidentPageSize,
+        slug: f.slug.trim().toLowerCase(), title: f.title.trim(), description: f.description.trim() || null, domain: f.domain.trim().toLowerCase() || null, isPublic: f.isPublic, ssoRequired: f.ssoRequired, showHistory: f.showHistory, historyDays: f.historyDays, incidentDays: f.incidentDays, incidentPageSize: f.incidentPageSize, language: f.language || null, serverInfo: f.serverInfo,
         // only send the home-page flag when this form changed it, so a stale form cannot take the home page back from another page
         ...(f.isDefault !== initial.isDefault ? { isDefault: f.isDefault } : {}),
         ...(f.pwMode === 'set' ? { password: f.password } : f.pwMode === 'remove' ? { password: null } : {}),
         branding: { ...(f.logoUrl.trim() && { logoUrl: f.logoUrl.trim() }), ...(f.primaryColor && { primaryColor: f.primaryColor }), ...(f.footer.trim() && { footer: f.footer.trim() }) },
         customCss: f.customCss.trim() || null,
-        blocks: f.blocks,
         sections: f.groups.slice(1).map((g) => ({ name: (g.name ?? '').trim() || t('statuspages.sectionDefault'), components: g.items.map(comp) })),
         components: f.groups[0]!.items.map(comp),
       };
@@ -154,7 +148,7 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
 
   const smtp = useMeta()?.smtp;
   const tabs: { id: Tab; label: ReactNode }[] = [
-    { id: 'general', label: t('statuspages.tab.general') }, { id: 'components', label: t('statuspages.tab.components') }, { id: 'blocks', label: t('statuspages.tab.blocks') }, { id: 'appearance', label: t('statuspages.tab.appearance') },
+    { id: 'general', label: t('statuspages.tab.general') }, { id: 'components', label: t('statuspages.tab.components') }, { id: 'appearance', label: t('statuspages.tab.appearance') },
     ...(id === 'new' ? [] : [{ id: 'announcements' as const, label: t('statuspages.tab.announcements') }, ...(smtp ? [{ id: 'subscribers' as const, label: t('statuspages.tab.subscribers') }] : [])]),
   ];
 
@@ -169,6 +163,8 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
             <Field label={t('statuspages.f.slug')} hint={t('statuspages.f.slugHint')}>{(i) => <Input id={i} value={f.slug} onChange={(e) => { setSlugOwn(e.target.value !== ''); set('slug', e.target.value); }} maxLength={63} placeholder="status" />}</Field>
             <Field label={t('statuspages.f.description')} className="sm:col-span-2">{(i) => <Textarea id={i} rows={2} value={f.description} onChange={(e) => set('description', e.target.value)} maxLength={5000} />}</Field>
             <Field label={t('statuspages.f.domain')} hint={t('statuspages.f.domainHint')} className="sm:col-span-2">{(i) => <Input id={i} value={f.domain} onChange={(e) => set('domain', e.target.value)} placeholder="status.example.com" />}</Field>
+            <Field label={t('statuspages.f.language')} hint={t('statuspages.f.languageHint')}>{(i) => <Select id={i} value={f.language} onChange={(e) => set('language', e.target.value as Form['language'])}><option value="">{t('statuspages.f.language.auto')}</option><option value="en">{t('statuspages.f.language.en')}</option><option value="de">{t('statuspages.f.language.de')}</option></Select>}</Field>
+            <Field label={t('statuspages.f.serverInfo')} hint={t('statuspages.f.serverInfoHint')}>{(i) => <Select id={i} value={f.serverInfo} onChange={(e) => set('serverInfo', Number(e.target.value))}>{[0, 1, 2].map((n) => <option key={n} value={n}>{t(`statuspages.f.serverInfo.${n}`)}</option>)}</Select>}</Field>
             <div className="flex flex-col items-start gap-3 sm:col-span-2">
               <Toggle checked={f.isPublic} onChange={(v) => set('isPublic', v)} label={t('statuspages.f.isPublic')} />
               <div><Toggle checked={f.isDefault} onChange={(v) => set('isDefault', v)} label={t('statuspages.f.default')} /><p className="hint">{t('statuspages.f.defaultHint')}</p></div>
@@ -207,7 +203,6 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
           </div>
         )}
         {tab === 'components' && <Components groups={f.groups} onChange={(g) => set('groups', g)} monitors={monitors.data} loading={monitors.isLoading} error={monitors.error} />}
-        {tab === 'blocks' && <Blocks blocks={f.blocks} onChange={(b) => set('blocks', b)} />}
         {tab === 'appearance' && (
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={t('statuspages.f.logo')} hint={t('statuspages.f.logoHint')}>{(i) => <Input id={i} type="url" value={f.logoUrl} onChange={(e) => set('logoUrl', e.target.value)} placeholder="https://…" />}</Field>
@@ -283,7 +278,6 @@ function Components({ groups, onChange, monitors, loading, error }: { groups: Gr
               <li key={c.monitorId} className="flex flex-wrap items-center gap-2 p-2">
                 <span className="min-w-[8rem] flex-1 truncate text-sm font-medium">{nameOf(c.monitorId)}</span>
                 <Input className="min-w-[8rem] flex-1" aria-label={t('statuspages.displayName')} placeholder={t('statuspages.displayName')} value={c.displayName ?? ''} onChange={(e) => patchGroup(gi, (x) => ({ ...x, items: x.items.map((y, i) => (i === ci ? { ...y, displayName: e.target.value } : y)) }))} maxLength={255} />
-                <Button size="sm" variant={c.hideIncidents ? 'primary' : 'ghost'} title={`${t('statuspages.hideIncidents')}: ${t('statuspages.hideIncidentsHint')}`} aria-label={t('statuspages.hideIncidents')} aria-pressed={!!c.hideIncidents} onClick={() => patchGroup(gi, (x) => ({ ...x, items: x.items.map((y, i) => (i === ci ? { ...y, hideIncidents: !y.hideIncidents } : y)) }))}><EyeOff className="h-4 w-4" /></Button>
                 <Button size="sm" variant="ghost" aria-label={t('statuspages.moveUp')} disabled={ci === 0} onClick={() => patchGroup(gi, (x) => ({ ...x, items: move(x.items, ci, -1) }))}><ArrowUp className="h-4 w-4" /></Button>
                 <Button size="sm" variant="ghost" aria-label={t('statuspages.moveDown')} disabled={ci === g.items.length - 1} onClick={() => patchGroup(gi, (x) => ({ ...x, items: move(x.items, ci, 1) }))}><ArrowDown className="h-4 w-4" /></Button>
                 <Button size="sm" variant="ghost" aria-label={t('common.remove')} onClick={() => patchGroup(gi, (x) => ({ ...x, items: x.items.filter((_, i) => i !== ci) }))}><X className="h-4 w-4" /></Button>
@@ -431,41 +425,6 @@ function Subscribers({ pageId }: { pageId: number }) {
             </tbody>
           </table>
         </div>
-      )}
-    </div>
-  );
-}
-
-function Blocks({ blocks, onChange }: { blocks: BlockCfg[]; onChange: (b: BlockCfg[]) => void }) {
-  const t = useT();
-  const patch = (i: number, b: BlockCfg) => onChange(blocks.map((x, j) => (j === i ? b : x)));
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-slate-600 dark:text-slate-300">{t('blocks.intro')}</p>
-      {blocks.length === 0 && <p className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-sm text-slate-500 dark:border-slate-700">{t('blocks.empty')}</p>}
-      <ul className="space-y-2">
-        {blocks.map((b, i) => (
-          <li key={i} className="rounded-lg border border-slate-200 p-3 dark:border-slate-800">
-            <div className="flex items-center justify-between gap-2">
-              <div className="min-w-0"><div className="font-medium">{t(`blocks.type.${b.type}`)}</div><div className="text-xs text-slate-500">{t(`blocks.desc.${b.type}`)}</div></div>
-              <div className="flex shrink-0">
-                <Button size="sm" variant="ghost" aria-label={t('statuspages.moveUp')} disabled={i === 0} onClick={() => onChange(move(blocks, i, -1))}><ArrowUp className="h-4 w-4" /></Button>
-                <Button size="sm" variant="ghost" aria-label={t('statuspages.moveDown')} disabled={i === blocks.length - 1} onClick={() => onChange(move(blocks, i, 1))}><ArrowDown className="h-4 w-4" /></Button>
-                <Button size="sm" variant="ghost" aria-label={t('common.delete')} onClick={() => onChange(blocks.filter((_, j) => j !== i))}><Trash2 className="h-4 w-4" /></Button>
-              </div>
-            </div>
-            {b.type === 'heatmap' && <Field label={t('blocks.range')} className="mt-2 max-w-[12rem]">{(id) => <Select id={id} value={b.days} onChange={(e) => patch(i, { type: 'heatmap', days: Number(e.target.value) as 90 | 180 | 365 })}>{[90, 180, 365].map((d) => <option key={d} value={d}>{t('insights.days', { n: d })}</option>)}</Select>}</Field>}
-            {b.type === 'text' && (
-              <div className="mt-2 grid gap-2">
-                <Field label={t('blocks.textTitle')}>{(id) => <Input id={id} value={b.title} maxLength={120} onChange={(e) => patch(i, { ...b, title: e.target.value })} />}</Field>
-                <Field label={t('blocks.textBody')}>{(id) => <Textarea id={id} rows={3} maxLength={2000} value={b.body} onChange={(e) => patch(i, { ...b, body: e.target.value })} />}</Field>
-              </div>
-            )}
-          </li>
-        ))}
-      </ul>
-      {blocks.length >= MAX_BLOCKS ? <p className="text-xs text-slate-500">{t('blocks.max', { n: MAX_BLOCKS })}</p> : (
-        <div className="flex flex-wrap items-center gap-2"><span className="text-sm text-slate-500">{t('blocks.add')}:</span>{BLOCK_TYPES.map((k) => <Button key={k} size="sm" onClick={() => onChange([...blocks, newBlock(k)])}><Plus className="h-4 w-4" />{t(`blocks.type.${k}`)}</Button>)}</div>
       )}
     </div>
   );

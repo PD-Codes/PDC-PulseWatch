@@ -78,8 +78,10 @@ export interface MonitorItem {
   id: number; name: string; type: string; groupId: number | null; active: boolean; intervalS: number; description: string | null;
   status: Status; overlay: Overlay; statusSince: string | null; lastCheckAt: string | null; latencyMs: number | null; errorKind: string | null; message: string | null;
   flapping: boolean; recent: Beat[]; certExpiresAt: string | null; anomaly: boolean; publicBadge: boolean; locations: (number | 'local')[] | null; pushToken: string | null;
-  tags: TagAssignment[]; dependsOn: number[]; uptime: Uptime;
+  tags: TagAssignment[]; dependsOn: number[]; uptime: Uptime; info: ServerInfo | null;
 }
+/** What a game server check reports: players online, version and so on. */
+export interface ServerInfo { players?: number; maxPlayers?: number; names?: string[]; version?: string; motd?: string; map?: string; name?: string; state?: string }
 export interface Group { id: number; parentId: number | null; name: string; description: string | null }
 export type Role = 'admin' | 'editor' | 'viewer';
 export interface Me { id: number; username: string; displayName: string; email: string | null; role: Role; locale: 'en' | 'de' | null; theme: 'light' | 'dark' | 'system'; totpEnabled: boolean; authSource: string; scopeRestricted: boolean; csrf?: string }

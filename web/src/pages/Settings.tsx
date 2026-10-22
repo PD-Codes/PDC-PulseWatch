@@ -13,7 +13,7 @@ import { useMeta } from '../lib/auth';
 import { useT } from '../lib/i18n';
 import type { FieldDef } from '../../../src/core/types';
 
-const TABS = ['network', 'defaults', 'certificates', 'digest', 'auth', 'backup', 'about'] as const;
+const TABS = ['network', 'defaults', 'certificates', 'incidents', 'digest', 'auth', 'backup', 'about'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings() {
@@ -33,6 +33,7 @@ export default function Settings() {
       {tab === 'network' && <NetworkTab />}
       {tab === 'defaults' && <DefaultsTab />}
       {tab === 'certificates' && <CertsTab />}
+      {tab === 'incidents' && <IncidentsTab />}
       {tab === 'digest' && <DigestTab />}
       {tab === 'auth' && <AuthTab />}
       {tab === 'backup' && <BackupTab />}
@@ -86,6 +87,26 @@ function NetworkTab() {
 
 interface Digest { enabled: boolean; hour: number; timezone: string; recipients: string[]; smtpConfigured: boolean }
 interface Preview { subject: string; text: string; html?: string }
+
+function IncidentsTab() {
+  const t = useT();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const q = useQuery({ queryKey: ['settings-incidents'], queryFn: () => get<{ autoPublish: boolean }>('/api/settings/incidents') });
+  const save = useMutation({
+    mutationFn: (autoPublish: boolean) => put('/api/settings/incidents', { autoPublish }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['settings-incidents'] }); toast(t('common.saved')); },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
+  if (q.isLoading) return <Loading />;
+  if (q.error || !q.data) return <ErrorBox error={q.error} />;
+  return (
+    <Card>
+      <CardHeader title={t('settings.incidents.title')} subtitle={t('settings.incidents.intro')} />
+      <div className="p-4"><Toggle checked={q.data.autoPublish} onChange={(v) => save.mutate(v)} disabled={save.isPending} label={t('settings.incidents.autoPublish')} /></div>
+    </Card>
+  );
+}
 
 function DigestTab() {
   const t = useT(); const toast = useToast(); const qc = useQueryClient();
@@ -172,7 +193,7 @@ function AuthTab() {
         <ul className="divide-y divide-slate-200 dark:divide-slate-800">
           {d.items.map((p) => (
             <li key={p.id} className="flex flex-wrap items-center gap-3 p-4">
-              <div className="min-w-0 flex-1"><div className="truncate font-medium">{p.name}</div><div className="mt-1 flex flex-wrap gap-1.5"><Badge tone="violet">{p.kind.toUpperCase()}</Badge>{(p.config.allowedGroups || p.config.allowedGroupDns || p.config.staffOnly) && <Badge tone="amber">{t('settings.auth.access.badge')}</Badge>}</div></div>
+              <div className="min-w-0 flex-1"><div className="truncate font-medium">{p.name}</div><Badge tone="violet">{p.kind.toUpperCase()}</Badge></div>
               <Toggle checked={p.enabled} onChange={() => toggle.mutate(p)} label={p.enabled ? t('common.enabled') : t('common.disabled')} />
               <Button size="sm" aria-label={`${t('common.edit')} ${p.name}`} onClick={() => setDraft({ ...p, config: { ...defaults(d.fields[p.kind]), ...p.config } })}><Pencil className="h-3.5 w-3.5" />{t('common.edit')}</Button>
               <Button size="sm" variant="danger" aria-label={`${t('common.delete')} ${p.name}`} onClick={async () => { if (await confirm({ title: t('common.delete'), body: p.name, danger: true, confirmLabel: t('common.delete') })) remove.mutate(p.id); }}><Trash2 className="h-3.5 w-3.5" /></Button>
@@ -197,9 +218,6 @@ function AuthTab() {
                 )) : <p className="text-slate-500">{t('settings.auth.saml.saveFirst')}</p>}
                 <p className="hint">{t('settings.auth.saml.help')}</p>
               </div>
-            )}
-            {fields.some((f) => f.key === 'allowedGroups' || f.key === 'allowedGroupDns' || f.key === 'staffOnly') && (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-800 dark:bg-slate-800/40"><div className="font-medium">{t('settings.auth.access.title')}</div><p className="mt-1 text-slate-600 dark:text-slate-300">{t('settings.auth.access.body')}</p></div>
             )}
             <FieldsForm fields={fields} value={draft.config} onChange={(config) => setDraft({ ...draft, config })} />
             <Toggle checked={draft.enabled} onChange={(enabled) => setDraft({ ...draft, enabled })} label={t('common.enabled')} />

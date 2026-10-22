@@ -1,3 +1,4 @@
+import net from 'node:net';
 import type { FastifyInstance } from 'fastify';
 import { config } from './config';
 import type { Ctx } from './context';
@@ -20,6 +21,26 @@ export function registerDemoRoutes(app: FastifyInstance): void {
   app.get('/demo/page', o, async (_req, reply) => { await wait(20 + Math.random() * 40); return reply.type('text/html').send('<html><body><h1>Welcome to the demo shop</h1></body></html>'); });
   app.get('/demo/json', o, async () => ({ data: { queue: { depth: Math.floor(Math.random() * 40) }, healthy: true } }));
   app.post('/demo/hook', o, async () => ({ ok: true }));
+}
+
+const PLAYERS = ['Steve', 'Alex', 'CreeperSlayer', 'PixelMia', 'RedstoneRob', 'Luna', 'ObsidianOtto', 'Zed', 'BeeKeeper', 'Nova', 'Quill', 'Moss'];
+const vint = (n: number) => { const o: number[] = []; do { let b = n & 127; n >>>= 7; if (n) b |= 128; o.push(b); } while (n); return Buffer.from(o); };
+
+/** A tiny Minecraft status endpoint on the next port, so the demo has a game server whose player list changes every minute. */
+export function startDemoGameServer(): void {
+  const server = net.createServer((sock) => {
+    sock.on('error', () => {});
+    sock.on('data', (d) => {
+      if (!(d.length >= 2 && d[d.length - 2] === 1 && d[d.length - 1] === 0)) return; // wait for the status request after the handshake
+      const online = 4 + (Math.floor(Date.now() / 60_000) % 9);
+      const json = Buffer.from(JSON.stringify({ version: { name: '1.21.1', protocol: 767 }, players: { max: 50, online, sample: PLAYERS.slice(0, online).map((name) => ({ name, id: '00000000-0000-0000-0000-000000000000' })) }, description: { text: 'Demo survival world' } }));
+      const body = Buffer.concat([vint(0), vint(json.length), json]);
+      sock.end(Buffer.concat([vint(body.length), body]));
+    });
+  });
+  server.on('error', () => {}); // port taken: the demo simply has no game server
+  server.listen(config.port + 1, '127.0.0.1');
+  server.unref();
 }
 
 interface Profile { name: string; group: string; type: string; path?: string; config?: Record<string, any>; base: number; jitter: number; failRate: number; outages: [number, number][]; interval: number; tags: string[]; drift?: number }
@@ -57,6 +78,7 @@ export async function seedDemo(ctx: Ctx): Promise<void> {
     { name: 'Report service (slow)', group: 'APIs', type: 'http', path: '/demo/slow', base: 450, jitter: 200, failRate: 0.004, outages: [], interval: 60, tags: ['staging'] },
     { name: 'Checkout (flaky)', group: 'Web', type: 'http', path: '/demo/flaky', base: 70, jitter: 40, failRate: 0.08, outages: [], interval: 30, tags: ['prod'] },
     { name: 'Legacy portal', group: 'Web', type: 'http', path: '/demo/down', base: 0, jitter: 0, failRate: 1, outages: [], interval: 60, tags: ['staging'] },
+    { name: 'Survival server', group: 'Infrastructure', type: 'minecraft', config: { host: '127.0.0.1', port: config.port + 1, edition: 'java' }, base: 25, jitter: 10, failRate: 0.001, outages: [], interval: 30, tags: ['prod'] },
     { name: 'App database', group: 'Data', type: 'mysql', config: { host: config.db.host, port: config.db.port, database: config.db.database, username: config.db.user, password: config.db.password, query: 'SELECT 1' }, base: 4, jitter: 3, failRate: 0.0002, outages: [[60 * 41 + 10, 55]], interval: 30, tags: ['prod', 'critical'] },
   ];
 
@@ -64,7 +86,7 @@ export async function seedDemo(ctx: Ctx): Promise<void> {
   for (const p of profiles) {
     const id = await saveMonitor(ctx, {
       name: p.name, type: p.type, groupId: groups[p.group], description: p.type === 'http' && p.path === '/demo/down' ? 'Always returns 503: shows what an outage looks like.' : null,
-      config: p.config ? { ...(p.type === 'tcp' || p.type === 'mysql' ? {} : { url: base + p.path }), ...p.config } : { url: base + p.path },
+      config: p.config ? { ...(p.type === 'tcp' || p.type === 'mysql' || p.type === 'minecraft' ? {} : { url: base + p.path }), ...p.config } : { url: base + p.path },
       intervalS: p.interval, timeoutS: 10, retries: p.name.includes('flaky') ? 1 : 0, retryIntervalS: 10, upThreshold: 1, downThreshold: p.name.includes('flaky') ? 2 : 1, publicBadge: true,
       tagIds: p.tags.map((t) => tags[t as keyof typeof tags]), tagValues: [{ tagId: tags.team, value: ({ Web: 'frontend', APIs: 'platform', Data: 'data' } as Record<string, string>)[p.group] ?? 'ops' }], notifications: [{ channelId: hook, events: ['down', 'up'] }],
     }, adminId);
@@ -122,22 +144,22 @@ export async function seedDemo(ctx: Ctx): Promise<void> {
   // incidents: two resolved ones with post-mortem, matching the synthetic outages
   const resolved = async (title: string, monitor: string, hoursAgo: number, mins: number, severity: 'minor' | 'major' | 'critical', postmortem?: string) => {
     const startedAt = new Date(now - hoursAgo * 3_600_000), endedAt = new Date(startedAt.getTime() + mins * 60_000);
-    const iid = Number((await db.insertInto('incidents').values({ title, status: 'resolved', severity, source: postmortem ? 'manual' : 'auto', monitor_id: ids.get(monitor)!, started_at: startedAt, acknowledged_at: new Date(startedAt.getTime() + 3 * 60_000), acknowledged_by: adminId, resolved_at: endedAt, postmortem: postmortem ?? null, public: postmortem ? 1 : 0, created_by: adminId }).executeTakeFirstOrThrow()).insertId);
+    const iid = Number((await db.insertInto('incidents').values({ title, status: 'resolved', severity, source: postmortem ? 'manual' : 'auto', monitor_id: ids.get(monitor)!, started_at: startedAt, acknowledged_at: new Date(startedAt.getTime() + 3 * 60_000), acknowledged_by: adminId, resolved_at: endedAt, postmortem: postmortem ?? null, public: 1, created_by: adminId }).executeTakeFirstOrThrow()).insertId);
     await db.insertInto('incident_monitors').values({ incident_id: iid, monitor_id: ids.get(monitor)! }).execute();
     await db.insertInto('incident_updates').values([
       { incident_id: iid, kind: 'auto', ts: startedAt, body: 'Monitor went down' }, { incident_id: iid, kind: 'ack', ts: new Date(startedAt.getTime() + 3 * 60_000), user_id: adminId, body: 'Looking into it' },
-      { incident_id: iid, kind: 'resolve', ts: endedAt, body: `Recovered after ${mins} min` },
+      { incident_id: iid, kind: 'resolve', status: 'resolved', ts: endedAt, body: `Recovered after ${mins} min`, public: 1 },
     ]).execute();
   };
   await resolved('Public API is down', 'Public API', 41, 70, 'major');
   await resolved('Database failover caused API errors', 'App database', 41, 55, 'critical', 'Root cause: the primary database restarted during a routine update. Applications reconnected automatically after about one hour. Follow-up: add a connection retry with backoff.');
 
   // status page, maintenance window, saved view
-  const page = Number((await db.insertInto('status_pages').values({ slug: 'demo', title: 'Demo Status', description: 'Live status of the demo services.', is_public: 1, branding: JSON.stringify({ primaryColor: '#4f46e5' }), blocks: JSON.stringify([{ type: 'summary' }, { type: 'streak' }, { type: 'heatmap', days: 90 }]) }).executeTakeFirstOrThrow()).insertId);
+  const page = Number((await db.insertInto('status_pages').values({ slug: 'demo', title: 'Demo Status', description: 'Live status of the demo services.', is_public: 1, branding: JSON.stringify({ primaryColor: '#4f46e5' }) }).executeTakeFirstOrThrow()).insertId);
   const sec = async (name: string, sort: number) => Number((await db.insertInto('status_page_sections').values({ page_id: page, name, sort }).executeTakeFirstOrThrow()).insertId);
-  const sWeb = await sec('Websites', 0), sApi = await sec('APIs and data', 1);
+  const sWeb = await sec('Websites', 0), sApi = await sec('APIs and data', 1), sGames = await sec('Game servers', 2);
   let sort = 0;
-  for (const [n, s] of [['Marketing site', sWeb], ['Shop landing page', sWeb], ['Checkout (flaky)', sWeb], ['Public API', sApi], ['App database', sApi]] as const)
+  for (const [n, s] of [['Marketing site', sWeb], ['Shop landing page', sWeb], ['Checkout (flaky)', sWeb], ['Public API', sApi], ['App database', sApi], ['Survival server', sGames]] as const)
     await db.insertInto('status_page_components').values({ page_id: page, section_id: s, monitor_id: ids.get(n)!, sort: sort++ }).execute();
   const mw = Number((await db.insertInto('maintenance_windows').values({ name: 'Weekly database maintenance', description: 'Sunday night patching', kind: 'cron', cron_expr: '0 3 * * 0', duration_min: 30, timezone: 'UTC', active: 1, announce: 1, created_by: adminId }).executeTakeFirstOrThrow()).insertId);
   await db.insertInto('maintenance_targets').values({ window_id: mw, target_type: 'group', target_id: gData }).execute();

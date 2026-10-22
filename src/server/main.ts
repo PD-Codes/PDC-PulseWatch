@@ -41,7 +41,7 @@ async function main() {
   extra.push(registerAllRoutes);
   const app = servesApi ? await buildApp(ctx, { scheduler, extraRoutes: extra }) : undefined;
 
-  if (config.demo) { const { seedDemo } = await import('./demo'); await seedDemo(ctx); }
+  if (config.demo) { const { seedDemo, startDemoGameServer } = await import('./demo'); if (runsWork) startDemoGameServer(); await seedDemo(ctx); }
   await scheduler?.start();
   await housekeeping?.start();
   reportJobs?.start();

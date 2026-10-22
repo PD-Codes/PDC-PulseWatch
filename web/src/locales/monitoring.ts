@@ -48,8 +48,6 @@ export const en = {
   'monitors.form.notifications': 'Notifications', 'monitors.form.notificationsHint': 'Per-monitor rules. Without rules, the global defaults apply.', 'monitors.form.addRule': 'Add rule', 'monitors.form.noRules': 'No rules configured.',
   'monitors.form.channel': 'Channel', 'monitors.form.policy': 'Escalation policy',
   'monitors.form.event.down': 'Down', 'monitors.form.event.up': 'Recovery', 'monitors.form.event.flap': 'Flapping', 'monitors.form.event.cert': 'Certificate',
-  // Kiosk
-  'kiosk.title': 'Wall display', 'kiosk.allUp': 'All systems operational', 'kiosk.someDown': 'Systems down: {n}', 'kiosk.exit': 'Exit', 'kiosk.empty': 'No monitors to show', 'kiosk.pages': 'Pages', 'kiosk.page': 'Page {n}',
   // Insights
   'insights.subtitle': 'Patterns and correlations across your monitors', 'insights.heatmap': 'Uptime heatmap', 'insights.heatmapHint': 'One square per day. Failed checks turn it red.',
   'insights.monitor': 'Monitor', 'insights.allMonitors': 'All monitors', 'insights.period': 'Period', 'insights.days': 'Last {n} days',
@@ -108,7 +106,6 @@ export const de: Record<keyof typeof en, string> = {
   'monitors.form.notifications': 'Benachrichtigungen', 'monitors.form.notificationsHint': 'Regeln pro Monitor. Ohne Regeln gelten die globalen Vorgaben.', 'monitors.form.addRule': 'Regel hinzufügen', 'monitors.form.noRules': 'Keine Regeln konfiguriert.',
   'monitors.form.channel': 'Kanal', 'monitors.form.policy': 'Eskalationsrichtlinie',
   'monitors.form.event.down': 'Ausfall', 'monitors.form.event.up': 'Wiederherstellung', 'monitors.form.event.flap': 'Flattern', 'monitors.form.event.cert': 'Zertifikat',
-  'kiosk.title': 'Wandanzeige', 'kiosk.allUp': 'Alle Systeme laufen', 'kiosk.someDown': '{n} Systeme offline', 'kiosk.exit': 'Beenden', 'kiosk.empty': 'Keine Monitore vorhanden', 'kiosk.pages': 'Seiten', 'kiosk.page': 'Seite {n}',
   'insights.subtitle': 'Muster und Zusammenhänge über deine Monitore hinweg', 'insights.heatmap': 'Verfügbarkeits-Heatmap', 'insights.heatmapHint': 'Ein Quadrat pro Tag. Fehlgeschlagene Prüfungen färben es rot.',
   'insights.monitor': 'Monitor', 'insights.allMonitors': 'Alle Monitore', 'insights.period': 'Zeitraum', 'insights.days': 'Letzte {n} Tage',
   'insights.cell': '{date}: {uptime} Verfügbarkeit, {down} von {total} Prüfungen fehlgeschlagen', 'insights.noData': '{date}: keine Daten', 'insights.worse': 'Schlechter', 'insights.better': 'Besser', 'insights.none': 'Keine Daten',

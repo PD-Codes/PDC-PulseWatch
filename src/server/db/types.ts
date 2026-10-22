@@ -38,7 +38,7 @@ export interface TagsTable { id: Id; name: string; color: Generated<string> }
 export interface MonitorsTable {
   id: Id; name: string; type: string; group_id: number | null; description: string | null; config: string;
   interval_s: Generated<number>; timeout_s: Generated<number>; retries: Generated<number>; retry_interval_s: Generated<number>;
-  up_threshold: Generated<number>; down_threshold: Generated<number>; flap_window: Generated<number>; flap_threshold: Generated<number>; down_after_s: number | null;
+  up_threshold: Generated<number>; down_threshold: Generated<number>; flap_window: Generated<number>; flap_threshold: Generated<number>;
   active: Flag; locations: string | null; quorum: Generated<number>; push_token: string | null; public_badge: Flag;
   next_run_at: NTs; lease_owner: string | null; lease_until: NTs; attempt: Generated<number>;
   created_by: number | null; created_at: Ts; updated_at: Ts;
@@ -47,9 +47,9 @@ export interface MonitorTagsTable { monitor_id: number; tag_id: number; value: G
 export interface MonitorDependenciesTable { monitor_id: number; depends_on_id: number }
 export interface MonitorStateTable {
   monitor_id: number; status: Generated<'unknown' | 'up' | 'down' | 'pending'>; overlay: Generated<'none' | 'maintenance' | 'suppressed'>;
-  status_since: NTs; consecutive_fail: Generated<number>; consecutive_ok: Generated<number>; fail_since: NTs; last_check_at: NTs; last_latency_ms: number | null;
+  status_since: NTs; consecutive_fail: Generated<number>; consecutive_ok: Generated<number>; last_check_at: NTs; last_latency_ms: number | null;
   last_error_kind: string | null; last_message: string | null; flapping: Flag; outcomes: Generated<string>; recent: string | null;
-  cert_expires_at: NTs; cert_info: string | null; anomaly: string | null; last_push_at: NTs; updated_at: Ts;
+  cert_expires_at: NTs; cert_info: string | null; anomaly: string | null; info: string | null; last_push_at: NTs; updated_at: Ts;
 }
 export interface MonitorLocationStateTable {
   monitor_id: number; location_id: number; ok: number; ts: Date; latency_ms: number | null; error_kind: string | null; message: string | null;
@@ -70,21 +70,21 @@ export type IncidentStatus = 'open' | 'acknowledged' | 'identified' | 'fixing' |
 export interface IncidentsTable {
   id: Id; title: string; status: Generated<IncidentStatus>; severity: Generated<'minor' | 'major' | 'critical'>; source: Generated<'auto' | 'manual'>;
   monitor_id: number | null; started_at: Date; acknowledged_at: NTs; acknowledged_by: number | null; resolved_at: NTs; assignee_id: number | null;
-  postmortem: string | null; public: Flag; hidden: Flag; created_by: number | null; created_at: Ts;
+  postmortem: string | null; public: Flag; created_by: number | null; created_at: Ts;
 }
 export interface IncidentMonitorsTable { incident_id: number; monitor_id: number }
-export interface IncidentUpdatesTable { id: Id; incident_id: number; ts: Ts; user_id: number | null; kind: Generated<'note' | 'status' | 'ack' | 'assign' | 'resolve' | 'auto' | 'postmortem'>; status: IncidentStatus | null; body: string | null }
+export interface IncidentUpdatesTable { id: Id; incident_id: number; ts: Ts; user_id: number | null; kind: Generated<'note' | 'status' | 'ack' | 'assign' | 'resolve' | 'auto' | 'postmortem'>; status: IncidentStatus | null; body: string | null; public: Flag; edited_at: NTs }
 export interface MaintenanceWindowsTable {
   id: Id; name: string; description: string | null; kind: Generated<'once' | 'cron'>; starts_at: NTs; ends_at: NTs; cron_expr: string | null;
   duration_min: number | null; timezone: Generated<string>; active: Flag; announce: Flag; created_by: number | null; created_at: Ts;
 }
 export interface MaintenanceTargetsTable { window_id: number; target_type: 'monitor' | 'group' | 'tag'; target_id: number }
 export interface StatusPagesTable {
-  id: Id; slug: string; title: string; description: string | null; domain: string | null; is_public: Flag; password_hash: string | null; sso_required: Flag;
-  branding: string | null; custom_css: string | null; blocks: string | null; show_history: Flag; history_days: Generated<number>; is_default: Flag; incident_days: Generated<number>; incident_page_size: Generated<number>; created_at: Ts;
+  id: Id; slug: string; title: string; description: string | null; language: string | null; domain: string | null; is_public: Flag; password_hash: string | null; sso_required: Flag;
+  branding: string | null; custom_css: string | null; show_history: Flag; history_days: Generated<number>; is_default: Flag; incident_days: Generated<number>; incident_page_size: Generated<number>; server_info: Generated<number>; created_at: Ts;
 }
 export interface StatusPageSectionsTable { id: Id; page_id: number; name: string; sort: Generated<number> }
-export interface StatusPageComponentsTable { id: Id; page_id: number; section_id: number | null; monitor_id: number; display_name: string | null; hide_incidents: Generated<number>; sort: Generated<number> }
+export interface StatusPageComponentsTable { id: Id; page_id: number; section_id: number | null; monitor_id: number; display_name: string | null; sort: Generated<number> }
 export interface StatusPageAnnouncementsTable { id: Id; page_id: number; kind: Generated<'info' | 'maintenance' | 'incident'>; title: string; body: string | null; starts_at: Date; ends_at: NTs; created_at: Ts }
 export interface StatusPageSubscribersTable { id: Id; page_id: number; kind: 'email' | 'webhook'; target_enc: string; target_hash: string; token: string; verified: Flag; created_at: Ts }
 export interface NotificationTemplatesTable { id: Id; name: string; subject: string; body: string; created_at: Ts }

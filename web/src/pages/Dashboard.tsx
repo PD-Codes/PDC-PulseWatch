@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Badge, Button, Card, CardHeader, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Skeleton, cx, useConfirm, useToast } from '../components/ui';
 import { displayStatus, HeartbeatBar, Sparkline, StatusBadge, StatusDot, uptimeTone, type DisplayStatus } from '../components/status';
+import { PlayersLine } from '../components/ServerInfo';
 import { ApiError, del, errorMessage, get, post, type Group, type MonitorItem, type Tag } from '../lib/api';
 import { BulkEditModal } from '../components/BulkEdit';
 import { tagText } from '../components/TagEditor';
@@ -251,7 +252,7 @@ function MonitorCard({ m, selecting, selected, onToggle, onQuick }: RowProps) {
         <StatusBadge status={s} /><QuickToggle m={m} onQuick={onQuick} />
       </div>
       <div className="mt-3 flex items-center gap-3"><HeartbeatBar beats={m.recent} count={32} className="flex-1" /><Sparkline beats={m.recent} width={72} /></div>
-      <div className="mt-2 flex items-center justify-between text-xs text-slate-500"><span>{fmtMs(m.latencyMs)}</span><span title={m.message ?? ''}>{m.lastCheckAt ? relTime(m.lastCheckAt) : t('monitors.noChecks')}</span></div>
+      <div className="mt-2 flex items-center justify-between text-xs text-slate-500"><span className="inline-flex items-center gap-3">{fmtMs(m.latencyMs)}{m.info && <PlayersLine info={m.info} short />}</span><span title={m.message ?? ''}>{m.lastCheckAt ? relTime(m.lastCheckAt) : t('monitors.noChecks')}</span></div>
       {s === 'down' && m.message && <p className="mt-2 truncate text-xs text-red-600 dark:text-red-400" title={m.message}>{m.errorKind ? `${m.errorKind}: ` : ''}{m.message}</p>}
       <div className="mt-3 border-t border-slate-100 pt-3 dark:border-slate-800"><Uptimes m={m} /></div>
     </Card>
@@ -266,6 +267,7 @@ function MonitorRow({ m, selecting, selected, onToggle, onQuick }: RowProps) {
       <StatusDot status={s} pulse />
       <CardLink m={m} selecting={selecting} onToggle={onToggle} className="min-w-0 flex-1 truncate font-medium text-slate-900 no-underline hover:underline dark:text-slate-100 sm:w-48 sm:flex-none" />
       <HeartbeatBar beats={m.recent} count={30} className="hidden flex-1 md:flex" height="h-5" />
+      {m.info?.players !== undefined && <PlayersLine info={m.info} short className="text-xs text-slate-500" />}
       <span className="w-16 text-right text-xs text-slate-500">{fmtMs(m.latencyMs)}</span>
       <div className="hidden w-52 shrink-0 sm:block"><Uptimes m={m} /></div>
       <QuickToggle m={m} onQuick={onQuick} />

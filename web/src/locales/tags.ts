@@ -1,4 +1,4 @@
-// Strings for latency statistics wording, tags with values, the recent-checks status filter and incident display settings.
+// Strings for latency statistics wording, tags with values, the recent-checks status filter and the past-incident display settings.
 export const en = {
   'stat.avg': 'Average', 'stat.min': 'Fastest', 'stat.max': 'Slowest', 'stat.p50': 'Typical (p50)', 'stat.p95': 'Slow (p95)', 'stat.p99': 'Worst case (p99)',
   'stat.avg.tip': 'All response times added up and divided by the number of checks.',
@@ -15,8 +15,7 @@ export const en = {
   'monitors.statusFilter': 'Filter by status', 'monitors.allStatuses': 'All statuses', 'monitors.noChecksFiltered': 'No checks with the selected status on record.', 'filter.clear': 'Clear selection',
   'public.pastIncidentsDays': 'Last {n} days', 'public.pastIncidentsDay': 'Last day',
   'statuspages.f.pastIncidents': 'Show past incidents', 'statuspages.f.incidentDays': 'Show resolved incidents of the last', 'statuspages.f.incidentPageSize': 'Incidents per page', 'statuspages.f.dayOne': '1 day',
-  'statuspages.f.incidentHint': 'Resolved incidents older than this disappear from the page and its RSS feed; ongoing incidents always show. A single incident can be hidden under Incidents in the dashboard.',
-  'incidents.field.hidden': 'Hide from status pages', 'incidents.hiddenHint': 'The incident stays here but disappears from status pages and feeds.', 'incidents.hidden': 'Hidden', 'incidents.hide': 'Hide from status pages', 'incidents.unhide': 'Show on status pages',
+  'statuspages.f.incidentHint': 'Resolved incidents older than this disappear from the page and its RSS feed; ongoing incidents always show. A single incident can be taken off the status pages under Incidents in the dashboard.',
 };
 export const de = {
   'stat.avg': 'Durchschnitt', 'stat.min': 'Schnellste', 'stat.max': 'Langsamste', 'stat.p50': 'Typisch (p50)', 'stat.p95': 'Langsam (p95)', 'stat.p99': 'Ausreißer (p99)',
@@ -34,6 +33,5 @@ export const de = {
   'monitors.statusFilter': 'Nach Status filtern', 'monitors.allStatuses': 'Alle Status', 'monitors.noChecksFiltered': 'Keine Prüfungen mit dem gewählten Status vorhanden.', 'filter.clear': 'Auswahl aufheben',
   'public.pastIncidentsDays': 'Letzte {n} Tage', 'public.pastIncidentsDay': 'Letzter Tag',
   'statuspages.f.pastIncidents': 'Vergangene Störungen anzeigen', 'statuspages.f.incidentDays': 'Gelöste Störungen der letzten', 'statuspages.f.incidentPageSize': 'Störungen pro Seite', 'statuspages.f.dayOne': '1 Tag',
-  'statuspages.f.incidentHint': 'Gelöste Störungen, die älter sind, verschwinden von der Seite und aus dem RSS-Feed; laufende Störungen werden immer gezeigt. Einzelne Störungen lassen sich im Dashboard unter Vorfälle verbergen.',
-  'incidents.field.hidden': 'Auf Statusseiten verbergen', 'incidents.hiddenHint': 'Der Vorfall bleibt hier erhalten, verschwindet aber von Statusseiten und Feeds.', 'incidents.hidden': 'Verborgen', 'incidents.hide': 'Auf Statusseiten verbergen', 'incidents.unhide': 'Wieder auf Statusseiten zeigen',
+  'statuspages.f.incidentHint': 'Gelöste Störungen, die älter sind, verschwinden von der Seite und aus dem RSS-Feed; laufende Störungen werden immer gezeigt. Einzelne Störungen lassen sich im Dashboard unter Vorfälle von den Statusseiten nehmen.',
 };

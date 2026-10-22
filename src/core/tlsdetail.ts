@@ -31,7 +31,7 @@ const REASONS: Record<string, string> = {
 
 const cn = (s: string) => (s.includes('=') ? s : `CN=${s}`);
 const day = (iso: string) => iso.slice(0, 10);
-const plural = (n: number) => `${n} day${n === 1 ? '' : 's'}`;
+const plural = (n: number, lang: 'en' | 'de' = 'en') => (lang === 'de' ? `${n} ${n === 1 ? 'Tag' : 'Tagen'}` : `${n} day${n === 1 ? '' : 's'}`);
 
 /** Host/URL of a monitor config without credentials, paths' query strings or fragments. */
 export function describeTarget(c: Record<string, any>): string | undefined {
@@ -63,36 +63,41 @@ export function certFacts(cert: CertInfo, t?: TlsTarget, code?: string, nameMatc
   };
 }
 
-/** One readable sentence about a certificate problem, always naming the host, subject, issuer and Node error code. */
-export function tlsMessage(f: TlsFacts, opts: { expiring?: boolean } = {}): string {
+/**
+ * One readable sentence about a certificate problem, always naming the host, subject, issuer and Node error code.
+ * shortcut: `lang: 'de'` is only used for expiry notices, so the trust reasons (REASONS) stay English; translate them when a German check result is needed.
+ */
+export function tlsMessage(f: TlsFacts, opts: { expiring?: boolean; lang?: 'en' | 'de' } = {}): string {
+  const de = opts.lang === 'de';
   const now = Date.now();
-  const where = f.host ? `host ${f.host}${f.port ? `:${f.port}` : ''}${f.servername && f.servername !== f.host ? `, SNI ${f.servername}` : ''}` : undefined;
-  const tail = [`${cn(f.subject)}`, `issuer ${cn(f.issuer)}`, where].filter(Boolean).join(', ') + (f.code ? ` (${f.code})` : '');
+  const where = f.host ? `${de ? 'Host' : 'host'} ${f.host}${f.port ? `:${f.port}` : ''}${f.servername && f.servername !== f.host ? `, SNI ${f.servername}` : ''}` : undefined;
+  const tail = [`${cn(f.subject)}`, `${de ? 'Aussteller' : 'issuer'} ${cn(f.issuer)}`, where].filter(Boolean).join(', ') + (f.code ? ` (${f.code})` : '');
   const expired = new Date(f.validTo).getTime() < now;
   const mismatch = f.nameMatches === false || f.code === 'ERR_TLS_CERT_ALTNAME_INVALID' || f.code === 'HOSTNAME_MISMATCH';
   const isExpired = expired || f.code === 'CERT_HAS_EXPIRED';
-  const wrong = mismatch ? `does not match ${f.servername || f.host || 'the host'}${f.altNames.length ? ` (valid for ${f.altNames.slice(0, 5).join(', ')}${f.altNames.length > 5 ? ', ...' : ''})` : ''}` : '';
+  const alt = f.altNames.length ? ` (${de ? 'gültig für' : 'valid for'} ${f.altNames.slice(0, 5).join(', ')}${f.altNames.length > 5 ? ', ...' : ''})` : '';
+  const wrong = mismatch ? (de ? `passt nicht zu ${f.servername || f.host || 'dem Host'}${alt}` : `does not match ${f.servername || f.host || 'the host'}${alt}`) : '';
   let head: string;
   if (isExpired) {
     const ago = Math.max(1, Math.ceil((now - new Date(f.validTo).getTime()) / DAY));
-    head = `TLS certificate expired on ${day(f.validTo)} (${plural(ago)} ago)${wrong ? ` and ${wrong}` : ''}`; // a certificate can have both problems, name both
+    head = de ? `TLS-Zertifikat ist am ${day(f.validTo)} abgelaufen (vor ${plural(ago, 'de')})${wrong ? ` und ${wrong}` : ''}` : `TLS certificate expired on ${day(f.validTo)} (${plural(ago)} ago)${wrong ? ` and ${wrong}` : ''}`; // a certificate can have both problems, name both
   } else if (mismatch) {
-    head = `TLS certificate ${wrong}`;
+    head = `TLS${de ? '-Zertifikat' : ' certificate'} ${wrong}`;
   } else if (new Date(f.validFrom).getTime() > now || f.code === 'CERT_NOT_YET_VALID') {
-    head = `TLS certificate is not valid before ${day(f.validFrom)}`;
+    head = de ? `TLS-Zertifikat ist erst ab ${day(f.validFrom)} gültig` : `TLS certificate is not valid before ${day(f.validFrom)}`;
   } else if (f.code && REASONS[f.code]) {
     head = `TLS certificate not trusted (${REASONS[f.code]}), valid until ${day(f.validTo)}`;
   } else if (opts.expiring) {
-    head = `TLS certificate expires on ${day(f.validTo)} (${f.daysLeft < 1 ? 'less than a day left' : `in ${plural(f.daysLeft)}`})`;
+    head = de ? `TLS-Zertifikat läuft am ${day(f.validTo)} ab (${f.daysLeft < 1 ? 'weniger als ein Tag übrig' : `in ${plural(f.daysLeft, 'de')}`})` : `TLS certificate expires on ${day(f.validTo)} (${f.daysLeft < 1 ? 'less than a day left' : `in ${plural(f.daysLeft)}`})`;
   } else {
-    head = `TLS certificate problem, valid until ${day(f.validTo)}`;
+    head = de ? `TLS-Zertifikat hat ein Problem, gültig bis ${day(f.validTo)}` : `TLS certificate problem, valid until ${day(f.validTo)}`;
   }
   return `${head}: ${tail}`.slice(0, 480);
 }
 
 /** Message for certificate expiry notices (event log, notification, digest). */
-export function certNotice(cert: CertInfo, config: Record<string, any>): string {
-  return tlsMessage(certFacts(cert, targetFromConfig(config)), { expiring: true });
+export function certNotice(cert: CertInfo, config: Record<string, any>, lang?: 'en' | 'de'): string {
+  return tlsMessage(certFacts(cert, targetFromConfig(config)), { expiring: true, lang });
 }
 
 /**

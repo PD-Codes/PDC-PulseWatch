@@ -5,6 +5,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Loading, PageHeader, Select, useConfirm, useToast, cx } from '../components/ui';
 import { displayStatus, HeartbeatBar, StatusBadge, StatusDot, uptimeTone } from '../components/status';
 import { Pager } from '../components/Pager';
+import { ServerInfoBlock } from '../components/ServerInfo';
 import { MultiSelect } from '../components/MultiSelect';
 import { TimeChart } from '../components/TimeChart';
 import { MonitorCopy } from '../components/MonitorCopy';
@@ -112,6 +113,8 @@ export default function MonitorDetail() {
 
       {m.status === 'down' && m.message && <div role="alert" className="mb-4 flex gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200"><TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" /><div>{m.errorKind && <Badge tone="red" className="mr-2">{m.errorKind}</Badge>}{m.message}</div></div>}
       {(m.anomaly || m.anomalyState?.flagged) && <div role="status" className="mb-4 flex gap-2 rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-900 dark:border-violet-900 dark:bg-violet-950/40 dark:text-violet-200"><Activity className="mt-0.5 h-4 w-4 shrink-0" /><div><strong>{t('monitors.slowdown')}.</strong> {m.anomalyState ? t('monitors.anomalyBody', { fast: fmtMs(m.anomalyState.fast), slow: fmtMs(m.anomalyState.slow) }) : t('monitors.anomalyGeneric')}</div></div>}
+
+      {m.info && <Card className="mb-4"><CardHeader title={t('info.title')} /><div className="p-4"><ServerInfoBlock info={m.info} className="text-sm" /></div></Card>}
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <div className="card p-3"><div className="text-xs text-slate-500">{t('monitors.current')}</div><div className="mt-1 text-xl font-semibold">{fmtMs(m.latencyMs)}</div></div>

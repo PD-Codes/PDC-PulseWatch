@@ -1,0 +1,31 @@
+// Strings for what a status page shows and says: incident visibility, entry editing, page language, game server details.
+export const en = {
+  'incidents.hide': 'Hide from status pages', 'incidents.unhide': 'Show on status pages', 'incidents.onPage': 'On status page',
+  'incidents.publicOn': 'Visitors of the status pages see this incident. Subscribers are told about status changes.',
+  'incidents.publicOff': 'Internal only. Nothing about this incident appears on status pages or is sent to subscribers.',
+  'incidents.entry.edit': 'Edit', 'incidents.entry.edited': 'edited', 'incidents.entry.internal': 'Internal',
+  'settings.tab.incidents': 'Incidents', 'settings.incidents.title': 'Detected incidents',
+  'settings.incidents.intro': 'When a monitor goes down, PulseWatch opens an incident by itself. By default it stays internal: it does not appear on status pages and nobody is notified by email. Turn this on to publish detected incidents right away; each one can still be taken off the status pages individually.',
+  'settings.incidents.autoPublish': 'Show detected incidents on status pages',
+  'public.postmortemWritten': 'Post-mortem written', 'public.edited': 'edited', 'public.language': 'Language',
+  'statuspages.f.language': 'Language', 'statuspages.f.language.auto': 'Visitor decides (browser language)', 'statuspages.f.language.en': 'English', 'statuspages.f.language.de': 'Deutsch',
+  'statuspages.f.languageHint': 'A fixed language applies to the page, its emails and its feed. With "Visitor decides" the page offers a language switch.',
+  'statuspages.f.serverInfo': 'Game server details', 'statuspages.f.serverInfo.0': 'Hidden', 'statuspages.f.serverInfo.1': 'Players online, version and message of the day', 'statuspages.f.serverInfo.2': 'Also show the names of players online',
+  'statuspages.f.serverInfoHint': 'For Minecraft and other game server monitors. Many servers only report a few player names, or none.',
+  'info.players': '{n} of {max} players online', 'info.playersNoMax': '{n} players online', 'info.onlineNow': 'Online now', 'info.version': 'Version {v}', 'info.map': 'Map {v}', 'info.state': 'State: {v}', 'info.title': 'Server',
+};
+export const de = {
+  'incidents.hide': 'Von Statusseiten entfernen', 'incidents.unhide': 'Auf Statusseiten anzeigen', 'incidents.onPage': 'Auf Statusseite',
+  'incidents.publicOn': 'Besucher der Statusseiten sehen diesen Vorfall. Abonnenten werden über Statusänderungen informiert.',
+  'incidents.publicOff': 'Nur intern. Nichts zu diesem Vorfall erscheint auf Statusseiten oder wird an Abonnenten gesendet.',
+  'incidents.entry.edit': 'Bearbeiten', 'incidents.entry.edited': 'bearbeitet', 'incidents.entry.internal': 'Intern',
+  'settings.tab.incidents': 'Vorfälle', 'settings.incidents.title': 'Erkannte Vorfälle',
+  'settings.incidents.intro': 'Fällt ein Monitor aus, legt PulseWatch selbst einen Vorfall an. Standardmäßig bleibt er intern: Er erscheint nicht auf Statusseiten und niemand wird per E-Mail benachrichtigt. Schalte das ein, um erkannte Vorfälle sofort zu veröffentlichen; jeder einzelne lässt sich trotzdem wieder von den Statusseiten nehmen.',
+  'settings.incidents.autoPublish': 'Erkannte Vorfälle auf Statusseiten anzeigen',
+  'public.postmortemWritten': 'Post-Mortem verfasst', 'public.edited': 'bearbeitet', 'public.language': 'Sprache',
+  'statuspages.f.language': 'Sprache', 'statuspages.f.language.auto': 'Besucher entscheidet (Browsersprache)', 'statuspages.f.language.en': 'English', 'statuspages.f.language.de': 'Deutsch',
+  'statuspages.f.languageHint': 'Eine feste Sprache gilt für die Seite, ihre E-Mails und ihren Feed. Bei „Besucher entscheidet“ bietet die Seite einen Sprachwechsel an.',
+  'statuspages.f.serverInfo': 'Spielserver-Details', 'statuspages.f.serverInfo.0': 'Ausgeblendet', 'statuspages.f.serverInfo.1': 'Spieler online, Version und Willkommenstext', 'statuspages.f.serverInfo.2': 'Zusätzlich die Namen der Spieler online',
+  'statuspages.f.serverInfoHint': 'Für Minecraft und andere Spielserver-Monitore. Viele Server melden nur wenige Spielernamen oder gar keine.',
+  'info.players': '{n} von {max} Spielern online', 'info.playersNoMax': '{n} Spieler online', 'info.onlineNow': 'Gerade online', 'info.version': 'Version {v}', 'info.map': 'Karte {v}', 'info.state': 'Zustand: {v}', 'info.title': 'Server',
+};

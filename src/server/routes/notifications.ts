@@ -6,6 +6,7 @@ import { decryptJson, encryptJson } from '../crypto';
 import { parseJson } from '../db';
 import { parseMonitor } from '../monitors/model';
 import { channelRunner as asRunner, channelTypes } from '../notify/channels';
+import { LANGS, notifyLang, type Lang } from '../notify/texts';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
 
@@ -18,6 +19,17 @@ export async function notificationRoutes(app: FastifyInstance) {
   const admin = { preHandler: app.requireRole('admin') };
 
   app.get('/api/notification-types', { ...auth, schema: { tags: ['notifications'] } }, async () => [...channelTypes.values()].map((c) => ({ type: c.type, label: c.label, fields: c.fields })));
+
+  app.get('/api/settings/notifications', { ...admin, schema: { tags: ['settings'], summary: 'Language of notifications, digest and report mails' } }, async () => {
+    const { lang, explicit } = await notifyLang(ctx);
+    return { language: lang, explicit };
+  });
+  app.put('/api/settings/notifications', { ...admin, schema: { tags: ['settings'], body: Type.Object({ language: Type.Union(LANGS.map((l) => Type.Literal(l))) }) } }, async (req) => {
+    const { language } = req.body as { language: Lang };
+    await ctx.settings.set('notifications.language', language);
+    await writeAudit(ctx, req.user, 'settings.notifications', { type: 'settings' }, { language }, req.ip);
+    return { language, explicit: true };
+  });
 
   const shape = (c: any) => {
     const type = channelTypes.get(c.type);
@@ -65,7 +77,7 @@ export async function notificationRoutes(app: FastifyInstance) {
     const id = (req.params as any).id;
     const ch = await db.selectFrom('notification_channels').select('id').where('id', '=', id).executeTakeFirst();
     if (!ch) return reply.code(404).send({ error: 'not_found' });
-    const sample = parseMonitor({ id: 0, name: 'Test monitor', type: 'http', config: '{}', group_id: null, description: null, interval_s: 60, timeout_s: 10, retries: 0, retry_interval_s: 20, up_threshold: 1, down_threshold: 1, flap_window: 10, flap_threshold: 6, down_after_s: null, active: 1, locations: null, quorum: 1, push_token: null, public_badge: 0, next_run_at: null, lease_owner: null, lease_until: null, attempt: 0, created_by: null, created_at: new Date(), updated_at: new Date() });
+    const sample = parseMonitor({ id: 0, name: 'Test monitor', type: 'http', config: '{}', group_id: null, description: null, interval_s: 60, timeout_s: 10, retries: 0, retry_interval_s: 20, up_threshold: 1, down_threshold: 1, flap_window: 10, flap_threshold: 6, active: 1, locations: null, quorum: 1, push_token: null, public_badge: 0, next_run_at: null, lease_owner: null, lease_until: null, attempt: 0, created_by: null, created_at: new Date(), updated_at: new Date() });
     return ctx.notifier.test(id, sample);
   });
 

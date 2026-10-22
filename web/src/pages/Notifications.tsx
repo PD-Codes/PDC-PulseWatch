@@ -84,6 +84,18 @@ function QuietEditor({ value, onChange }: { value: Quiet | null; onChange: (v: Q
 
 type ChForm = { id?: number; name: string; type: string; config: Record<string, any>; active: boolean; isDefault: boolean; quietHours: Quiet | null; templateId: number | null };
 
+/** One language for alerts, the daily digest and report mails. Without a saved choice the server follows the administrators' profile language. */
+function LanguageSetting() {
+  const t = useT(); const qc = useQueryClient(); const toast = useToast(); const fail = useFail();
+  const q = useQuery({ queryKey: ['notification-language'], queryFn: () => get<{ language: 'en' | 'de'; explicit: boolean }>('/api/settings/notifications') });
+  const save = useMutation({ mutationFn: (language: 'en' | 'de') => put('/api/settings/notifications', { language }), onSuccess: () => { void qc.invalidateQueries({ queryKey: ['notification-language'] }); toast(t('common.saved')); }, onError: fail });
+  return (
+    <Field label={t('notifications.language')} hint={t('notifications.languageHint')} className="max-w-sm">
+      {(id) => <Select id={id} value={q.data?.language ?? 'en'} disabled={!q.data || save.isPending} onChange={(e) => save.mutate(e.target.value as 'en' | 'de')}><option value="en">English</option><option value="de">Deutsch</option></Select>}
+    </Field>
+  );
+}
+
 function Channels({ admin }: { admin: boolean }) {
   const t = useT(); const qc = useQueryClient(); const toast = useToast(); const confirm = useConfirm(); const fail = useFail();
   const types = useQuery({ queryKey: ['notification-types'], queryFn: () => get<TypeInfo[]>('/api/notification-types'), staleTime: 3_600_000 });
@@ -108,7 +120,7 @@ function Channels({ admin }: { admin: boolean }) {
 
   return (
     <>
-      <div className="mb-3 flex justify-end">{admin && <Button variant="primary" disabled={!types.data} onClick={() => { const ty = types.data![0].type; setF({ name: '', type: ty, config: defaults(ty), active: true, isDefault: false, quietHours: null, templateId: null }); }}><Plus className="h-4 w-4" />{t('notifications.channel.new')}</Button>}</div>
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">{admin ? <LanguageSetting /> : <span />}{admin && <Button variant="primary" disabled={!types.data} onClick={() => { const ty = types.data![0].type; setF({ name: '', type: ty, config: defaults(ty), active: true, isDefault: false, quietHours: null, templateId: null }); }}><Plus className="h-4 w-4" />{t('notifications.channel.new')}</Button>}</div>
       <Card>
         {list.isLoading ? <Loading /> : list.error ? <div className="p-4"><ErrorBox error={list.error} /></div> : !list.data?.length ? <EmptyState icon={<Bell className="h-6 w-6" />} title={t('notifications.channel.empty')} body={t('notifications.channel.emptyBody')} /> : (
           <div className="overflow-x-auto"><table className="tbl">
