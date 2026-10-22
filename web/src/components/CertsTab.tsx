@@ -28,7 +28,7 @@ export function CertsTab() {
         <form className="space-y-4 p-4" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
           <Field label={t('certs.pem')} hint={t('certs.pemHelp')}>{(id) => <Textarea id={id} rows={6} value={pem} onChange={(e) => setPem(e.target.value)} placeholder="-----BEGIN CERTIFICATE-----" spellCheck={false} className="font-mono text-xs" />}</Field>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label={t('certs.file')}>{(id) => <input id={id} type="file" accept=".pem,.crt,.cer,.txt" onChange={(e) => void readFile(e.target.files?.[0])} className="text-sm" />}</Field>
+            <Field label={t('certs.file')}>{(id) => <input id={id} type="file" accept=".pem,.crt,.cer,.txt" onChange={(e) => void readFile(e.target.files?.[0])} className="input" />}</Field>
             <Field label={t('certs.name')}>{(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} maxLength={128} />}</Field>
           </div>
           <Button type="submit" variant="primary" loading={add.isPending} disabled={!pem.trim()}><Plus className="h-4 w-4" aria-hidden />{t('certs.import')}</Button>

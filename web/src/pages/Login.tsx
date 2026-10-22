@@ -32,7 +32,11 @@ export default function Login() {
   const submit = async (e: FormEvent) => {
     e.preventDefault(); setBusy(true); setError(null);
     try { await login({ username, password, totp: needTotp ? totp : undefined }); nav(from, { replace: true }); }
-    catch (err) { if (err instanceof ApiError && err.code === 'totp_required') setNeedTotp(true); else setError(err); }
+    catch (err) {
+      if (err instanceof ApiError && err.code === 'totp_required') setNeedTotp(true);
+      else if (err instanceof ApiError && err.code === 'no_access') { const to = err.body?.redirect as string | null | undefined; if (to) nav(to, { replace: true }); else setError(new Error(t('auth.error.no_access'))); } // not in an allowed group: open status page or notice
+      else setError(err);
+    }
     finally { setBusy(false); }
   };
   const withPasskey = async () => {

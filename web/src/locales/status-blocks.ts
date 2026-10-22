@@ -1,0 +1,33 @@
+// Strings for the optional content blocks of status pages.
+export const en = {
+  'statuspages.tab.blocks': 'Extras',
+  'blocks.intro': 'Extras appear below the components, in this order. Visitors only see numbers for the components on this page.',
+  'blocks.empty': 'No extras yet. Add a block to show more than the component list.',
+  'blocks.add': 'Add a block',
+  'blocks.max': 'At most {n} blocks per page.',
+  'blocks.type.summary': 'Uptime summary', 'blocks.type.heatmap': 'Heatmap', 'blocks.type.streak': 'Days without incident', 'blocks.type.text': 'Text',
+  'blocks.desc.summary': 'Uptime over 24 hours, 7, 30 and 90 days.',
+  'blocks.desc.heatmap': 'A calendar of daily uptime, one square per day.',
+  'blocks.desc.streak': 'Counts the days since the last incident this page shows.',
+  'blocks.desc.text': 'A heading and a paragraph, e.g. contact or SLA notes.',
+  'blocks.range': 'Range', 'blocks.textTitle': 'Heading', 'blocks.textBody': 'Text',
+  'public.summary.h24': 'Last 24 hours', 'public.summary.d7': 'Last 7 days', 'public.summary.d30': 'Last 30 days', 'public.summary.d90': 'Last 90 days',
+  'public.streak.days': 'days without an incident', 'public.streak.day': 'day without an incident', 'public.streak.today': 'An incident was resolved today', 'public.streak.ongoing': 'An incident is ongoing', 'public.streak.none': 'No incidents on record',
+  'public.heatmap': 'Daily uptime',
+};
+export const de = {
+  'statuspages.tab.blocks': 'Extras',
+  'blocks.intro': 'Extras erscheinen unterhalb der Komponenten in dieser Reihenfolge. Besucher sehen nur Zahlen der Komponenten dieser Seite.',
+  'blocks.empty': 'Noch keine Extras. Füge einen Block hinzu, um mehr als die Komponentenliste zu zeigen.',
+  'blocks.add': 'Block hinzufügen',
+  'blocks.max': 'Höchstens {n} Blöcke pro Seite.',
+  'blocks.type.summary': 'Verfügbarkeits-Übersicht', 'blocks.type.heatmap': 'Heatmap', 'blocks.type.streak': 'Tage ohne Vorfall', 'blocks.type.text': 'Text',
+  'blocks.desc.summary': 'Verfügbarkeit über 24 Stunden sowie 7, 30 und 90 Tage.',
+  'blocks.desc.heatmap': 'Ein Kalender der täglichen Verfügbarkeit, ein Feld pro Tag.',
+  'blocks.desc.streak': 'Zählt die Tage seit dem letzten Vorfall, den diese Seite zeigt.',
+  'blocks.desc.text': 'Eine Überschrift und ein Absatz, z. B. Kontakt- oder SLA-Hinweise.',
+  'blocks.range': 'Zeitraum', 'blocks.textTitle': 'Überschrift', 'blocks.textBody': 'Text',
+  'public.summary.h24': 'Letzte 24 Stunden', 'public.summary.d7': 'Letzte 7 Tage', 'public.summary.d30': 'Letzte 30 Tage', 'public.summary.d90': 'Letzte 90 Tage',
+  'public.streak.days': 'Tage ohne Vorfall', 'public.streak.day': 'Tag ohne Vorfall', 'public.streak.today': 'Ein Vorfall wurde heute behoben', 'public.streak.ongoing': 'Ein Vorfall dauert an', 'public.streak.none': 'Keine Vorfälle verzeichnet',
+  'public.heatmap': 'Tägliche Verfügbarkeit',
+};

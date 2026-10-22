@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Lock, Rss, Wrench, XCircle } from 'lucide-react';
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
+import { CalendarHeatmap, type HeatDay } from '../components/CalendarHeatmap';
 import { Pager } from '../components/Pager';
 import { Badge, Button, cx, ErrorBox, Field, Input, Loading, type Tone } from '../components/ui';
 import { ApiError, get, post } from '../lib/api';
@@ -11,11 +12,16 @@ import { useT } from '../lib/i18n';
 type CompStatus = 'operational' | 'outage' | 'degraded' | 'maintenance' | 'unknown';
 interface Comp { monitorId: number; name: string; description: string | null; status: CompStatus; since: string | null; uptime: number | null; daily: { date: string; uptime: number | null }[] }
 interface Incident { id: number; title: string; status: string; severity: 'minor' | 'major' | 'critical'; startedAt: string; resolvedAt: string | null; updates: { ts: string; kind: string; status?: string | null; body: string | null }[] }
+type Block =
+  | { type: 'summary'; uptime: { h24: number | null; d7: number | null; d30: number | null; d90: number | null } }
+  | { type: 'heatmap'; days: HeatDay[] }
+  | { type: 'streak'; days: number | null; ongoing: boolean }
+  | { type: 'text'; title: string; body: string };
 interface Page {
   slug: string; title: string; description: string | null; branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number;
   overall: 'operational' | 'partial' | 'outage' | 'degraded' | 'maintenance'; generatedAt: string; sections: { name: string; components: Comp[] }[]; components: Comp[];
   announcements: { id: number; kind: 'info' | 'maintenance' | 'incident'; title: string; body: string | null; startsAt: string; endsAt: string | null }[];
-  maintenance: { id: number; name: string; description: string | null; endsAt: string }[]; incidents: Incident[]; recentIncidents: Incident[]; incidentDays: number; incidentPageSize: number; subscribe: { email: boolean };
+  maintenance: { id: number; name: string; description: string | null; endsAt: string }[]; incidents: Incident[]; recentIncidents: Incident[]; incidentDays: number; incidentPageSize: number; blocks: Block[]; subscribe: { email: boolean };
 }
 
 const DOT: Record<CompStatus, string> = { operational: 'bg-emerald-500', outage: 'bg-red-500', degraded: 'bg-amber-500', maintenance: 'bg-sky-500', unknown: 'bg-slate-400' };
@@ -53,6 +59,27 @@ function Component({ comp, history, days }: { comp: Comp; history: boolean; days
       )}
     </li>
   );
+}
+
+function BlockView({ block }: { block: Block }) {
+  const t = useT();
+  if (block.type === 'summary') {
+    return (
+      <section className="card grid grid-cols-2 divide-slate-100 sm:grid-cols-4 sm:divide-x dark:divide-slate-800">
+        {(['h24', 'd7', 'd30', 'd90'] as const).map((k) => <div key={k} className="px-4 py-3"><div className="text-xs text-slate-500">{t(`public.summary.${k}`)}</div><div className="text-xl font-semibold tabular-nums">{block.uptime[k] == null ? '–' : fmtPct(block.uptime[k])}</div></div>)}
+      </section>
+    );
+  }
+  if (block.type === 'heatmap') return block.days.length === 0 ? null : <section className="card p-4"><h2 className="mb-3 text-sm font-semibold">{t('public.heatmap')}</h2><CalendarHeatmap days={block.days} /></section>;
+  if (block.type === 'streak') {
+    const n = block.days;
+    return (
+      <section className="card flex items-baseline gap-3 px-4 py-3" role="status">
+        {n == null ? <span className="text-sm text-slate-500">{t('public.streak.none')}</span> : block.ongoing ? <span className="text-sm font-medium text-amber-700 dark:text-amber-400">{t('public.streak.ongoing')}</span> : n === 0 ? <span className="text-sm font-medium">{t('public.streak.today')}</span> : <><span className="text-3xl font-semibold tabular-nums text-emerald-700 dark:text-emerald-400">{n}</span><span className="text-sm text-slate-600 dark:text-slate-300">{n === 1 ? t('public.streak.day') : t('public.streak.days')}</span></>}
+      </section>
+    );
+  }
+  return <section className="card p-4">{block.title && <h2 className="text-sm font-semibold">{block.title}</h2>}{block.body && <p className="mt-1 whitespace-pre-wrap text-sm">{block.body}</p>}</section>;
 }
 
 const PHASES = new Set(['identified', 'fixing', 'monitoring']);
@@ -172,6 +199,8 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
         {page.sections.map((s) => list(s.components, s.name))}
         {page.components.length > 0 && list(page.components)}
         {page.sections.length === 0 && page.components.length === 0 && <p className="text-center text-sm text-slate-500">{t('public.noComponents')}</p>}
+
+        {(page.blocks ?? []).map((b, i) => <BlockView key={i} block={b} />)}
 
         {page.recentIncidents.length > 0 && <PastIncidents items={page.recentIncidents} pageSize={page.incidentPageSize} days={page.incidentDays} />}
 

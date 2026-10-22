@@ -2,8 +2,8 @@ import { Type } from '@sinclair/typebox';
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from '@simplewebauthn/server';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { maskSecrets, restoreSecrets, validateConfig } from '../../core';
-import { writeAudit } from '../auth/access';
-import { oidcFinish, oidcStart, providerRunner, samlAcsUrl, samlConfigErrors, samlEntityId, samlFinish, samlMetadata, samlStart } from '../auth/external';
+import { fallbackStatusPath, writeAudit } from '../auth/access';
+import { GroupDenied, oidcFinish, oidcStart, providerRunner, samlAcsUrl, samlConfigErrors, samlEntityId, samlFinish, samlMetadata, samlStart } from '../auth/external';
 import { createSession, csrfFor } from '../auth/plugin';
 import { reauthError } from '../auth/reauth';
 import { config } from '../config';
@@ -67,6 +67,12 @@ export async function authExtRoutes(app: FastifyInstance) {
 
   /* ----------------------------------- OIDC ----------------------------------- */
   const loginError = (reply: FastifyReply, code: string) => reply.redirect(`/login?error=${encodeURIComponent(code)}`);
+  /** Signed in at the identity provider but in no allowed group: the public status page if there is one, otherwise a notice on the login page. */
+  const noAccess = async (req: FastifyRequest, reply: FastifyReply, via: 'oidc' | 'saml', status = 302) => {
+    await writeAudit(ctx, null, 'login.denied', { type: via }, { why: 'no allowed group' }, req.ip);
+    const to = await fallbackStatusPath(ctx);
+    return to ? reply.redirect(to, status as 302) : loginError(reply, 'no_access');
+  };
   app.get('/api/auth/oidc/:id/start', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } }, schema: { tags: ['auth'], params: Id, hide: true } }, async (req, reply) => {
     try {
       const s = await oidcStart(ctx, (req.params as any).id);
@@ -84,7 +90,10 @@ export async function authExtRoutes(app: FastifyInstance) {
       await createSession(ctx, uid, req, reply);
       await writeAudit(ctx, { id: uid, username: `user#${uid}` }, 'login.success', { type: 'user', id: uid }, { via: 'oidc' }, req.ip);
       return reply.redirect('/dashboard');
-    } catch (e) { ctx.log.warn({ err: (e as Error).message }, 'OIDC callback failed'); return loginError(reply, 'sso_failed'); }
+    } catch (e) {
+      if (e instanceof GroupDenied) return noAccess(req, reply, 'oidc');
+      ctx.log.warn({ err: (e as Error).message }, 'OIDC callback failed'); return loginError(reply, 'sso_failed');
+    }
   });
 
   /* ----------------------------------- SAML ----------------------------------- */
@@ -114,6 +123,7 @@ export async function authExtRoutes(app: FastifyInstance) {
         await writeAudit(ctx, { id: uid, username: `user#${uid}` }, 'login.success', { type: 'user', id: uid }, { via: 'saml' }, req.ip);
         return reply.redirect('/dashboard', 303); // 303 turns the IdP's POST into a plain GET of the app
       } catch (e) {
+        if (e instanceof GroupDenied) return noAccess(req, reply, 'saml', 303);
         ctx.log.warn({ err: (e as Error).message }, 'SAML assertion rejected');
         await writeAudit(ctx, null, 'login.failed', { type: 'saml' }, { why: (e as Error).message.slice(0, 200) }, req.ip);
         return loginError(reply, 'sso_failed');

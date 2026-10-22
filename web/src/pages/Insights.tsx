@@ -1,14 +1,15 @@
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Badge, Card, CardHeader, EmptyState, ErrorBox, Loading, PageHeader, Select, Tabs, cx } from '../components/ui';
+import { CalendarHeatmap, type HeatDay } from '../components/CalendarHeatmap';
+import { Badge, Card, CardHeader, EmptyState, ErrorBox, Loading, PageHeader, Select, Tabs } from '../components/ui';
 import { StatusDot } from '../components/status';
 import { get, type MonitorItem } from '../lib/api';
-import { fmtDate, fmtDateTime, fmtPct } from '../lib/format';
+import { fmtDateTime } from '../lib/format';
 import { useT } from '../lib/i18n';
 
 type Tab = 'heatmap' | 'changes';
-interface Day { date: string; uptime: number | null; down: number; total: number; maintenance: number }
+
 interface Change { id: number; ts: string; monitorId: number; monitor: string; type: string; from: string | null; to: string | null; errorKind: string | null; message: string | null; relation: string; offsetSec: number }
 interface Changes { anchor: { at: string; monitorId: number | null; incidentId: number | null; title: string | null }; windowMin: number; hints: string[]; events: Change[] }
 interface IncidentRow { id: number; title: string; startedAt: string; status: string }
@@ -27,40 +28,12 @@ export default function Insights() {
   );
 }
 
-/** Red for failures (scaled by uptime), green for clean days, gray when no data. */
-function cellClass(d: Day): string {
-  if (d.uptime == null) return 'bg-slate-200 dark:bg-slate-800';
-  if (d.uptime >= 99.95) return 'bg-emerald-500';
-  if (d.uptime >= 99) return 'bg-emerald-300 dark:bg-emerald-700';
-  if (d.uptime >= 97) return 'bg-amber-300 dark:bg-amber-500';
-  if (d.uptime >= 90) return 'bg-orange-400';
-  return 'bg-red-500';
-}
-
 function Heatmap() {
   const t = useT();
   const [monitorId, setMonitorId] = useState('');
   const [days, setDays] = useState('365');
-  const [hover, setHover] = useState<Day | null>(null);
   const monitors = useQuery({ queryKey: ['monitors'], queryFn: () => get<MonitorItem[]>('/api/monitors') });
-  const q = useQuery({ queryKey: ['insights', 'heatmap', monitorId, days], queryFn: () => get<{ days: Day[] }>(`/api/insights/heatmap?days=${days}${monitorId ? `&monitorId=${monitorId}` : ''}`) });
-
-  // Weeks as columns, Sunday-first rows; pad the first week so weekdays line up.
-  const weeks = useMemo(() => {
-    const list = q.data?.days ?? [];
-    if (!list.length) return [] as (Day | null)[][];
-    const lead = new Date(`${list[0].date}T00:00:00Z`).getUTCDay();
-    const cells: (Day | null)[] = [...Array<null>(lead).fill(null), ...list];
-    const out: (Day | null)[][] = [];
-    for (let i = 0; i < cells.length; i += 7) out.push(cells.slice(i, i + 7));
-    return out;
-  }, [q.data]);
-
-  const stats = useMemo(() => {
-    const l = (q.data?.days ?? []).filter((d) => d.uptime != null);
-    return { clean: l.filter((d) => d.down === 0).length, bad: l.filter((d) => d.down > 0).length, avg: l.length ? l.reduce((a, d) => a + (d.uptime ?? 0), 0) / l.length : null };
-  }, [q.data]);
-  const dayNames = useMemo(() => [0, 1, 2, 3, 4, 5, 6].map((i) => new Intl.DateTimeFormat(undefined, { weekday: 'short', timeZone: 'UTC' }).format(new Date(Date.UTC(2023, 0, 1 + i)))), []);
+  const q = useQuery({ queryKey: ['insights', 'heatmap', monitorId, days], queryFn: () => get<{ days: HeatDay[] }>(`/api/insights/heatmap?days=${days}${monitorId ? `&monitorId=${monitorId}` : ''}`) });
 
   return (
     <Card>
@@ -69,30 +42,8 @@ function Heatmap() {
         <Select aria-label={t('insights.period')} value={days} onChange={(e) => setDays(e.target.value)} className="w-auto">{['90', '180', '365'].map((d) => <option key={d} value={d}>{t('insights.days', { n: d })}</option>)}</Select>
       </>} />
       <div className="p-4">
-        {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : weeks.length === 0 ? <EmptyState title={t('monitors.noData')} /> : (
-          <>
-            <div className="overflow-x-auto pb-2">
-              <div className="flex gap-1">
-                <div className="flex flex-col gap-1 pr-1 text-[10px] text-slate-400" aria-hidden>{dayNames.map((n, i) => <span key={n} className="h-3.5 leading-[14px]">{i % 2 ? n : ''}</span>)}</div>
-                {weeks.map((w, i) => (
-                  <div key={i} className="flex flex-col gap-1">
-                    {Array.from({ length: 7 }, (_, r) => {
-                      const d = w[r];
-                      if (!d) return <span key={r} className="h-3.5 w-3.5" />;
-                      const label = d.uptime == null ? t('insights.noData', { date: fmtDate(`${d.date}T12:00:00Z`) }) : t('insights.cell', { date: fmtDate(`${d.date}T12:00:00Z`), uptime: fmtPct(d.uptime, 2), down: d.down, total: d.total });
-                      return <button key={r} type="button" aria-label={label} title={label} onMouseEnter={() => setHover(d)} onFocus={() => setHover(d)} onMouseLeave={() => setHover(null)} onBlur={() => setHover(null)} className={cx('h-3.5 w-3.5 rounded-sm outline-offset-1 hover:ring-2 hover:ring-slate-900/40 focus-visible:ring-2 focus-visible:ring-brand-500 dark:hover:ring-white/50', cellClass(d))} />;
-                    })}
-                  </div>
-                ))}
-              </div>
-            </div>
-            <p className="mt-2 min-h-[1.25rem] text-sm text-slate-600 dark:text-slate-300" aria-live="polite">{hover ? (hover.uptime == null ? t('insights.noData', { date: fmtDate(`${hover.date}T12:00:00Z`) }) : t('insights.cell', { date: fmtDate(`${hover.date}T12:00:00Z`), uptime: fmtPct(hover.uptime, 2), down: hover.down, total: hover.total })) : ''}</p>
-            <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-slate-500">
-              <span className="flex items-center gap-1">{t('insights.worse')}{['bg-red-500', 'bg-orange-400', 'bg-amber-300 dark:bg-amber-500', 'bg-emerald-300 dark:bg-emerald-700', 'bg-emerald-500'].map((c) => <span key={c} className={cx('h-3 w-3 rounded-sm', c)} />)}{t('insights.better')}</span>
-              <span className="flex items-center gap-1"><span className="h-3 w-3 rounded-sm bg-slate-200 dark:bg-slate-800" />{t('insights.none')}</span>
-              <span>{t('insights.summary', { clean: stats.clean, bad: stats.bad, avg: fmtPct(stats.avg, 3) })}</span>
-            </div>
-          </>
+        {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : !q.data?.days.length ? <EmptyState title={t('monitors.noData')} /> : (
+          <CalendarHeatmap days={q.data?.days ?? []} />
         )}
       </div>
     </Card>

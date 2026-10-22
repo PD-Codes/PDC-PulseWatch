@@ -8,6 +8,7 @@ import type { Ctx } from '../context';
 import { decrypt, encrypt, hashPassword, hmac, randomToken, safeEqual, sha256, verifyPassword } from '../crypto';
 import { bool, parseJson } from '../db';
 import { mailConfigured, sendSystemMail } from '../mail';
+import { MAX_BLOCKS, normalizeBlocks, renderBlocks } from '../status-blocks';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
 const Slug = Type.Object({ slug: Type.String({ minLength: 1, maxLength: 64 }) });
@@ -15,7 +16,7 @@ const esc = (s: string) => s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '').replac
 const DAY = 86_400_000;
 export const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180] as const;
 
-type Page = { id: number; slug: string; title: string; description: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; show_history: number; history_days: number; is_default: number; incident_days: number; incident_page_size: number };
+type Page = { id: number; slug: string; title: string; description: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; blocks: string | null; show_history: number; history_days: number; is_default: number; incident_days: number; incident_page_size: number };
 const unlockCookie = (p: Page) => `pw_sp_${p.id}`;
 const unlockValue = (p: Page) => hmac(`status-unlock:${p.id}:${p.password_hash}`);
 
@@ -39,6 +40,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     domain: Type.Optional(Type.Union([Type.String({ pattern: '^[a-z0-9.-]{3,255}$' }), Type.Null()])),
     isPublic: Type.Boolean(), password: Type.Optional(Type.Union([Type.String({ minLength: 4, maxLength: 200 }), Type.Null()])), ssoRequired: Type.Optional(Type.Boolean()),
     branding: Type.Optional(Type.Object({ logoUrl: Type.Optional(Type.String({ maxLength: 2000 })), primaryColor: Type.Optional(Type.String({ pattern: '^#[0-9a-fA-F]{6}$' })), footer: Type.Optional(Type.String({ maxLength: 500 })) })),
+    blocks: Type.Optional(Type.Array(Type.Object({}, { additionalProperties: true }), { maxItems: MAX_BLOCKS })),
     customCss: Type.Optional(Type.Union([Type.String({ maxLength: 50_000 }), Type.Null()])), showHistory: Type.Optional(Type.Boolean()), historyDays: Type.Optional(Type.Union(HISTORY_DAYS.map((d) => Type.Literal(d)))), isDefault: Type.Optional(Type.Boolean()),
     incidentDays: Type.Optional(Type.Integer({ minimum: 0, maximum: 365 })), incidentPageSize: Type.Optional(Type.Integer({ minimum: 5, maximum: 50 })),
     sections: Type.Array(Type.Object({ name: Type.String({ minLength: 1, maxLength: 255 }), components: Type.Array(compBody) }), { maxItems: 50 }),
@@ -53,7 +55,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const map = (c: typeof comps[number]) => ({ monitorId: c.monitor_id, displayName: c.display_name });
     return {
       id: p.id, slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), hasPassword: !!p.password_hash, ssoRequired: bool(p.sso_required),
-      branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size,
+      branding: parseJson(p.branding, {}), customCss: p.custom_css, blocks: normalizeBlocks(parseJson(p.blocks, [])), showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size,
       sections: sections.map((s) => ({ id: s.id, name: s.name, components: comps.filter((c) => c.section_id === s.id).map(map) })), components: comps.filter((c) => !c.section_id).map(map),
     };
   };
@@ -86,6 +88,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
       slug: b.slug, title: b.title, description: b.description ?? null, domain: b.domain ? String(b.domain).toLowerCase() : null, is_public: b.isPublic ? 1 : 0, sso_required: b.ssoRequired ? 1 : 0,
       branding: JSON.stringify(b.branding ?? {}), custom_css: b.customCss ?? null, show_history: b.showHistory === false ? 0 : 1, history_days: b.historyDays ?? 90,
     };
+    if (b.blocks !== undefined) values.blocks = JSON.stringify(normalizeBlocks(b.blocks));
     if (b.incidentDays !== undefined) values.incident_days = b.incidentDays;
     if (b.incidentPageSize !== undefined) values.incident_page_size = b.incidentPageSize;
     if (b.isDefault !== undefined) values.is_default = b.isDefault ? 1 : 0;
@@ -254,6 +257,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
       sections: sections.map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map(shape) })), components: comps.filter((c) => !c.section_id).map(shape),
       announcements: announcements.map((a) => ({ id: a.id, kind: a.kind, title: a.title, body: a.body, startsAt: a.starts_at, endsAt: a.ends_at })), maintenance: maint,
       incidents: incidents.filter((i) => !i.resolvedAt), recentIncidents: incidents.filter((i) => i.resolvedAt),
+      blocks: await renderBlocks(ctx, p.id, normalizeBlocks(parseJson(p.blocks, [])), ids),
       subscribe: { email: mailConfigured() },
     };
   }

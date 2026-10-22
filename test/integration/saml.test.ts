@@ -115,3 +115,51 @@ describe('SAML sign-in', () => {
     expect(bad.json.message).toContain('certificate');
   });
 });
+
+describe('SAML group allow-list', () => {
+  const config = (allowedGroups: string) => ({ entryPoint: 'https://login.example.com/saml2', idpIssuer: IDP, idpCert: CRT, emailAttr: 'email', nameAttr: 'name', groupsAttr: 'groups', adminGroups: 'g-admin', editorGroups: 'g-edit', defaultRole: 'viewer', autoCreate: true, allowedGroups });
+  const login = async (name: string, groups: string[]) => {
+    const s = await start();
+    const r = await post(s.c, { SAMLResponse: signedResponse({ inResponseTo: s.requestId, name, email: `${name}@example.com`, groups }), RelayState: s.relay });
+    return { s, r };
+  };
+  let admin: ReturnType<TestApp['client']>;
+  beforeAll(async () => {
+    admin = t.client();
+    await admin.post('/api/auth/login', { username: 'admin', password: 'correct-horse-battery-1' });
+    expect((await admin.put(`/api/auth/providers/${pid}`, { kind: 'saml', name: 'Entra', enabled: true, config: config('g-staff') })).status).toBe(200);
+  });
+
+  it('lets members of an allowed group in, and admin or editor groups count as allowed', async () => {
+    for (const [name, groups] of [['gate-1', ['g-staff']], ['gate-2', ['g-admin']], ['gate-3', ['g-edit']]] as const) {
+      const { s, r } = await login(name, [...groups]);
+      expect(r.headers.location, name).toBe('/dashboard');
+      expect((await s.c.get('/api/auth/me')).status).toBe(200);
+    }
+  });
+
+  it('shows a notice when nobody is allowed in and no status page is public', async () => {
+    const { s, r } = await login('gate-4', ['g-other']);
+    expect(r.headers.location).toContain('/login?error=no_access');
+    expect((await s.c.get('/api/auth/me')).status).toBe(401);
+    const users = (await admin.get('/api/users')).json as { username: string }[];
+    expect(users.some((u) => u.username.startsWith('gate-1'))).toBe(true); // the list is the array we think it is
+    expect(users.some((u) => u.username.startsWith('gate-4'))).toBe(false); // and the refused user got no account
+  });
+
+  it('sends everyone else to the open status page, and ends the sessions of someone who lost access', async () => {
+    const page = await admin.post('/api/status-pages', { slug: 'public-one', title: 'Public', isPublic: true, sections: [] });
+    expect(page.status).toBe(200);
+    const first = await login('gate-5', ['g-staff']);
+    expect(first.r.headers.location).toBe('/dashboard');
+    const again = await login('gate-5', []); // same user, removed from the group
+    expect(again.r.headers.location).toBe('/status/public-one');
+    expect((await first.s.c.get('/api/auth/me')).status).toBe(401);
+  });
+
+  it('does not restrict anyone when the list is empty', async () => {
+    await admin.put(`/api/auth/providers/${pid}`, { kind: 'saml', name: 'Entra', enabled: true, config: config('') });
+    const { r } = await login('gate-6', []);
+    expect(r.headers.location).toBe('/dashboard');
+  });
+});

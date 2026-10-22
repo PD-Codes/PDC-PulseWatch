@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FolderPlus, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button, Card, CardHeader, ErrorBox, Field, Input, Loading, PageHeader, Select, Textarea, Toggle, useToast } from '../components/ui';
 import { TagValueEditor, toTagValues, type TagValueRow } from '../components/TagEditor';
+import { JsonPicker } from '../components/JsonPicker';
 import { initValues, MonitorFields, toConfig, type FieldValue, type FieldValues, type MonitorType } from '../components/MonitorFields';
 import { ApiError, errorMessage, get, post, put, type Group, type MonitorItem, type Tag, type TagInfo } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -235,7 +236,10 @@ export default function MonitorForm() {
       {runner && runner.fields.length > 0 && (
         <Card>
           <CardHeader title={runner.label} />
-          <div className="p-4"><MonitorFields idPrefix="mf" fields={bulk && addressField ? runner.fields.filter((f) => f.key !== addressField.key) : runner.fields} values={vals} onChange={(k: string, v: FieldValue) => setVals((o) => ({ ...o, [k]: v }))} /></div>
+          <div className="p-4">
+            <MonitorFields idPrefix="mf" fields={bulk && addressField ? runner.fields.filter((f) => f.key !== addressField.key) : runner.fields} values={vals} onChange={(k: string, v: FieldValue) => setVals((o) => ({ ...o, [k]: v }))} />
+            {type === 'json' && !bulk && <JsonPicker fields={runner.fields} values={vals} monitorId={id} onPick={(p) => setVals((o) => ({ ...o, ...p }))} />}
+          </div>
         </Card>
       )}
 
@@ -273,6 +277,9 @@ export default function MonitorForm() {
         </div>
       </Card>
 
+      {!isPush && probes.isSuccess && probeList.length === 0 && can('admin') && (
+        <p className="rounded-lg border border-dashed border-slate-300 p-3 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300"><strong className="font-semibold">{t('probes.formHint.title')}.</strong> {t('probes.formHint.body')} <Link to="/probes">{t('probes.formHint.link')}</Link></p>
+      )}
       {!isPush && probeList.length > 0 && (
         <Card>
           <CardHeader title={t('monitors.locations')} subtitle={t('monitors.form.locationsHint')} />

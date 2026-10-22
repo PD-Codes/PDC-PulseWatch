@@ -1,7 +1,10 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
-import { getRunner, runners, SECRET_MASK } from '../../core';
+import { getRunner, restoreSecrets, runners, SECRET_MASK, validateConfig } from '../../core';
+import { httpRequest } from '../../core/http';
+import { authHeaders } from '../../core/runners/http';
+import { timeoutSignal } from '../../core/util';
 import { accessibleGroupIds, accessibleMonitorIds, canManageMonitor, canWrite, writeAudit } from '../auth/access';
 import { config } from '../config';
 import { parseJson } from '../db';
@@ -199,6 +202,35 @@ export async function monitorRoutes(app: FastifyInstance) {
   app.post('/api/monitors/:id/check', { ...writer, schema: { tags: ['monitors'], summary: 'Run a check immediately', params: Id }, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (req, reply) => {
     const id = await guardMonitor(req, reply, 'manage'); if (!id) return;
     return ctx.engine.checkNow(id);
+  });
+
+  /**
+   * "Fetch result" in the monitor form: runs the request of an HTTP-style monitor once and returns the parsed JSON so the form can offer its fields.
+   * It uses the same SSRF guard as real checks. When editing, masked secrets are restored from the stored monitor.
+   */
+  app.post('/api/monitors/fetch-json', {
+    ...writer, config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
+    schema: { tags: ['monitors'], summary: 'Fetch a URL once and return its JSON body', body: Type.Object({ config: Type.Object({}, { additionalProperties: true }), monitorId: Type.Optional(Type.Integer({ minimum: 1 })) }) },
+  }, async (req, reply) => {
+    const b = req.body as { config: Record<string, any>; monitorId?: number };
+    const runner = getRunner('http')!; // same request fields as the JSON monitor, minus the assertion
+    let cfg = b.config;
+    if (b.monitorId) {
+      if (!(await canManageMonitor(ctx, req.user!, b.monitorId, 'manage'))) return reply.code(404).send({ error: 'not_found', message: 'Monitor not found' });
+      const stored = await loadMonitor(ctx, b.monitorId);
+      if (stored) cfg = restoreSecrets(runner, cfg, stored.config);
+    }
+    const v = validateConfig(runner, cfg);
+    if (v.errors.length) return reply.code(400).send({ error: 'validation', message: v.errors.join('; ') });
+    const c = v.config;
+    try {
+      const res = await httpRequest({ url: c.url, method: c.method, headers: authHeaders(c), body: c.body || undefined, signal: timeoutSignal(15_000), guard: ctx.guard, verifyTls: c.verifyTls, followRedirects: c.followRedirects, maxRedirects: c.maxRedirects });
+      let json: unknown = null, jsonError: string | null = null;
+      try { json = JSON.parse(res.body); } catch (e) { jsonError = res.truncated ? 'The response is larger than 1 MB and was cut off, so it is not valid JSON' : (e as Error).message; }
+      return { status: res.status, statusText: res.statusText, contentType: String(res.headers['content-type'] ?? ''), ms: Math.round(res.timings.total), bytes: Buffer.byteLength(res.body), truncated: res.truncated, json, jsonError, preview: jsonError ? res.body.slice(0, 1000) : null };
+    } catch (e) {
+      return reply.code(502).send({ error: 'fetch_failed', message: (e as Error).message });
+    }
   });
 
   const ruleBody = Type.Object({ channelId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), policyId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), events: Type.Optional(Type.Array(Type.String())) });

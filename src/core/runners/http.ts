@@ -42,7 +42,7 @@ function httpFields(kind: 'http' | 'keyword' | 'json'): FieldDef[] {
   return f;
 }
 
-function authHeaders(c: Record<string, any>): Record<string, string> {
+export function authHeaders(c: Record<string, any>): Record<string, string> {
   const h: Record<string, string> = { ...(c.headers ?? {}) };
   if (c.authType === 'basic') h['Authorization'] = 'Basic ' + Buffer.from(`${c.basicUser ?? ''}:${c.basicPass ?? ''}`).toString('base64');
   if (c.authType === 'bearer') h['Authorization'] = `Bearer ${c.bearerToken ?? ''}`;

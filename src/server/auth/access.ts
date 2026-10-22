@@ -39,3 +39,10 @@ export async function writeAudit(ctx: Ctx, user: Pick<AuthUser, 'id' | 'username
     ip: ip ?? null, details: details === undefined ? null : JSON.stringify(details).slice(0, 8000),
   }).execute().catch((e) => ctx.log.warn({ err: e }, 'audit write failed'));
 }
+
+/** Where someone goes who signed in at the identity provider but may not use the application: an open status page, or null for a plain notice. */
+export async function fallbackStatusPath(ctx: Ctx): Promise<string | null> {
+  const row = await ctx.db.selectFrom('status_pages').select('slug').where('is_public', '=', 1).where('password_hash', 'is', null).where('sso_required', '=', 0)
+    .orderBy('is_default', 'desc').orderBy('title').executeTakeFirst();
+  return row ? `/status/${row.slug}` : null;
+}

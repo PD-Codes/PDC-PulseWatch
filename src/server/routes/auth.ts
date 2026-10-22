@@ -3,11 +3,11 @@ import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import { config } from '../config';
 import { createSession, COOKIE, csrfFor } from '../auth/plugin';
-import { writeAudit } from '../auth/access';
+import { fallbackStatusPath, writeAudit } from '../auth/access';
 import { countFailure, reauthError } from '../auth/reauth';
 import { decrypt, encrypt, hashPassword, newTotpSecret, randomToken, sha256, verifyPassword, verifyTotp } from '../crypto';
 import { bool, parseJson } from '../db';
-import { ldapLogin } from '../auth/external';
+import { ldapLogin, NO_GROUP } from '../auth/external';
 
 const DUMMY_HASH = 'scrypt$32768$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 
@@ -52,6 +52,10 @@ export async function authRoutes(app: FastifyInstance) {
     if (!any || any.auth_source === 'ldap') {
       // directory accounts: bind against the configured LDAP servers (undefined = none configured, fall through to the local failure path)
       const uid = await ldapLogin(ctx, b.username, b.password);
+      if (uid === NO_GROUP) {
+        await writeAudit(ctx, null, 'login.denied', { type: 'user', id: b.username }, { why: 'no allowed group', via: 'ldap' }, req.ip);
+        return reply.code(403).send({ error: 'no_access', message: 'Your account is not in a group that may use this application.', redirect: await fallbackStatusPath(ctx) });
+      }
       if (uid) {
         const token = await createSession(ctx, uid, req, reply);
         await writeAudit(ctx, { id: uid, username: b.username }, 'login.success', { type: 'user', id: uid }, { via: 'ldap' }, req.ip);

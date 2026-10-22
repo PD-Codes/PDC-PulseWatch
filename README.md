@@ -216,6 +216,18 @@ Mark a status page as *home page* (status page list, *Use as home page*) and it 
 
 An incident moves through *open*, *acknowledged*, *identified*, *being fixed*, *monitoring* and *resolved*; any status can follow any other one, and reopening clears the end time. In the incident dialog you can pick a whole monitor group instead of ticking every monitor. Notes you add are internal. Only status changes, the resolution and the post-mortem appear on the public status page, so write those for customers. Auto-resolve (the monitor recovered) leaves an incident in *monitoring* alone until someone resolves it; if the monitor fails again while monitoring, the incident reopens.
 
+## Restricting sign-in to groups
+
+Each OIDC, SAML and LDAP provider has an allow-list (**Allowed groups**; for LDAP **Allowed group DNs**, one per line). Members of an allowed group, of the admin groups or of the editor groups can sign in. Everyone else gets no account or session and is sent to the first public status page (no password, no sign-in requirement) or sees a notice that they lack permission. An empty list restricts nobody. Refusals are audited as `login.denied`, and a user who loses the group has their sessions ended at the next sign-in attempt.
+
+## Status page extras
+
+The **Extras** tab of a status page adds blocks below the components: an uptime summary (24 h, 7, 30, 90 days), a daily heatmap (90, 180 or 365 days), days without an incident and free text blocks. Figures only cover the page's own components and are cached for 60 seconds.
+
+## HTTP(S) JSON monitors
+
+In the monitor form, **Fetch result** calls the URL once with the form's settings (same SSRF rules, masked secrets restored from the saved monitor) and shows the response as a tree. Click a value to fill path, comparison and expected value.
+
 ## Status page history and groups
 
 In the status page editor an announcement is one click away: pick *Info*, *Maintenance* or *Incident* (a notice with an optional start and end). *Subscribers* (mail subscriptions) only appears when SMTP is configured. The same rule hides every other function that sends mail (daily digest, scheduled reports) while `PW_SMTP_HOST` is empty.
@@ -310,6 +322,8 @@ Measured with `test/load/scheduler.ts` on a 2 vCPU / 8 GB virtual machine, Maria
 - **Dead-man's switch:** `PW_DEADMAN_URL` makes PulseWatch ping an external service so you notice when PulseWatch itself is down.
 - **Saved views and flap detection** on the dashboard and per monitor.
 - **Bulk-add preview:** pasted spreadsheet columns are parsed live, duplicates are flagged before anything is created, failed lines stay in the box.
+- **Days without an incident** and a heatmap as optional status page blocks.
+- **JSON suggestions:** *Fetch result* proposes checks for typical status fields (`status`, `healthy`, `ok`, ...).
 - **Open-incident count in the tab title,** so a background tab shows `(2) Dashboard`.
 - **Whole-group import for status pages,** including subgroups.
 
