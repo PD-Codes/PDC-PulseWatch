@@ -41,9 +41,10 @@ function Protected({ role, children }: { role?: 'editor' | 'admin'; children?: R
   return <StreamProvider>{children ?? <Layout />}</StreamProvider>;
 }
 
-/** "/" shows the status page marked as default; without one it hands over to the dashboard. */
-function Root() {
-  const def = useQuery({ queryKey: ['default-page'], queryFn: () => get<{ slug: string | null }>('/api/public/default-page'), staleTime: 30_000, retry: false });
+/** "/" shows the status page of this domain, else the one marked as default; without either it hands over to the dashboard. */
+function Root({ hostSlug }: { hostSlug: string | null }) {
+  const def = useQuery({ queryKey: ['default-page'], queryFn: () => get<{ slug: string | null }>('/api/public/default-page'), staleTime: 30_000, retry: false, enabled: !hostSlug });
+  if (hostSlug) return <PublicStatus slug={hostSlug} />;
   if (def.isLoading) return <Loading />;
   if (def.data?.slug) return <PublicStatus slug={def.data.slug} />;
   return <Navigate to="/dashboard" replace />;
@@ -57,10 +58,9 @@ function RoleOnly({ role, children }: { role: 'editor' | 'admin'; children: Reac
 const guard = (el: React.ReactElement, role?: 'editor' | 'admin') => (role ? <RoleOnly role={role}>{el}</RoleOnly> : el);
 
 export default function App() {
-  // a status page served on its own domain replaces the whole app
+  // a status page served on its own domain is the start page there; the sign-in and the admin UI stay reachable
   const host = useQuery({ queryKey: ['host-page'], queryFn: () => get<{ slug: string | null }>('/api/public/host-page'), staleTime: Infinity, retry: false });
   if (host.isLoading) return <Loading />;
-  if (host.data?.slug) return <Suspense fallback={<Loading />}><PublicStatus slug={host.data.slug} /></Suspense>;
 
   return (
     <Suspense fallback={<Loading />}>
@@ -69,7 +69,7 @@ export default function App() {
         <Route path="/setup" element={<Setup />} />
         <Route path="/status/:slug" element={<PublicStatus />} />
         <Route path="/kiosk" element={<Protected><Kiosk /></Protected>} />
-        <Route index element={<Root />} />
+        <Route index element={<Root hostSlug={host.data?.slug ?? null} />} />
         <Route path="/admin" element={<Navigate to="/dashboard" replace />} />
         <Route element={<Protected />}>
           <Route path="dashboard" element={<Dashboard />} />

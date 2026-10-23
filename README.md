@@ -210,7 +210,7 @@ Probe results are stored when they arrive. The combined verdict for a monitor is
 
 ## Home page and sign-in
 
-Mark a status page as *home page* (status page list, *Use as home page*) and it is served at `/` for everyone. The admin UI stays reachable at `/dashboard` and `/admin`, which ask for a login. Without a home page `/` goes to the dashboard as before. Only one page can be the home page; setting another one moves the mark. A page that is not public is never used.
+Mark a status page as *home page* (status page list, *Use as home page*) and it is served at `/` for everyone. The admin UI stays reachable at `/dashboard` and `/admin`, which ask for a login. Without a home page `/` goes to the dashboard as before. Only one page can be the home page; setting another one moves the mark. A page that is not public is never used. A status page with its own domain is the start page on that domain; `/dashboard`, `/admin` and `/login` still work there.
 
 ## Incidents
 

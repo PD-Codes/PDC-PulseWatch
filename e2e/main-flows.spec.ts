@@ -119,6 +119,26 @@ test('serves the home page at "/" and keeps the admin behind /admin', async ({ p
   await expect(row.getByRole('button', { name: /home page/i })).toHaveAttribute('aria-pressed', 'false');
 });
 
+test('a status page on its own domain is the start page there, the sign-in stays reachable', async ({ browser, request }) => {
+  const { headers, demo, full } = await apiSetup(request);
+  const save = (domain: string | null) => request.put(`/api/status-pages/${demo.id}`, { headers, data: { ...full, domain } });
+  expect((await save('127.0.0.1')).ok()).toBe(true); // the host the tests use
+  const anon = await browser.newContext();
+  try {
+    const page = await anon.newPage();
+    await page.goto('/');
+    await expect(page.getByRole('heading', { name: 'Demo Status' })).toBeVisible();
+    for (const path of ['/dashboard', '/admin', '/login']) {
+      await page.goto(path);
+      await expect(page).toHaveURL(/\/login/);
+      await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
+    }
+  } finally {
+    await save(null);
+    await anon.close();
+  }
+});
+
 test('offers the newer monitor types in their groups and shows their fields', async ({ page }) => {
   await login(page);
   await page.goto('/monitors/new');
