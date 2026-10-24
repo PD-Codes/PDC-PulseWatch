@@ -10,13 +10,13 @@ const push = (name: string, extra: object = {}) => c.post('/api/monitors', { nam
 
 describe('monitor defaults', () => {
   it('apply to new monitors when the request omits values, and can be reset', async () => {
-    expect((await c.put('/api/settings/monitor-defaults', { intervalS: 120, timeoutS: 20, retries: 2, retryIntervalS: 30, upThreshold: 2, downThreshold: 3, flapWindow: 12, flapThreshold: 5 })).status).toBe(200);
+    expect((await c.put('/api/settings/monitor-defaults', { intervalS: 120, timeoutS: 20, retries: 2, retryIntervalS: 30, upThreshold: 2, flapWindow: 12, flapThreshold: 5 })).status).toBe(200);
     const m = await push('defaults-push');
     const d = (await c.get(`/api/monitors/${m.json.id}`)).json;
-    expect([d.intervalS, d.timeoutS, d.retries, d.downThreshold]).toEqual([120, 20, 2, 3]);
+    expect([d.intervalS, d.timeoutS, d.retries]).toEqual([120, 20, 2]);
     const explicit = await push('explicit-push', { intervalS: 45, timeoutS: 5 });
     expect((await c.get(`/api/monitors/${explicit.json.id}`)).json.intervalS).toBe(45);
-    expect((await c.put('/api/settings/monitor-defaults', { intervalS: 10, timeoutS: 20, retries: 0, retryIntervalS: 20, upThreshold: 1, downThreshold: 1, flapWindow: 10, flapThreshold: 6 })).status).toBe(400); // timeout > interval
+    expect((await c.put('/api/settings/monitor-defaults', { intervalS: 10, timeoutS: 20, retries: 0, retryIntervalS: 20, upThreshold: 1, flapWindow: 10, flapThreshold: 6 })).status).toBe(400); // timeout > interval
     expect((await c.del('/api/settings/monitor-defaults')).status).toBe(200);
     expect((await c.get('/api/settings/monitor-defaults')).json.defaults.intervalS).toBe(60);
   });
@@ -42,11 +42,11 @@ describe('bulk create and bulk edit', () => {
     const ids = [(await push('bulk-1')).json.id, (await push('bulk-2')).json.id];
     const tag = await c.post('/api/tags', { name: 'bulk-tag', color: '#059669' });
     const ch = await c.post('/api/notification-channels', { name: 'hook', type: 'webhook', config: { url: 'https://hooks.example.com/x' } });
-    const r = await c.post('/api/monitors/bulk', { ids, action: 'patch', patch: { intervalS: 300, downThreshold: 4, addTagIds: [tag.json.id], notifications: { mode: 'replace', rules: [{ channelId: ch.json.id, events: ['down'] }] } } });
+    const r = await c.post('/api/monitors/bulk', { ids, action: 'patch', patch: { intervalS: 300, retries: 4, addTagIds: [tag.json.id], notifications: { mode: 'replace', rules: [{ channelId: ch.json.id, events: ['down'] }] } } });
     expect(r.json.affected).toBe(2);
     for (const id of ids) {
       const d = (await c.get(`/api/monitors/${id}`)).json;
-      expect([d.intervalS, d.downThreshold, d.tags.length, d.notifications.length]).toEqual([300, 4, 1, 1]);
+      expect([d.intervalS, d.retries, d.tags.length, d.notifications.length]).toEqual([300, 4, 1, 1]);
     }
   });
 });

@@ -1,14 +1,11 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
-import { getRunner, restoreSecrets, runners, SECRET_MASK, validateConfig } from '../../core';
-import { httpRequest } from '../../core/http';
-import { authHeaders } from '../../core/runners/http';
-import { timeoutSignal } from '../../core/util';
+import { getRunner, runners, SECRET_MASK } from '../../core';
 import { accessibleGroupIds, accessibleMonitorIds, canManageMonitor, canWrite, writeAudit } from '../auth/access';
 import { config } from '../config';
 import { parseJson } from '../db';
-import { BUILT_IN_DEFAULTS, DEFAULT_LIMITS, monitorDefaults, resetMonitorDefaults, saveMonitorDefaults, type MonitorDefaults } from '../monitors/defaults';
+import { BUILT_IN_DEFAULTS, DEFAULT_LIMITS, maxTimeoutS, monitorDefaults, resetMonitorDefaults, saveMonitorDefaults, type MonitorDefaults } from '../monitors/defaults';
 import { parseMonitor } from '../monitors/model';
 import { listMonitors, loadMonitor, monitorDetail, saveMonitor, ValidationError } from '../monitors/service';
 
@@ -190,7 +187,7 @@ export async function monitorRoutes(app: FastifyInstance) {
     const notes = await db.selectFrom('monitor_notifications').selectAll().where('monitor_id', '=', id).execute();
     const newId = await wrapValidation(reply, () => saveMonitor(ctx, {
       name: `${src.name} (copy)`, type: src.type, groupId: src.groupId, description: src.description, config: src.config, intervalS: src.intervalS, timeoutS: src.timeoutS,
-      retries: src.retries, retryIntervalS: src.retryIntervalS, upThreshold: src.upThreshold, downThreshold: src.downThreshold, flapWindow: src.flapWindow, flapThreshold: src.flapThreshold, downAfterS: src.downAfterS,
+      retries: src.retries, retryIntervalS: src.retryIntervalS, upThreshold: src.upThreshold, flapWindow: src.flapWindow, flapThreshold: src.flapThreshold,
       active: false, locations: src.locations, quorum: src.quorum, publicBadge: false, tagIds: tags.filter((t) => !t.value).map((t) => t.tag_id), tagValues: tags.filter((t) => t.value).map((t) => ({ tagId: t.tag_id, value: t.value })), dependsOn: deps.map((d) => d.depends_on_id),
       notifications: notes.map((n) => ({ channelId: n.channel_id, policyId: n.policy_id, events: n.events.split(',') })),
     }, req.user!.id));
@@ -204,35 +201,6 @@ export async function monitorRoutes(app: FastifyInstance) {
     return ctx.engine.checkNow(id);
   });
 
-  /**
-   * "Fetch result" in the monitor form: runs the request of an HTTP-style monitor once and returns the parsed JSON so the form can offer its fields.
-   * It uses the same SSRF guard as real checks. When editing, masked secrets are restored from the stored monitor.
-   */
-  app.post('/api/monitors/fetch-json', {
-    ...writer, config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
-    schema: { tags: ['monitors'], summary: 'Fetch a URL once and return its JSON body', body: Type.Object({ config: Type.Object({}, { additionalProperties: true }), monitorId: Type.Optional(Type.Integer({ minimum: 1 })) }) },
-  }, async (req, reply) => {
-    const b = req.body as { config: Record<string, any>; monitorId?: number };
-    const runner = getRunner('http')!; // same request fields as the JSON monitor, minus the assertion
-    let cfg = b.config;
-    if (b.monitorId) {
-      if (!(await canManageMonitor(ctx, req.user!, b.monitorId, 'manage'))) return reply.code(404).send({ error: 'not_found', message: 'Monitor not found' });
-      const stored = await loadMonitor(ctx, b.monitorId);
-      if (stored) cfg = restoreSecrets(runner, cfg, stored.config);
-    }
-    const v = validateConfig(runner, cfg);
-    if (v.errors.length) return reply.code(400).send({ error: 'validation', message: v.errors.join('; ') });
-    const c = v.config;
-    try {
-      const res = await httpRequest({ url: c.url, method: c.method, headers: authHeaders(c), body: c.body || undefined, signal: timeoutSignal(15_000), guard: ctx.guard, verifyTls: c.verifyTls, followRedirects: c.followRedirects, maxRedirects: c.maxRedirects });
-      let json: unknown = null, jsonError: string | null = null;
-      try { json = JSON.parse(res.body); } catch (e) { jsonError = res.truncated ? 'The response is larger than 1 MB and was cut off, so it is not valid JSON' : (e as Error).message; }
-      return { status: res.status, statusText: res.statusText, contentType: String(res.headers['content-type'] ?? ''), ms: Math.round(res.timings.total), bytes: Buffer.byteLength(res.body), truncated: res.truncated, json, jsonError, preview: jsonError ? res.body.slice(0, 1000) : null };
-    } catch (e) {
-      return reply.code(502).send({ error: 'fetch_failed', message: (e as Error).message });
-    }
-  });
-
   const ruleBody = Type.Object({ channelId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), policyId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), events: Type.Optional(Type.Array(Type.String())) });
   app.post('/api/monitors/bulk', {
     ...writer,
@@ -242,9 +210,9 @@ export async function monitorRoutes(app: FastifyInstance) {
         ids: Type.Array(Type.Integer(), { minItems: 1, maxItems: 1000 }),
         action: Type.Union([Type.Literal('pause'), Type.Literal('resume'), Type.Literal('delete'), Type.Literal('patch')]),
         patch: Type.Optional(Type.Object({
-          intervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 86400 })), timeoutS: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })), retries: Type.Optional(Type.Integer({ minimum: 0, maximum: 20 })),
-          retryIntervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 3600 })), upThreshold: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })), downThreshold: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
-          flapWindow: Type.Optional(Type.Integer({ minimum: 4, maximum: 60 })), flapThreshold: Type.Optional(Type.Integer({ minimum: 0, maximum: 60 })), downAfterS: Type.Optional(Type.Union([Type.Null(), Type.Integer({ minimum: 0, maximum: 86400 })])), publicBadge: Type.Optional(Type.Boolean()),
+          intervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 86400 })), timeoutS: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })), retries: Type.Optional(Type.Integer({ minimum: 0, maximum: 100 })),
+          retryIntervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 3600 })), upThreshold: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
+          flapWindow: Type.Optional(Type.Integer({ minimum: 4, maximum: 60 })), flapThreshold: Type.Optional(Type.Integer({ minimum: 0, maximum: 60 })), publicBadge: Type.Optional(Type.Boolean()),
           groupId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), addTagIds: Type.Optional(Type.Array(Type.Integer())), removeTagIds: Type.Optional(Type.Array(Type.Integer())),
           notifications: Type.Optional(Type.Object({ mode: Type.Union([Type.Literal('add'), Type.Literal('replace')]), rules: Type.Array(ruleBody, { maxItems: 20 }) })),
         })),
@@ -262,7 +230,7 @@ export async function monitorRoutes(app: FastifyInstance) {
     else if (b.action === 'delete') { await db.deleteFrom('monitors').where('id', 'in', ids).execute(); for (const t of ['heartbeats', 'rollups', 'events'] as const) await db.deleteFrom(t).where('monitor_id', 'in', ids).execute(); }
     else {
       const p = b.patch ?? {};
-      const cols: Record<string, string> = { intervalS: 'interval_s', timeoutS: 'timeout_s', retries: 'retries', retryIntervalS: 'retry_interval_s', upThreshold: 'up_threshold', downThreshold: 'down_threshold', flapWindow: 'flap_window', flapThreshold: 'flap_threshold', downAfterS: 'down_after_s', groupId: 'group_id' };
+      const cols: Record<string, string> = { intervalS: 'interval_s', timeoutS: 'timeout_s', retries: 'retries', retryIntervalS: 'retry_interval_s', upThreshold: 'up_threshold', flapWindow: 'flap_window', flapThreshold: 'flap_threshold', groupId: 'group_id' };
       const set: Record<string, unknown> = {};
       for (const [k, col] of Object.entries(cols)) if (p[k] !== undefined) set[col] = p[k];
       if (p.publicBadge !== undefined) set.public_badge = p.publicBadge ? 1 : 0;
@@ -321,11 +289,11 @@ export async function monitorRoutes(app: FastifyInstance) {
   });
 
   /** Instance-wide defaults for new monitors (timings and thresholds). */
-  const defaultsBody = Type.Object(Object.fromEntries((Object.keys(DEFAULT_LIMITS) as (keyof typeof DEFAULT_LIMITS)[]).map((k) => [k, k === 'downAfterS' ? Type.Optional(Type.Integer({ minimum: DEFAULT_LIMITS[k][0], maximum: DEFAULT_LIMITS[k][1] })) : Type.Integer({ minimum: DEFAULT_LIMITS[k][0], maximum: DEFAULT_LIMITS[k][1] })])) as any);
+  const defaultsBody = Type.Object(Object.fromEntries((Object.keys(DEFAULT_LIMITS) as (keyof typeof DEFAULT_LIMITS)[]).map((k) => [k, Type.Integer({ minimum: DEFAULT_LIMITS[k][0], maximum: DEFAULT_LIMITS[k][1] })])) as any);
   app.get('/api/settings/monitor-defaults', { ...auth, schema: { tags: ['settings'], summary: 'Defaults for new monitors' } }, async () => ({ defaults: await monitorDefaults(ctx), builtIn: BUILT_IN_DEFAULTS, limits: DEFAULT_LIMITS }));
   app.put('/api/settings/monitor-defaults', { preHandler: app.requireRole('admin'), schema: { tags: ['settings'], body: defaultsBody } }, async (req, reply) => {
-    const d = { ...BUILT_IN_DEFAULTS, ...(req.body as Partial<MonitorDefaults>) };
-    if (d.timeoutS > d.intervalS) return reply.code(400).send({ error: 'validation', message: 'The timeout must not exceed the interval' });
+    const d = req.body as MonitorDefaults;
+    if (d.timeoutS > maxTimeoutS(d.intervalS)) return reply.code(400).send({ error: 'validation', message: 'The timeout can be at most 80% of the interval' });
     await saveMonitorDefaults(ctx, d);
     await writeAudit(ctx, req.user, 'settings.monitor_defaults', { type: 'settings' }, d as any, req.ip);
     return { ok: true };

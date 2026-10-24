@@ -85,4 +85,4 @@ export interface ServerInfo { players?: number; maxPlayers?: number; names?: str
 export interface Group { id: number; parentId: number | null; name: string; description: string | null }
 export type Role = 'admin' | 'editor' | 'viewer';
 export interface Me { id: number; username: string; displayName: string; email: string | null; role: Role; locale: 'en' | 'de' | null; theme: 'light' | 'dark' | 'system'; totpEnabled: boolean; authSource: string; scopeRestricted: boolean; csrf?: string }
-export interface Meta { brand: { name: string; vendor?: string; [k: string]: unknown }; version: string; smtp: boolean; baseUrl: string; demo: boolean; role: string }
+export interface Meta { brand: { name: string; vendor?: string; [k: string]: unknown }; version: string; smtp: boolean; baseUrl: string; demo: boolean; role: string; languages: 'both' | 'en' | 'de' }

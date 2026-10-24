@@ -38,7 +38,7 @@ export interface TagsTable { id: Id; name: string; color: Generated<string> }
 export interface MonitorsTable {
   id: Id; name: string; type: string; group_id: number | null; description: string | null; config: string;
   interval_s: Generated<number>; timeout_s: Generated<number>; retries: Generated<number>; retry_interval_s: Generated<number>;
-  up_threshold: Generated<number>; down_threshold: Generated<number>; flap_window: Generated<number>; flap_threshold: Generated<number>;
+  up_threshold: Generated<number>; flap_window: Generated<number>; flap_threshold: Generated<number>;
   active: Flag; locations: string | null; quorum: Generated<number>; push_token: string | null; public_badge: Flag;
   next_run_at: NTs; lease_owner: string | null; lease_until: NTs; attempt: Generated<number>;
   created_by: number | null; created_at: Ts; updated_at: Ts;
@@ -68,12 +68,12 @@ export interface EventsTable {
 export interface SavedViewsTable { id: Id; user_id: number; name: string; filters: string; shared: Flag }
 export type IncidentStatus = 'open' | 'acknowledged' | 'identified' | 'fixing' | 'monitoring' | 'resolved';
 export interface IncidentsTable {
-  id: Id; title: string; status: Generated<IncidentStatus>; severity: Generated<'minor' | 'major' | 'critical'>; source: Generated<'auto' | 'manual'>;
+  id: Id; title: string; title_en: string | null; title_de: string | null; status: Generated<IncidentStatus>; severity: Generated<'minor' | 'major' | 'critical'>; source: Generated<'auto' | 'manual'>;
   monitor_id: number | null; started_at: Date; acknowledged_at: NTs; acknowledged_by: number | null; resolved_at: NTs; assignee_id: number | null;
   postmortem: string | null; public: Flag; created_by: number | null; created_at: Ts;
 }
 export interface IncidentMonitorsTable { incident_id: number; monitor_id: number }
-export interface IncidentUpdatesTable { id: Id; incident_id: number; ts: Ts; user_id: number | null; kind: Generated<'note' | 'status' | 'ack' | 'assign' | 'resolve' | 'auto' | 'postmortem'>; status: IncidentStatus | null; body: string | null; public: Flag; edited_at: NTs }
+export interface IncidentUpdatesTable { id: Id; incident_id: number; ts: Ts; user_id: number | null; kind: Generated<'note' | 'status' | 'ack' | 'assign' | 'resolve' | 'auto' | 'postmortem'>; status: IncidentStatus | null; body: string | null; body_en: string | null; body_de: string | null; public: Flag; edited_at: NTs }
 export interface MaintenanceWindowsTable {
   id: Id; name: string; description: string | null; kind: Generated<'once' | 'cron'>; starts_at: NTs; ends_at: NTs; cron_expr: string | null;
   duration_min: number | null; timezone: Generated<string>; active: Flag; announce: Flag; created_by: number | null; created_at: Ts;
@@ -85,8 +85,8 @@ export interface StatusPagesTable {
 }
 export interface StatusPageSectionsTable { id: Id; page_id: number; name: string; sort: Generated<number> }
 export interface StatusPageComponentsTable { id: Id; page_id: number; section_id: number | null; monitor_id: number; display_name: string | null; sort: Generated<number> }
-export interface StatusPageAnnouncementsTable { id: Id; page_id: number; kind: Generated<'info' | 'maintenance' | 'incident'>; title: string; body: string | null; starts_at: Date; ends_at: NTs; created_at: Ts }
-export interface StatusPageSubscribersTable { id: Id; page_id: number; kind: 'email' | 'webhook'; target_enc: string; target_hash: string; token: string; verified: Flag; created_at: Ts }
+export interface StatusPageAnnouncementsTable { id: Id; page_id: number; kind: Generated<'info' | 'maintenance' | 'incident'>; title: string; title_en: string | null; title_de: string | null; body: string | null; body_en: string | null; body_de: string | null; starts_at: Date; ends_at: NTs; created_at: Ts }
+export interface StatusPageSubscribersTable { id: Id; page_id: number; kind: 'email' | 'webhook'; target_enc: string; target_hash: string; token: string; verified: Flag; lang: string | null; created_at: Ts }
 export interface NotificationTemplatesTable { id: Id; name: string; subject: string; body: string; created_at: Ts }
 export interface NotificationChannelsTable {
   id: Id; name: string; type: string; config_enc: string; active: Generated<number>; is_default: Flag; quiet_hours: string | null; template_id: number | null; created_by: number | null; created_at: Ts;

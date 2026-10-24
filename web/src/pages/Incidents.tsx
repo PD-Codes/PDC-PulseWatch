@@ -3,6 +3,7 @@ import { AlertTriangle, Eye, EyeOff, Globe, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { IncidentStatusBadge, INCIDENT_STATUSES, MonitorPicker, SeverityBadge, useGroupsQ, useMonitorsQ } from '../components/ops-shared';
+import { NO_VERSIONS, Translations, type Versions } from '../components/Translations';
 import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Textarea, Toggle, useToast } from '../components/ui';
 import { ApiError, get, patch, post, qs } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -41,18 +42,19 @@ export default function Incidents() {
   const stats = useQuery({ queryKey: ['incidents', 'stats', days], queryFn: () => get<Stats>(`/api/incidents/stats?days=${days}`) });
   const items = list.data?.pages.flat() ?? [];
 
-  const [f, setF] = useState({ title: '', severity: 'major', body: '', public: false, monitorIds: [] as number[] });
+  const blank = { title: '', titleV: NO_VERSIONS as Versions, severity: 'major', body: '', bodyV: NO_VERSIONS as Versions, public: false, monitorIds: [] as number[] };
+  const [f, setF] = useState(blank);
   const monitors = useMonitorsQ();
   const groups = useGroupsQ();
   const create = useMutation({
-    mutationFn: () => post<{ id: number }>('/api/incidents', { title: f.title, severity: f.severity, body: f.body || undefined, public: f.public, monitorIds: f.monitorIds }),
+    mutationFn: () => post<{ id: number }>('/api/incidents', { title: f.title, titleEn: f.titleV.en, titleDe: f.titleV.de, severity: f.severity, body: f.body || undefined, bodyEn: f.bodyV.en, bodyDe: f.bodyV.de, public: f.public, monitorIds: f.monitorIds }),
     onSuccess: (r) => { void qc.invalidateQueries({ queryKey: ['incidents'] }); setCreating(false); nav(`/incidents/${r.id}`); },
     onError: (e) => toast(e instanceof ApiError ? e.message : t('common.failed'), 'error'),
   });
 
   return (
     <>
-      <PageHeader title={t('nav.incidents')} subtitle={t('incidents.subtitle')} actions={can('editor') && <Button variant="primary" onClick={() => { setF({ title: '', severity: 'major', body: '', public: false, monitorIds: [] }); setCreating(true); }}><Plus className="h-4 w-4" />{t('incidents.new')}</Button>} />
+      <PageHeader title={t('nav.incidents')} subtitle={t('incidents.subtitle')} actions={can('editor') && <Button variant="primary" onClick={() => { setF(blank); setCreating(true); }}><Plus className="h-4 w-4" />{t('incidents.new')}</Button>} />
 
       <div className="mb-2 flex items-center justify-end gap-2 text-sm">
         <label htmlFor="inc-days" className="text-slate-500">{t('incidents.period')}</label>
@@ -100,8 +102,10 @@ export default function Incidents() {
       <Modal open={creating} onClose={() => setCreating(false)} title={t('incidents.new')} footer={<><Button onClick={() => setCreating(false)}>{t('common.cancel')}</Button><Button variant="primary" loading={create.isPending} disabled={!f.title.trim()} onClick={() => create.mutate()}>{t('common.create')}</Button></>}>
         <div className="space-y-4">
           <Field label={t('incidents.field.title')}>{(id) => <Input id={id} value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} maxLength={255} />}</Field>
+          <Translations value={f.titleV} onChange={(v) => setF({ ...f, titleV: v })} max={255} />
           <Field label={t('incidents.field.severity')}>{(id) => <Select id={id} value={f.severity} onChange={(e) => setF({ ...f, severity: e.target.value })}>{['minor', 'major', 'critical'].map((s) => <option key={s} value={s}>{t(`incidents.severity.${s}`)}</option>)}</Select>}</Field>
           <Field label={t('incidents.field.description')}>{(id) => <Textarea id={id} value={f.body} onChange={(e) => setF({ ...f, body: e.target.value })} className="font-sans" />}</Field>
+          <Translations multiline value={f.bodyV} onChange={(v) => setF({ ...f, bodyV: v })} max={10000} />
           <div><span className="label">{t('incidents.field.monitors')}</span><MonitorPicker monitors={monitors.data ?? []} groups={groups.data ?? []} value={f.monitorIds} onChange={(v) => setF({ ...f, monitorIds: v })} /></div>
           <div><Toggle checked={f.public} onChange={(v) => setF({ ...f, public: v })} label={t('incidents.field.public')} /><p className="hint">{t(f.public ? 'incidents.publicOn' : 'incidents.publicOff')}</p></div>
         </div>

@@ -7,8 +7,10 @@ import { config } from '../config';
 import type { Ctx } from '../context';
 import { decrypt, encrypt, hashPassword, hmac, randomToken, safeEqual, sha256, verifyPassword } from '../crypto';
 import { bool, parseJson } from '../db';
+import { pickText, textOrNull } from '../incidents';
 import { mailConfigured, sendSystemMail } from '../mail';
 import { publicInfo, type ServerInfo } from '../monitors/info';
+import { langMode, type Lang } from '../notify/texts';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
 const Slug = Type.Object({ slug: Type.String({ minLength: 1, maxLength: 64 }) });
@@ -35,6 +37,8 @@ const SRV = {
 const srv = (lang: string | null | undefined) => (lang === 'de' ? SRV.de : SRV.en);
 const fill = (s: string, v: Record<string, string>) => s.replace(/\{(\w)\}/g, (_, k) => v[k] ?? '');
 export const PAGE_LANGUAGES = ['en', 'de'] as const;
+/** ?lang= on the public endpoints: the language the visitor picked, used when the page has no fixed one. */
+const LangQ = Type.Optional(Type.Union(PAGE_LANGUAGES.map((l) => Type.Literal(l))));
 export const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180] as const;
 
 type Page = { id: number; slug: string; title: string; description: string | null; language: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; show_history: number; history_days: number; is_default: number; incident_days: number; incident_page_size: number; server_info: number };
@@ -153,12 +157,12 @@ export async function statusPageRoutes(app: FastifyInstance) {
 
   /* announcements */
   app.get('/api/status-pages/:id/announcements', { ...admin, schema: { tags: ['status-pages'], params: Id } }, async (req) =>
-    (await db.selectFrom('status_page_announcements').selectAll().where('page_id', '=', (req.params as any).id).orderBy('starts_at', 'desc').limit(100).execute()).map((a) => ({ id: a.id, kind: a.kind, title: a.title, body: a.body, startsAt: a.starts_at, endsAt: a.ends_at })));
-  app.post('/api/status-pages/:id/announcements', { ...admin, schema: { tags: ['status-pages'], params: Id, body: Type.Object({ kind: Type.Union([Type.Literal('info'), Type.Literal('maintenance'), Type.Literal('incident')]), title: Type.String({ minLength: 1, maxLength: 255 }), body: Type.Optional(Type.String({ maxLength: 5000 })), startsAt: Type.Optional(Type.String({ format: 'date-time' })), endsAt: Type.Optional(Type.Union([Type.String({ format: 'date-time' }), Type.Null()])), notify: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
+    (await db.selectFrom('status_page_announcements').selectAll().where('page_id', '=', (req.params as any).id).orderBy('starts_at', 'desc').limit(100).execute()).map((a) => ({ id: a.id, kind: a.kind, title: a.title, titleEn: a.title_en, titleDe: a.title_de, body: a.body, bodyEn: a.body_en, bodyDe: a.body_de, startsAt: a.starts_at, endsAt: a.ends_at })));
+  app.post('/api/status-pages/:id/announcements', { ...admin, schema: { tags: ['status-pages'], params: Id, body: Type.Object({ kind: Type.Union([Type.Literal('info'), Type.Literal('maintenance'), Type.Literal('incident')]), title: Type.String({ minLength: 1, maxLength: 255 }), titleEn: Type.Optional(Type.String({ maxLength: 255 })), titleDe: Type.Optional(Type.String({ maxLength: 255 })), body: Type.Optional(Type.String({ maxLength: 5000 })), bodyEn: Type.Optional(Type.String({ maxLength: 5000 })), bodyDe: Type.Optional(Type.String({ maxLength: 5000 })), startsAt: Type.Optional(Type.String({ format: 'date-time' })), endsAt: Type.Optional(Type.Union([Type.String({ format: 'date-time' }), Type.Null()])), notify: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
     const b = req.body as any; const pageId = (req.params as any).id;
     if (!(await db.selectFrom('status_pages').select('id').where('id', '=', pageId).executeTakeFirst())) return reply.code(404).send({ error: 'not_found' });
-    const r = await db.insertInto('status_page_announcements').values({ page_id: pageId, kind: b.kind, title: b.title, body: b.body ?? null, starts_at: b.startsAt ? new Date(b.startsAt) : new Date(), ends_at: b.endsAt ? new Date(b.endsAt) : null }).executeTakeFirstOrThrow();
-    if (b.notify) void notifySubscribers(ctx, pageId, `[${b.kind}] ${b.title}`, b.body ?? b.title).catch((err) => ctx.log.warn({ err }, 'announcement notification failed'));
+    const r = await db.insertInto('status_page_announcements').values({ page_id: pageId, kind: b.kind, title: b.title, title_en: textOrNull(b.titleEn), title_de: textOrNull(b.titleDe), body: b.body ?? null, body_en: textOrNull(b.bodyEn), body_de: textOrNull(b.bodyDe), starts_at: b.startsAt ? new Date(b.startsAt) : new Date(), ends_at: b.endsAt ? new Date(b.endsAt) : null }).executeTakeFirstOrThrow();
+    if (b.notify) void notifySubscribers(ctx, pageId, (lang) => ({ subject: `[${b.kind}] ${pickText(lang, b.title, textOrNull(b.titleEn), textOrNull(b.titleDe))}`, text: pickText(lang, b.body ?? null, textOrNull(b.bodyEn), textOrNull(b.bodyDe)) ?? b.title })).catch((err) => ctx.log.warn({ err }, 'announcement notification failed'));
     return { id: Number(r.insertId) };
   });
   app.delete('/api/status-pages/:id/announcements/:aid', { ...admin, schema: { tags: ['status-pages'], params: Type.Object({ id: Type.Integer(), aid: Type.Integer() }) } }, async (req) => {
@@ -183,19 +187,23 @@ export async function statusPageRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  async function addSubscriber(pageId: number, kind: 'email' | 'webhook', target: string, verified: boolean): Promise<{ token: string; id: number } | null> {
+  async function addSubscriber(pageId: number, kind: 'email' | 'webhook', target: string, verified: boolean, lang: string | null = null): Promise<{ token: string; id: number } | null> {
     const hash = sha256(`${kind}:${target.trim().toLowerCase()}`);
     const token = randomToken(16).slice(0, 32);
     try {
-      const r = await db.insertInto('status_page_subscribers').values({ page_id: pageId, kind, target_enc: encrypt(target.trim()), target_hash: hash, token, verified: verified ? 1 : 0 }).executeTakeFirstOrThrow();
+      const r = await db.insertInto('status_page_subscribers').values({ page_id: pageId, kind, target_enc: encrypt(target.trim()), target_hash: hash, token, verified: verified ? 1 : 0, lang }).executeTakeFirstOrThrow();
       return { token, id: Number(r.insertId) };
     } catch (e: any) { if (e.code === 'ER_DUP_ENTRY') return null; throw e; }
   }
 
   /* ------------------------------- public API ------------------------------- */
-  const findPage = (slug: string, host?: string) => {
+  const findPage = async (slug: string, host?: string) => {
     const q = db.selectFrom('status_pages').selectAll();
-    return (slug === '_host' ? q.where('domain', '=', (host ?? '').toLowerCase().replace(/:\d+$/, '')) : q.where('slug', '=', slug)).executeTakeFirst() as Promise<Page | undefined>;
+    const p = (await (slug === '_host' ? q.where('domain', '=', (host ?? '').toLowerCase().replace(/:\d+$/, '')) : q.where('slug', '=', slug)).executeTakeFirst()) as Page | undefined;
+    // a single instance language is the page's fixed language: no switch, and the feed, emails and incident texts follow
+    const mode = p ? await langMode(ctx) : 'both';
+    if (p && mode !== 'both') p.language = mode;
+    return p;
   };
 
   /** Returns null when access is granted, otherwise the reason. */
@@ -250,7 +258,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     return { since, by };
   }
 
-  async function buildPage(p: Page) {
+  async function buildPage(p: Page, lang: string | null) {
     const sections = await db.selectFrom('status_page_sections').selectAll().where('page_id', '=', p.id).orderBy('sort').execute();
     const comps = await db.selectFrom('status_page_components as c').innerJoin('monitors as m', 'm.id', 'c.monitor_id').leftJoin('monitor_state as s', 's.monitor_id', 'c.monitor_id')
       .select(['c.section_id', 'c.display_name', 'c.monitor_id', 'm.name', 'm.description', 's.status', 's.overlay', 's.status_since', 's.info']).where('c.page_id', '=', p.id).orderBy('c.sort').execute();
@@ -269,15 +277,15 @@ export async function statusPageRoutes(app: FastifyInstance) {
       return { monitorId: c.monitor_id, name: c.display_name || c.name, description: c.description, status: publicStatus(c.status ? { status: c.status, overlay: c.overlay ?? 'none' } : undefined), since: c.status_since, info: publicInfo(parseJson<ServerInfo | null>(c.info, null), p.server_info), uptime: history && up + down ? Math.round((up / (up + down)) * 10000) / 100 : null, daily };
     };
     const now = new Date();
-    const announcements = await db.selectFrom('status_page_announcements').select(['id', 'kind', 'title', 'body', 'starts_at', 'ends_at']).where('page_id', '=', p.id).where('starts_at', '<=', now).where((eb) => eb.or([eb('ends_at', 'is', null), eb('ends_at', '>', now)])).orderBy('starts_at', 'desc').execute();
+    const announcements = await db.selectFrom('status_page_announcements').select(['id', 'kind', 'title', 'title_en', 'title_de', 'body', 'body_en', 'body_de', 'starts_at', 'ends_at']).where('page_id', '=', p.id).where('starts_at', '<=', now).where((eb) => eb.or([eb('ends_at', 'is', null), eb('ends_at', '>', now)])).orderBy('starts_at', 'desc').execute();
     const maint = ctx.maintenance.activeWindows().filter((w) => w.announce && ids.some((i) => w.monitorIds.has(i))).map((w) => ({ id: w.id, name: w.name, description: w.description, endsAt: w.endsAt }));
-    const incidents = ids.length ? await listIncidents(ids, new Date(now.getTime() - p.incident_days * DAY), new Map(comps.map((c) => [c.monitor_id, c.display_name || c.name])), p.language) : [];
+    const incidents = ids.length ? await listIncidents(ids, new Date(now.getTime() - p.incident_days * DAY), new Map(comps.map((c) => [c.monitor_id, c.display_name || c.name])), lang) : [];
     const all = comps.map((c) => publicStatus(c.status ? { status: c.status, overlay: c.overlay ?? 'none' } : undefined));
     const overall = all.includes('outage') ? (all.every((s) => s === 'outage') ? 'outage' : 'partial') : all.some((s) => s === 'degraded') ? 'degraded' : all.includes('maintenance') ? 'maintenance' : 'operational';
     return {
       slug: p.slug, title: p.title, description: p.description, branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: history, historyDays: p.history_days, incidentDays: p.incident_days, incidentPageSize: p.incident_page_size, language: p.language, overall, generatedAt: now,
       sections: sections.map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map(shape) })), components: comps.filter((c) => !c.section_id).map(shape),
-      announcements: announcements.map((a) => ({ id: a.id, kind: a.kind, title: a.title, body: a.body, startsAt: a.starts_at, endsAt: a.ends_at })), maintenance: maint,
+      announcements: announcements.map((a) => ({ id: a.id, kind: a.kind, title: pickText(lang, a.title, a.title_en, a.title_de)!, body: pickText(lang, a.body, a.body_en, a.body_de), startsAt: a.starts_at, endsAt: a.ends_at })), maintenance: maint,
       incidents: incidents.filter((i) => !i.resolvedAt), recentIncidents: incidents.filter((i) => i.resolvedAt),
       subscribe: { email: mailConfigured() },
     };
@@ -292,55 +300,60 @@ export async function statusPageRoutes(app: FastifyInstance) {
   /** Incidents touching these monitors that were marked for status pages, each with the timeline entries marked the same way. */
   async function listIncidents(monitorIds: number[], since: Date, names: Map<number, string>, lang?: string | null) {
     const rows = await db.selectFrom('incidents as i').innerJoin('incident_monitors as im', 'im.incident_id', 'i.id')
-      .select(['i.id', 'i.title', 'i.status', 'i.severity', 'i.source', 'i.monitor_id', 'i.started_at', 'i.resolved_at', 'i.public']).distinct()
+      .select(['i.id', 'i.title', 'i.title_en', 'i.title_de', 'i.status', 'i.severity', 'i.source', 'i.monitor_id', 'i.started_at', 'i.resolved_at', 'i.public']).distinct()
       .where('im.monitor_id', 'in', monitorIds).where('i.public', '=', 1).where((eb) => eb.or([eb('i.resolved_at', 'is', null), eb('i.resolved_at', '>=', since)])).orderBy('i.started_at', 'desc').limit(100).execute();
     const visible = rows;
-    const updates = visible.length ? await db.selectFrom('incident_updates').select(['incident_id', 'ts', 'kind', 'status', 'body', 'user_id', 'edited_at']).where('incident_id', 'in', visible.map((r) => r.id)).where('public', '=', 1).orderBy('ts', 'desc').orderBy('id', 'desc').execute() : [];
+    const updates = visible.length ? await db.selectFrom('incident_updates').select(['incident_id', 'ts', 'kind', 'status', 'body', 'body_en', 'body_de', 'user_id', 'edited_at']).where('incident_id', 'in', visible.map((r) => r.id)).where('public', '=', 1).orderBy('ts', 'desc').orderBy('id', 'desc').execute() : [];
     // an automatic incident is titled with the internal monitor name, the page shows the name chosen for it
-    return visible.map((r) => ({ id: r.id, title: r.source === 'auto' && r.monitor_id && names.has(r.monitor_id) ? fill(srv(lang).down, { n: names.get(r.monitor_id)! }) : r.title, status: r.status, severity: r.severity, startedAt: r.started_at, resolvedAt: r.resolved_at, updates: updates.filter((u) => u.incident_id === r.id).map((u) => ({ ts: u.ts, kind: u.kind, status: u.status, body: u.user_id == null || u.kind === 'postmortem' ? null : u.body, edited: !!u.edited_at })) })); // system texts and the post-mortem line are English: the page words them itself
+    return visible.map((r) => ({ id: r.id, title: pickText(lang, r.source === 'auto' && r.monitor_id && names.has(r.monitor_id) ? fill(srv(lang).down, { n: names.get(r.monitor_id)! }) : r.title, r.title_en, r.title_de)!, status: r.status, severity: r.severity, startedAt: r.started_at, resolvedAt: r.resolved_at, updates: updates.filter((u) => u.incident_id === r.id).map((u) => ({ ts: u.ts, kind: u.kind, status: u.status, body: u.user_id == null || u.kind === 'postmortem' ? null : pickText(lang, u.body, u.body_en, u.body_de), edited: !!u.edited_at })) })); // system texts and the post-mortem line are English: the page words them itself
   }
 
-  app.get('/api/public/status/:slug', { ...pub, schema: { tags: ['public'], params: Slug } }, async (req, reply) => {
+  /** The language a public answer is written in: the page's fixed one, else the visitor's pick, else English. */
+  const langOf = (p: Page, req: FastifyRequest): Lang => ((p.language ?? (req.query as { lang?: string }).lang) === 'de' ? 'de' : 'en');
+
+  app.get('/api/public/status/:slug', { ...pub, schema: { tags: ['public'], params: Slug, querystring: Type.Object({ lang: LangQ }) } }, async (req, reply) => {
     const p = await gate(req, reply, (req.params as any).slug);
-    return p ? buildPage(p) : undefined;
+    return p ? buildPage(p, langOf(p, req)) : undefined;
   });
 
-  app.get('/api/public/status/:slug/history', { ...pub, schema: { tags: ['public'], params: Slug, querystring: Type.Object({ days: Type.Optional(Type.Integer({ minimum: 1, maximum: 365 })) }) } }, async (req, reply) => {
+  app.get('/api/public/status/:slug/history', { ...pub, schema: { tags: ['public'], params: Slug, querystring: Type.Object({ days: Type.Optional(Type.Integer({ minimum: 1, maximum: 365 })), lang: LangQ }) } }, async (req, reply) => {
     const p = await gate(req, reply, (req.params as any).slug);
     if (!p) return;
     if (!bool(p.show_history)) return reply.code(404).send({ error: 'not_found' });
     const { ids, names } = await pageMonitors(p.id);
-    return { incidents: ids.length ? await listIncidents(ids, new Date(Date.now() - ((req.query as any).days ?? p.history_days) * DAY), names, p.language) : [] };
+    return { incidents: ids.length ? await listIncidents(ids, new Date(Date.now() - ((req.query as any).days ?? p.history_days) * DAY), names, langOf(p, req)) : [] };
   });
 
-  app.get('/api/public/status/:slug/rss', { ...pub, schema: { tags: ['public'], params: Slug } }, async (req, reply) => {
+  app.get('/api/public/status/:slug/rss', { ...pub, schema: { tags: ['public'], params: Slug, querystring: Type.Object({ lang: LangQ }) } }, async (req, reply) => {
     const p = await gate(req, reply, (req.params as any).slug, true);
     if (!p) return;
+    const lang = langOf(p, req);
     const { ids, names } = await pageMonitors(p.id);
-    const inc = ids.length ? await listIncidents(ids, new Date(Date.now() - p.incident_days * DAY), names, p.language) : [];
+    const inc = ids.length ? await listIncidents(ids, new Date(Date.now() - p.incident_days * DAY), names, lang) : [];
     const link = `${config.baseUrl}/status/${p.slug}`;
-    const items = inc.map((i) => `<item><title>${esc(`[${i.resolvedAt ? srv(p.language).done : srv(p.language).ongoing}] ${i.title}`)}</title><link>${esc(link)}</link><guid isPermaLink="false">${esc(`${p.slug}-incident-${i.id}-${i.resolvedAt ? 'r' : 'o'}`)}</guid><pubDate>${new Date(i.resolvedAt ?? i.startedAt).toUTCString()}</pubDate><description>${esc(i.updates[0]?.body ?? i.title)}</description></item>`).join('');
-    return reply.type('application/rss+xml; charset=utf-8').send(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${esc(p.title)}</title><link>${esc(link)}</link><description>${esc(p.description ?? `${p.title} · ${srv(p.language).page}`)}</description>${items}</channel></rss>`);
+    const items = inc.map((i) => `<item><title>${esc(`[${i.resolvedAt ? srv(lang).done : srv(lang).ongoing}] ${i.title}`)}</title><link>${esc(link)}</link><guid isPermaLink="false">${esc(`${p.slug}-incident-${i.id}-${i.resolvedAt ? 'r' : 'o'}`)}</guid><pubDate>${new Date(i.resolvedAt ?? i.startedAt).toUTCString()}</pubDate><description>${esc(i.updates[0]?.body ?? i.title)}</description></item>`).join('');
+    return reply.type('application/rss+xml; charset=utf-8').send(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${esc(p.title)}</title><link>${esc(link)}</link><description>${esc(p.description ?? `${p.title} · ${srv(lang).page}`)}</description><language>${lang}</language>${items}</channel></rss>`);
   });
 
   const html = (title: string, msg: string) => `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1>${esc(title)}</h1><p>${esc(msg)}</p><p><a href="/">Back</a></p>`;
 
-  app.post('/api/public/status/:slug/subscribe', { config: { rateLimit: { max: 5, timeWindow: '10 minutes' } }, schema: { tags: ['public'], params: Slug, body: Type.Object({ email: Type.String({ format: 'email', maxLength: 254 }) }) } }, async (req, reply) => {
+  app.post('/api/public/status/:slug/subscribe', { config: { rateLimit: { max: 5, timeWindow: '10 minutes' } }, schema: { tags: ['public'], params: Slug, body: Type.Object({ email: Type.String({ format: 'email', maxLength: 254 }), lang: LangQ }) } }, async (req, reply) => {
     const p = await gate(req, reply, (req.params as any).slug);
     if (!p) return;
     if (!mailConfigured()) return reply.code(400).send({ error: 'unavailable', message: 'Email subscriptions are not enabled on this server' });
     const email = (req.body as any).email as string;
-    const sub = await addSubscriber(p.id, 'email', email, false);
+    const chosen = (req.body as { lang?: string }).lang ?? null; // mails follow the page's language, else the one the visitor was reading in
+    const sub = await addSubscriber(p.id, 'email', email, false, chosen);
     // identical answer for new and known addresses so the endpoint cannot be used to enumerate subscribers
     if (sub) {
       const link = `${config.baseUrl}/api/public/subscriptions/confirm?token=${sub.token}`;
-      const L = srv(p.language);
+      const L = srv(p.language ?? chosen);
       void sendSystemMail({ to: email, subject: fill(L.confirmSubject, { t: p.title }), text: fill(L.confirmBody, { t: p.title, l: link }) }).catch((e) => ctx.log.warn({ err: e }, 'subscription mail failed'));
     }
     return { ok: true };
   });
-  /** Language of the page a subscription belongs to, for the confirmation pages. */
-  const subscriberLanguage = async (token: string) => (await db.selectFrom('status_page_subscribers as s').innerJoin('status_pages as p', 'p.id', 's.page_id').select('p.language').where('s.token', '=', token).executeTakeFirst())?.language;
+  /** Language of a subscription for the confirmation pages: the page's fixed one, else the one the subscriber signed up in. */
+  const subscriberLanguage = async (token: string) => { const r = await db.selectFrom('status_page_subscribers as s').innerJoin('status_pages as p', 'p.id', 's.page_id').select(['p.language', 's.lang']).where('s.token', '=', token).executeTakeFirst(); const mode = await langMode(ctx); return mode !== 'both' ? mode : r?.language ?? r?.lang; };
   app.get('/api/public/subscriptions/confirm', { ...pub, schema: { hide: true, querystring: Type.Object({ token: Type.String({ maxLength: 64 }) }) } }, async (req, reply) => {
     const token = (req.query as any).token as string;
     const L = srv(await subscriberLanguage(token));
@@ -357,21 +370,24 @@ export async function statusPageRoutes(app: FastifyInstance) {
 
 const safeDecrypt = (s: string) => { try { return decrypt(s); } catch { return ''; } };
 
-/** Sends a message to all verified subscribers of one page (email and webhook). Failures are logged, not retried. */
-export async function notifySubscribers(ctx: Ctx, pageId: number, subject: string, text: string): Promise<void> {
+/** Sends a message to all verified subscribers of one page (email and webhook), each in the language of the page or, without a fixed one, of the subscriber. Failures are logged, not retried. */
+export async function notifySubscribers(ctx: Ctx, pageId: number, message: (lang: Lang) => { subject: string; text: string }): Promise<void> {
   const page = await ctx.db.selectFrom('status_pages').select(['slug', 'title', 'language']).where('id', '=', pageId).executeTakeFirst();
   if (!page) return;
   const subs = await ctx.db.selectFrom('status_page_subscribers').selectAll().where('page_id', '=', pageId).where('verified', '=', 1).execute();
+  const mode = await langMode(ctx);
   for (const s of subs) {
     const target = safeDecrypt(s.target_enc);
     if (!target) continue;
+    const lang: Lang = (mode !== 'both' ? mode : page.language ?? s.lang) === 'de' ? 'de' : 'en';
+    const { subject, text } = message(lang);
     try {
       if (s.kind === 'email') {
         if (!mailConfigured()) continue;
         const unsub = `${config.baseUrl}/api/public/subscriptions/unsubscribe?token=${s.token}`;
-        await sendSystemMail({ to: target, subject: `[${page.title}] ${subject}`, text: `${text}\n\n${srv(page.language).page}: ${config.baseUrl}/status/${page.slug}\n${srv(page.language).unsub}: ${unsub}` });
+        await sendSystemMail({ to: target, subject: `[${page.title}] ${subject}`, text: `${text}\n\n${srv(lang).page}: ${config.baseUrl}/status/${page.slug}\n${srv(lang).unsub}: ${unsub}` });
       } else {
-        const res = await httpRequest({ url: target, method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ page: page.slug, subject, text, url: `${config.baseUrl}/status/${page.slug}`, time: new Date().toISOString() }), signal: timeoutSignal(10_000), guard: ctx.guard, followRedirects: false, maxBodyBytes: 16 * 1024 });
+        const res = await httpRequest({ url: target, method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ page: page.slug, lang, subject, text, url: `${config.baseUrl}/status/${page.slug}`, time: new Date().toISOString() }), signal: timeoutSignal(10_000), guard: ctx.guard, followRedirects: false, maxBodyBytes: 16 * 1024 });
         if (res.status >= 300) throw new Error(`HTTP ${res.status}`);
       }
     } catch (e) { ctx.log.warn({ err: e, subscriber: s.id }, 'status subscriber delivery failed'); }
@@ -385,23 +401,26 @@ export function startSubscriberNotifications(ctx: Ctx): () => void {
   return ctx.bus.subscribe((e) => {
     if (e.type !== 'incident' || (e.status !== 'open' && e.status !== 'resolved' && !PHASES[e.status])) return;
     void (async () => {
-      const inc = await ctx.db.selectFrom('incidents').select(['title', 'source', 'public', 'monitor_id']).where('id', '=', e.incidentId).executeTakeFirst();
+      const inc = await ctx.db.selectFrom('incidents').select(['title', 'title_en', 'title_de', 'source', 'public', 'monitor_id']).where('id', '=', e.incidentId).executeTakeFirst();
       if (!inc || !bool(inc.public)) return;
       // the message the operator wrote for this phase, if it was marked for the status page
-      const last = PHASES[e.status] ? await ctx.db.selectFrom('incident_updates').select('body').where('incident_id', '=', e.incidentId).where('status', '=', e.status as any).where('public', '=', 1).orderBy('id', 'desc').limit(1).executeTakeFirst() : undefined;
+      const last = PHASES[e.status] ? await ctx.db.selectFrom('incident_updates').select(['body', 'body_en', 'body_de']).where('incident_id', '=', e.incidentId).where('status', '=', e.status as any).where('public', '=', 1).orderBy('id', 'desc').limit(1).executeTakeFirst() : undefined;
       // every page that shows any monitor of the incident, each told once, with the name that page uses (automatic titles carry the internal monitor name)
       const comps = await ctx.db.selectFrom('status_page_components as c').innerJoin('monitors as m', 'm.id', 'c.monitor_id').select(['c.page_id', 'c.monitor_id', 'c.display_name', 'm.name'])
         .where('c.monitor_id', 'in', ctx.db.selectFrom('incident_monitors').select('monitor_id').where('incident_id', '=', e.incidentId)).execute();
       const pageIds = [...new Set(comps.map((c) => c.page_id))];
-      const langs = new Map((pageIds.length ? await ctx.db.selectFrom('status_pages').select(['id', 'language']).where('id', 'in', pageIds).execute() : []).map((r) => [r.id, r.language]));
       for (const pageId of pageIds) {
-        const L = srv(langs.get(pageId));
         const own = comps.find((c) => c.page_id === pageId && c.monitor_id === inc.monitor_id);
-        const title = inc.source === 'auto' && own ? fill(L.down, { n: own.display_name || own.name }) : inc.title;
-        const phase = L.phases[e.status] ?? '';
-        const subject = e.status === 'open' ? fill(L.incident, { t: title }) : e.status === 'resolved' ? fill(L.resolved, { t: title }) : fill(L.update, { p: phase, t: title });
-        const body = e.status === 'open' ? fill(L.investigating, { t: title }) : e.status === 'resolved' ? fill(L.hasResolved, { t: title }) : `${fill(L.phaseLine, { t: title, p: phase })}${last?.body ? `\n\n${last.body}` : ''}`;
-        await notifySubscribers(ctx, pageId, subject, body);
+        // each subscriber gets the wording in their language (the page's fixed one, else the one they signed up in)
+        await notifySubscribers(ctx, pageId, (lang) => {
+          const L = srv(lang);
+          const title = pickText(lang, inc.source === 'auto' && own ? fill(L.down, { n: own.display_name || own.name }) : inc.title, inc.title_en, inc.title_de)!;
+          const phase = L.phases[e.status] ?? '';
+          const note = last ? pickText(lang, last.body, last.body_en, last.body_de) : null;
+          const subject = e.status === 'open' ? fill(L.incident, { t: title }) : e.status === 'resolved' ? fill(L.resolved, { t: title }) : fill(L.update, { p: phase, t: title });
+          const text = e.status === 'open' ? fill(L.investigating, { t: title }) : e.status === 'resolved' ? fill(L.hasResolved, { t: title }) : `${fill(L.phaseLine, { t: title, p: phase })}${note ? `\n\n${note}` : ''}`;
+          return { subject, text };
+        });
       }
     })().catch((err) => ctx.log.warn({ err }, 'subscriber notification failed'));
   });

@@ -4,6 +4,11 @@ import type { Monitor } from './monitors/model';
 
 export interface IncidentRef { id: number; started: boolean }
 
+/** Text of an optional input: trimmed, empty becomes NULL. */
+export const textOrNull = (s: string | null | undefined): string | null => s?.trim() || null;
+/** The text in one language: its own version when the author wrote one, otherwise the text as written. */
+export const pickText = (lang: string | null | undefined, base: string | null, en: string | null, de: string | null): string | null => (lang === 'de' ? de : en) || base;
+
 export class IncidentService {
   constructor(private ctx: Pick<Ctx, 'db' | 'bus' | 'settings'>) {}
 

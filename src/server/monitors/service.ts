@@ -3,7 +3,7 @@ import { sql } from 'kysely';
 import { getRunner, maskSecrets, restoreSecrets, validateConfig } from '../../core';
 import type { Ctx } from '../context';
 import { parseJson } from '../db';
-import { monitorDefaults } from './defaults';
+import { maxTimeoutS, monitorDefaults } from './defaults';
 import type { ServerInfo } from './info';
 import { encryptConfig, parseMonitor, type Monitor } from './model';
 
@@ -11,7 +11,7 @@ export interface TagValue { tagId: number; value: string }
 
 export interface MonitorInput {
   name?: string; type?: string; groupId?: number | null; description?: string | null; config?: Record<string, any>;
-  intervalS?: number; timeoutS?: number; retries?: number; retryIntervalS?: number; upThreshold?: number; downThreshold?: number;
+  intervalS?: number; timeoutS?: number; retries?: number; retryIntervalS?: number; upThreshold?: number;
   flapWindow?: number; flapThreshold?: number; active?: boolean; locations?: (number | 'local')[] | null; quorum?: number; publicBadge?: boolean;
   tagIds?: number[]; tagValues?: TagValue[]; dependsOn?: number[]; notifications?: { channelId?: number | null; policyId?: number | null; events?: string[] }[];
 }
@@ -62,12 +62,12 @@ export async function saveMonitor(ctx: Ctx, input: MonitorInput, userId: number 
 
   const d = await monitorDefaults(ctx);
   const intervalS = num(input.intervalS ?? existing?.intervalS, d.intervalS, 5, 86400, 'Interval', errors);
-  const timeoutS = num(input.timeoutS ?? existing?.timeoutS, d.timeoutS, 1, 300, 'Timeout', errors);
+  const timeoutS = num(input.timeoutS ?? existing?.timeoutS, Math.min(d.timeoutS, maxTimeoutS(intervalS)), 1, 300, 'Timeout', errors);
   const row = {
     name, type: runner.type, group_id: input.groupId === undefined ? existing?.groupId ?? null : input.groupId, description: input.description === undefined ? existing?.description ?? null : input.description,
     config: JSON.stringify(encryptConfig(runner, v.config)), interval_s: intervalS, timeout_s: timeoutS,
-    retries: num(input.retries ?? existing?.retries, d.retries, 0, 20, 'Retries', errors), retry_interval_s: num(input.retryIntervalS ?? existing?.retryIntervalS, d.retryIntervalS, 5, 3600, 'Retry interval', errors),
-    up_threshold: num(input.upThreshold ?? existing?.upThreshold, d.upThreshold, 1, 20, 'Up threshold', errors), down_threshold: num(input.downThreshold ?? existing?.downThreshold, d.downThreshold, 1, 20, 'Down threshold', errors),
+    retries: num(input.retries ?? existing?.retries, d.retries, 0, 100, 'Retries', errors), retry_interval_s: num(input.retryIntervalS ?? existing?.retryIntervalS, d.retryIntervalS, 5, 3600, 'Retry interval', errors),
+    up_threshold: num(input.upThreshold ?? existing?.upThreshold, d.upThreshold, 1, 20, 'Up threshold', errors),
     flap_window: num(input.flapWindow ?? existing?.flapWindow, d.flapWindow, 4, 60, 'Flap window', errors), flap_threshold: num(input.flapThreshold ?? existing?.flapThreshold, d.flapThreshold, 0, 60, 'Flap threshold', errors),
     active: (input.active ?? existing?.active ?? true) ? 1 : 0, public_badge: (input.publicBadge ?? existing?.publicBadge ?? false) ? 1 : 0,
   };
@@ -205,7 +205,7 @@ export async function monitorDetail(ctx: Ctx, id: number) {
   const probes = locStates.length ? await db.selectFrom('probes').select(['id', 'name']).where('id', 'in', locStates.map((l) => l.location_id)).execute() : [];
   return {
     ...list[0],
-    config: maskSecrets(runner, m.config), timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold, downThreshold: m.downThreshold,
+    config: maskSecrets(runner, m.config), timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold,
     flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, quorum: m.quorum,
     notifications: notifications.map((n) => ({ channelId: n.channel_id, policyId: n.policy_id, events: n.events.split(',') })),
     locationStates: locStates.map((l) => ({ locationId: l.location_id, name: l.location_id === 4294967295 ? 'Server' : probes.find((p) => p.id === l.location_id)?.name ?? `Probe ${l.location_id}`, ok: !!l.ok, ts: l.ts, latencyMs: l.latency_ms, errorKind: l.error_kind, message: l.message })),

@@ -3,18 +3,19 @@ import { CheckCircle2, Eye, FileText, Globe, Lock, MessageSquare, Pencil, PlayCi
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { IncidentStatusBadge, INCIDENT_STATUSES, SeverityBadge } from '../components/ops-shared';
-import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Field, Loading, PageHeader, Select, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
+import { NO_VERSIONS, Translations, type Versions } from '../components/Translations';
+import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Field, Input, Loading, PageHeader, Select, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
 import { ApiError, del, errorMessage, get, patch, post } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { fmtDateTime, fmtDuration, relTime } from '../lib/format';
 import { useT } from '../lib/i18n';
 
 interface Detail {
-  id: number; title: string; status: string; severity: string; source: string; startedAt: string; acknowledgedAt: string | null; acknowledgedBy: string | null; resolvedAt: string | null;
+  id: number; title: string; titleEn: string | null; titleDe: string | null; status: string; severity: string; source: string; startedAt: string; acknowledgedAt: string | null; acknowledgedBy: string | null; resolvedAt: string | null;
   assignee: { id: number; name: string } | null; public: boolean; postmortem: string | null; monitors: { id: number; name: string }[];
   updates: Update[];
 }
-interface Update { id: number; ts: string; kind: string; status: string | null; body: string | null; author: string | null; public: boolean; editedAt: string | null; editable: boolean }
+interface Update { id: number; ts: string; kind: string; status: string | null; body: string | null; bodyEn: string | null; bodyDe: string | null; author: string | null; public: boolean; editedAt: string | null; editable: boolean }
 /** Entries that can appear on a status page; the rest is the system's record. */
 const PUBLISHABLE = new Set(['note', 'status', 'resolve', 'postmortem']);
 const KIND_ICON: Record<string, React.ReactNode> = {
@@ -29,13 +30,14 @@ function Entry({ u, incidentId, canEdit }: { u: Update; incidentId: number; canE
   const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(u.body ?? '');
+  const [ver, setVer] = useState<Versions>({ en: u.bodyEn ?? '', de: u.bodyDe ?? '' });
   const [shown, setShown] = useState(u.public);
   const save = useMutation({
-    mutationFn: () => patch(`/api/incidents/${incidentId}/updates/${u.id}`, { ...(text.trim() && text.trim() !== (u.body ?? '') ? { body: text } : {}), ...(shown !== u.public ? { public: shown } : {}) }),
+    mutationFn: () => patch(`/api/incidents/${incidentId}/updates/${u.id}`, { ...(text.trim() && text.trim() !== (u.body ?? '') ? { body: text } : {}), ...(ver.en.trim() !== (u.bodyEn ?? '') ? { bodyEn: ver.en } : {}), ...(ver.de.trim() !== (u.bodyDe ?? '') ? { bodyDe: ver.de } : {}), ...(shown !== u.public ? { public: shown } : {}) }),
     onSuccess: () => { setEditing(false); void qc.invalidateQueries({ queryKey: ['incidents'] }); },
     onError: (e) => toast(e instanceof ApiError ? e.message : t('common.failed'), 'error'),
   });
-  const open = () => { setText(u.body ?? ''); setShown(u.public); setEditing(true); };
+  const open = () => { setText(u.body ?? ''); setVer({ en: u.bodyEn ?? '', de: u.bodyDe ?? '' }); setShown(u.public); setEditing(true); };
   return (
     <li className="flex gap-3">
       <span className="mt-0.5 text-slate-500" aria-hidden>{KIND_ICON[u.kind] ?? KIND_ICON.status}</span>
@@ -43,6 +45,7 @@ function Entry({ u, incidentId, canEdit }: { u: Update; incidentId: number; canE
         {editing ? (
           <div className="space-y-2">
             <Textarea aria-label={t('incidents.entry.edit')} value={text} onChange={(e) => setText(e.target.value)} rows={3} maxLength={10000} className="font-sans" autoFocus />
+            <Translations multiline value={ver} onChange={setVer} max={10000} />
             <Toggle checked={shown} onChange={setShown} label={t('incidents.showOnPage')} />
             <div className="flex gap-2"><Button size="sm" variant="primary" loading={save.isPending} disabled={!text.trim()} onClick={() => save.mutate()}>{t('common.save')}</Button><Button size="sm" onClick={() => setEditing(false)}>{t('common.cancel')}</Button></div>
           </div>
@@ -73,10 +76,13 @@ export default function IncidentDetail() {
   const q = useQuery({ queryKey: key, queryFn: () => get<Detail>(`/api/incidents/${id}`) });
   const users = useQuery({ queryKey: ['users-directory'], queryFn: () => get<{ id: number; displayName: string }[]>('/api/users/directory'), staleTime: 60_000 });
   const [note, setNote] = useState('');
+  const [noteV, setNoteV] = useState<Versions>(NO_VERSIONS);
+  const [ti, setTi] = useState({ title: '', v: NO_VERSIONS as Versions }); // title and its versions, as edited under "Wording on the status page"
   const [next, setNext] = useState<string | null>(null); // status chosen for the next update, null = unchanged
   const [onPage, setOnPage] = useState(false); // a message without a status change stays internal unless the author marks it for the status page
   const [pm, setPm] = useState('');
   useEffect(() => { if (q.data) setPm(q.data.postmortem ?? ''); }, [q.data?.postmortem]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (q.data) setTi({ title: q.data.title, v: { en: q.data.titleEn ?? '', de: q.data.titleDe ?? '' } }); }, [q.data?.title, q.data?.titleEn, q.data?.titleDe]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = useMutation({
     mutationFn: (fn: () => Promise<unknown>) => fn(),
@@ -114,9 +120,9 @@ export default function IncidentDetail() {
                 const status = next ?? i.status;
                 if (!note.trim() && status === i.status) return;
                 run.mutate(async () => {
-                  if (note.trim()) await post(`/api/incidents/${id}/notes`, { body: note, ...(status !== i.status ? { status } : { public: onPage }) });
+                  if (note.trim()) await post(`/api/incidents/${id}/notes`, { body: note, bodyEn: noteV.en, bodyDe: noteV.de, ...(status !== i.status ? { status } : { public: onPage }) });
                   else await post(`/api/incidents/${id}/status`, { status });
-                  setNote(''); setNext(null); setOnPage(false);
+                  setNote(''); setNoteV(NO_VERSIONS); setNext(null); setOnPage(false);
                 });
               }}>
                 <h3 className="label">{t('incidents.postUpdate')}</h3>
@@ -124,6 +130,7 @@ export default function IncidentDetail() {
                   <Field label={t('common.status')}>{(fid) => <Select id={fid} value={next ?? i.status} onChange={(e) => setNext(e.target.value)}>{INCIDENT_STATUSES.map((s) => <option key={s} value={s}>{t(`incidents.status.${s}`)}</option>)}</Select>}</Field>
                   <Field label={t('incidents.addNote')} hint={i.public && (next ?? i.status) !== i.status ? t('incidents.updatePublic') : undefined}>{(fid) => <Textarea id={fid} value={note} onChange={(e) => setNote(e.target.value)} className="font-sans" maxLength={10000} rows={3} />}</Field>
                 </div>
+                {note.trim() && <Translations multiline value={noteV} onChange={setNoteV} max={10000} />}
                 {i.public && (next ?? i.status) === i.status && <Toggle checked={onPage} onChange={setOnPage} label={t('incidents.showOnPage')} />}
                 {(next ?? i.status) === 'monitoring' && i.source === 'auto' && <p className="hint">{t('incidents.monitoringHint')}</p>}
                 <Button type="submit" variant="primary" disabled={!note.trim() && (next ?? i.status) === i.status} loading={run.isPending}>{t('incidents.postNote')}</Button>
@@ -165,6 +172,15 @@ export default function IncidentDetail() {
               <div><Toggle disabled={!editor} checked={i.public} onChange={(v) => upd({ public: v })} label={t('incidents.field.public')} /><p className="hint">{t(i.public ? 'incidents.publicOn' : 'incidents.publicOff')}</p></div>
             </div>
           </Card>
+          {editor && (
+            <Card>
+              <CardHeader title={t('incidents.wording')} actions={<Button size="sm" variant="primary" disabled={!ti.title.trim() || (ti.title.trim() === i.title && ti.v.en.trim() === (i.titleEn ?? '') && ti.v.de.trim() === (i.titleDe ?? ''))} onClick={() => upd({ title: ti.title.trim(), titleEn: ti.v.en.trim() || null, titleDe: ti.v.de.trim() || null })}>{t('common.save')}</Button>} />
+              <div className="space-y-3 p-4">
+                <Field label={t('incidents.field.title')} hint={t('incidents.wordingHint')}>{(fid) => <Input id={fid} value={ti.title} maxLength={255} onChange={(e) => setTi({ ...ti, title: e.target.value })} />}</Field>
+                <Translations value={ti.v} onChange={(v) => setTi({ ...ti, v })} max={255} />
+              </div>
+            </Card>
+          )}
           <Card>
             <CardHeader title={t('incidents.affected')} />
             <ul className="space-y-1 p-4 text-sm">{i.monitors.length ? i.monitors.map((m) => <li key={m.id}><Link to={`/monitors/${m.id}`}>{m.name}</Link></li>) : <li className="text-slate-500">{t('incidents.noMonitors')}</li>}</ul>

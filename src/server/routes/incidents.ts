@@ -3,9 +3,12 @@ import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import { accessibleMonitorIds, writeAudit } from '../auth/access';
 import { bool } from '../db';
+import { textOrNull } from '../incidents';
 import type { IncidentStatus } from '../db/types';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
+/** English and German version of a message for the timeline; empty means "show the text as written". */
+type Tr = { en?: string | null; de?: string | null };
 const STATUSES: IncidentStatus[] = ['open', 'acknowledged', 'identified', 'fixing', 'monitoring', 'resolved'];
 const StatusT = Type.Union(STATUSES.map((s) => Type.Literal(s)));
 /** Timeline entries a person wrote or caused; the rest (detected, assigned, ...) is the system's record. */
@@ -45,7 +48,7 @@ export async function incidentRoutes(app: FastifyInstance) {
     ]);
     const name = (id: number | null) => users.find((u) => u.id === id)?.display_name ?? null;
     return rows.map((r) => ({
-      id: r.id, title: r.title, status: r.status, severity: r.severity, source: r.source, monitorId: !seen || (r.monitor_id && seen.includes(r.monitor_id)) ? r.monitor_id : null, startedAt: r.started_at, acknowledgedAt: r.acknowledged_at, acknowledgedBy: name(r.acknowledged_by),
+      id: r.id, title: r.title, titleEn: r.title_en, titleDe: r.title_de, status: r.status, severity: r.severity, source: r.source, monitorId: !seen || (r.monitor_id && seen.includes(r.monitor_id)) ? r.monitor_id : null, startedAt: r.started_at, acknowledgedAt: r.acknowledged_at, acknowledgedBy: name(r.acknowledged_by),
       resolvedAt: r.resolved_at, assignee: r.assignee_id ? { id: r.assignee_id, name: name(r.assignee_id) } : null, public: !!r.public, hasPostmortem: !!r.postmortem,
       monitors: mons.filter((m) => m.incident_id === r.id).map((m) => ({ id: m.id, name: m.name })),
     }));
@@ -98,8 +101,8 @@ export async function incidentRoutes(app: FastifyInstance) {
     const vis = await visibleFilter(req);
     if (!row || (vis && !vis.includes(id))) return reply.code(404).send({ error: 'not_found' });
     const [inc] = await shape([row], req.user);
-    const updates = await db.selectFrom('incident_updates as u').leftJoin('users as us', 'us.id', 'u.user_id').select(['u.id', 'u.ts', 'u.kind', 'u.status', 'u.body', 'u.public', 'u.edited_at', 'u.user_id', 'us.display_name']).where('u.incident_id', '=', id).orderBy('u.ts').orderBy('u.id').execute();
-    return { ...inc, postmortem: row.postmortem, updates: updates.map((u) => ({ id: u.id, ts: u.ts, kind: u.kind, status: u.status, body: u.body, author: u.display_name, public: !!u.public, editedAt: u.edited_at, editable: u.user_id != null && EDITABLE.includes(u.kind) })) };
+    const updates = await db.selectFrom('incident_updates as u').leftJoin('users as us', 'us.id', 'u.user_id').select(['u.id', 'u.ts', 'u.kind', 'u.status', 'u.body', 'u.body_en', 'u.body_de', 'u.public', 'u.edited_at', 'u.user_id', 'us.display_name']).where('u.incident_id', '=', id).orderBy('u.ts').orderBy('u.id').execute();
+    return { ...inc, postmortem: row.postmortem, updates: updates.map((u) => ({ id: u.id, ts: u.ts, kind: u.kind, status: u.status, body: u.body, bodyEn: u.body_en, bodyDe: u.body_de, author: u.display_name, public: !!u.public, editedAt: u.edited_at, editable: u.user_id != null && EDITABLE.includes(u.kind) })) };
   });
 
   /** A scope-restricted editor may only touch incidents that involve a monitor they manage; unrestricted users may touch all. */
@@ -116,7 +119,7 @@ export async function incidentRoutes(app: FastifyInstance) {
    * Moves an incident to a status and records it on the timeline. Anything but "open" counts as "somebody is on it": the first such move sets the
    * acknowledgement (MTTA) and stops escalation. Resolving stamps the end, reopening clears it.
    */
-  async function changeStatus(req: any, id: number, to: IncidentStatus, message?: string | null): Promise<'ok' | 'same' | 'missing'> {
+  async function changeStatus(req: any, id: number, to: IncidentStatus, message?: string | null, tr: Tr = {}): Promise<'ok' | 'same' | 'missing'> {
     const row = await db.selectFrom('incidents').select(['status', 'monitor_id', 'acknowledged_at']).where('id', '=', id).executeTakeFirst();
     if (!row) return 'missing';
     if (row.status === to) return 'same';
@@ -127,7 +130,7 @@ export async function incidentRoutes(app: FastifyInstance) {
     // only move the row if nobody changed it since we read it, so two people (or the auto-resolver) cannot both "win" and notify twice
     const moved = await db.updateTable('incidents').set(set).where('id', '=', id).where('status', '=', row.status).executeTakeFirst();
     if (!Number(moved.numUpdatedRows)) return 'same';
-    await db.insertInto('incident_updates').values({ incident_id: id, user_id: req.user.id, kind: to === 'resolved' ? 'resolve' : to === 'acknowledged' ? 'ack' : 'status', status: to, body: message?.trim() || null, public: to === 'acknowledged' ? 0 : 1 }).execute();
+    await db.insertInto('incident_updates').values({ incident_id: id, user_id: req.user.id, kind: to === 'resolved' ? 'resolve' : to === 'acknowledged' ? 'ack' : 'status', status: to, body: message?.trim() || null, body_en: textOrNull(tr.en), body_de: textOrNull(tr.de), public: to === 'acknowledged' ? 0 : 1 }).execute();
     if (to !== 'open') await ctx.incidents.stopEscalation(id);
     await writeAudit(ctx, req.user, `incident.${to}`, { type: 'incident', id }, undefined, req.ip);
     ctx.bus.publish({ type: 'incident', incidentId: id, monitorId: row.monitor_id, status: to });
@@ -136,7 +139,7 @@ export async function incidentRoutes(app: FastifyInstance) {
 
   app.post('/api/incidents', {
     ...writer,
-    schema: { tags: ['incidents'], body: Type.Object({ title: Type.String({ minLength: 1, maxLength: 255 }), severity: Type.Optional(Type.Union([Type.Literal('minor'), Type.Literal('major'), Type.Literal('critical')])), monitorIds: Type.Optional(Type.Array(Type.Integer())), body: Type.Optional(Type.String({ maxLength: 10000 })), public: Type.Optional(Type.Boolean()), startedAt: Type.Optional(Type.String({ format: 'date-time' })) }) },
+    schema: { tags: ['incidents'], body: Type.Object({ title: Type.String({ minLength: 1, maxLength: 255 }), titleEn: Type.Optional(Type.String({ maxLength: 255 })), titleDe: Type.Optional(Type.String({ maxLength: 255 })), severity: Type.Optional(Type.Union([Type.Literal('minor'), Type.Literal('major'), Type.Literal('critical')])), monitorIds: Type.Optional(Type.Array(Type.Integer())), body: Type.Optional(Type.String({ maxLength: 10000 })), bodyEn: Type.Optional(Type.String({ maxLength: 10000 })), bodyDe: Type.Optional(Type.String({ maxLength: 10000 })), public: Type.Optional(Type.Boolean()), startedAt: Type.Optional(Type.String({ format: 'date-time' })) }) },
   }, async (req, reply) => {
     const b = req.body as any;
     const now = new Date();
@@ -147,10 +150,10 @@ export async function incidentRoutes(app: FastifyInstance) {
     const startedAt = b.startedAt ? new Date(b.startedAt) : now;
     if (Number.isNaN(startedAt.getTime())) return reply.code(400).send({ error: 'validation', message: 'startedAt is not a valid date' });
     const id = await db.transaction().execute(async (trx) => {
-      const r = await trx.insertInto('incidents').values({ title: b.title, severity: b.severity ?? 'major', source: 'manual', started_at: startedAt, public: b.public ? 1 : 0, created_by: req.user!.id, monitor_id: monitorIds[0] ?? null }).executeTakeFirstOrThrow();
+      const r = await trx.insertInto('incidents').values({ title: b.title, title_en: textOrNull(b.titleEn), title_de: textOrNull(b.titleDe), severity: b.severity ?? 'major', source: 'manual', started_at: startedAt, public: b.public ? 1 : 0, created_by: req.user!.id, monitor_id: monitorIds[0] ?? null }).executeTakeFirstOrThrow();
       const incidentId = Number(r.insertId);
       if (monitorIds.length) await trx.insertInto('incident_monitors').values(monitorIds.map((m) => ({ incident_id: incidentId, monitor_id: m }))).execute();
-      await trx.insertInto('incident_updates').values({ incident_id: incidentId, user_id: req.user!.id, kind: 'status', status: 'open', body: b.body || null, public: 1 }).execute();
+      await trx.insertInto('incident_updates').values({ incident_id: incidentId, user_id: req.user!.id, kind: 'status', status: 'open', body: b.body || null, body_en: textOrNull(b.bodyEn), body_de: textOrNull(b.bodyDe), public: 1 }).execute();
       return incidentId;
     });
     await writeAudit(ctx, req.user, 'incident.created', { type: 'incident', id }, { title: b.title }, req.ip);
@@ -158,14 +161,14 @@ export async function incidentRoutes(app: FastifyInstance) {
     return { id };
   });
 
-  const bodyPatch = Type.Object({ title: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })), severity: Type.Optional(Type.Union([Type.Literal('minor'), Type.Literal('major'), Type.Literal('critical')])), assigneeId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), public: Type.Optional(Type.Boolean()), postmortem: Type.Optional(Type.Union([Type.String({ maxLength: 50000 }), Type.Null()])) });
+  const bodyPatch = Type.Object({ title: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })), titleEn: Type.Optional(Type.Union([Type.String({ maxLength: 255 }), Type.Null()])), titleDe: Type.Optional(Type.Union([Type.String({ maxLength: 255 }), Type.Null()])), severity: Type.Optional(Type.Union([Type.Literal('minor'), Type.Literal('major'), Type.Literal('critical')])), assigneeId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), public: Type.Optional(Type.Boolean()), postmortem: Type.Optional(Type.Union([Type.String({ maxLength: 50000 }), Type.Null()])) });
   app.patch('/api/incidents/:id', { ...writer, schema: { tags: ['incidents'], params: Id, body: bodyPatch } }, async (req, reply) => {
     const id = (req.params as any).id; const b = req.body as any;
     const row = await db.selectFrom('incidents').select(['id', 'assignee_id', 'postmortem']).where('id', '=', id).executeTakeFirst();
     if (!row) return reply.code(404).send({ error: 'not_found' });
     if (!(await mayChange(req, reply, id))) return;
     const set: Record<string, unknown> = {};
-    if (b.title !== undefined) set.title = b.title; if (b.severity !== undefined) set.severity = b.severity; if (b.public !== undefined) set.public = b.public ? 1 : 0;
+    if (b.title !== undefined) set.title = b.title; if (b.titleEn !== undefined) set.title_en = textOrNull(b.titleEn); if (b.titleDe !== undefined) set.title_de = textOrNull(b.titleDe); if (b.severity !== undefined) set.severity = b.severity; if (b.public !== undefined) set.public = b.public ? 1 : 0;
     if (b.assigneeId !== undefined) set.assignee_id = b.assigneeId; if (b.postmortem !== undefined) set.postmortem = b.postmortem;
     if (Object.keys(set).length) await db.updateTable('incidents').set(set).where('id', '=', id).execute();
     if (b.assigneeId !== undefined && b.assigneeId !== row.assignee_id) {
@@ -193,46 +196,48 @@ export async function incidentRoutes(app: FastifyInstance) {
     if (!row) return reply.code(404).send({ error: 'not_found' });
     if (!(await mayChange(req, reply, id))) return;
     if (row.status === 'resolved') return reply.code(409).send({ error: 'conflict', message: 'Incident is already resolved' });
-    await changeStatus(req, id, 'resolved', 'Resolved manually');
+    await changeStatus(req, id, 'resolved', 'Resolved manually', { en: 'Resolved manually', de: 'Manuell behoben' });
     return { ok: true };
   });
 
   /** Any status to any other (including reopening), optionally with a message for the timeline and the public page. */
-  app.post('/api/incidents/:id/status', { ...writer, schema: { tags: ['incidents'], summary: 'Set the incident status and post an update', params: Id, body: Type.Object({ status: StatusT, message: Type.Optional(Type.String({ maxLength: 10000 })) }) } }, async (req, reply) => {
-    const id = (req.params as any).id; const b = req.body as { status: IncidentStatus; message?: string };
+  app.post('/api/incidents/:id/status', { ...writer, schema: { tags: ['incidents'], summary: 'Set the incident status and post an update', params: Id, body: Type.Object({ status: StatusT, message: Type.Optional(Type.String({ maxLength: 10000 })), messageEn: Type.Optional(Type.String({ maxLength: 10000 })), messageDe: Type.Optional(Type.String({ maxLength: 10000 })) }) } }, async (req, reply) => {
+    const id = (req.params as any).id; const b = req.body as { status: IncidentStatus; message?: string; messageEn?: string; messageDe?: string };
     if (!(await db.selectFrom('incidents').select('id').where('id', '=', id).executeTakeFirst())) return reply.code(404).send({ error: 'not_found' });
     if (!(await mayChange(req, reply, id))) return;
-    const r = await changeStatus(req, id, b.status, b.message);
+    const r = await changeStatus(req, id, b.status, b.message, { en: b.messageEn, de: b.messageDe });
     if (r === 'same') return reply.code(409).send({ error: 'conflict', message: `Incident is already ${b.status}` });
     return { ok: true };
   });
 
-  app.post('/api/incidents/:id/notes', { ...writer, schema: { tags: ['incidents'], params: Id, body: Type.Object({ body: Type.String({ minLength: 1, maxLength: 10000 }), status: Type.Optional(StatusT), public: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
-    const id = (req.params as any).id; const b = req.body as { body: string; status?: IncidentStatus; public?: boolean };
+  app.post('/api/incidents/:id/notes', { ...writer, schema: { tags: ['incidents'], params: Id, body: Type.Object({ body: Type.String({ minLength: 1, maxLength: 10000 }), bodyEn: Type.Optional(Type.String({ maxLength: 10000 })), bodyDe: Type.Optional(Type.String({ maxLength: 10000 })), status: Type.Optional(StatusT), public: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
+    const id = (req.params as any).id; const b = req.body as { body: string; bodyEn?: string; bodyDe?: string; status?: IncidentStatus; public?: boolean };
     const row = await db.selectFrom('incidents').select('status').where('id', '=', id).executeTakeFirst();
     if (!row) return reply.code(404).send({ error: 'not_found' });
     if (!(await mayChange(req, reply, id))) return;
     // a note with a new status is one timeline entry that does both
-    if (b.status && b.status !== row.status && (await changeStatus(req, id, b.status, b.body)) === 'ok') return { ok: true };
+    if (b.status && b.status !== row.status && (await changeStatus(req, id, b.status, b.body, { en: b.bodyEn, de: b.bodyDe })) === 'ok') return { ok: true };
     // a plain note is internal unless the author marks it for the status page
-    await db.insertInto('incident_updates').values({ incident_id: id, user_id: req.user!.id, kind: 'note', body: b.body, public: b.public ? 1 : 0 }).execute();
+    await db.insertInto('incident_updates').values({ incident_id: id, user_id: req.user!.id, kind: 'note', body: b.body, body_en: textOrNull(b.bodyEn), body_de: textOrNull(b.bodyDe), public: b.public ? 1 : 0 }).execute();
     ctx.bus.publish({ type: 'incident', incidentId: id, monitorId: null, status: 'updated' });
     return { ok: true };
   });
 
   /** Change the text or the visibility of a timeline entry afterwards; the entry is marked as edited. */
-  app.patch('/api/incidents/:id/updates/:uid', { ...writer, schema: { tags: ['incidents'], summary: 'Edit a timeline entry', params: Type.Object({ id: Type.Integer({ minimum: 1 }), uid: Type.Integer({ minimum: 1 }) }), body: Type.Object({ body: Type.Optional(Type.String({ minLength: 1, maxLength: 10000 })), public: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
-    const { id, uid } = req.params as { id: number; uid: number }; const b = req.body as { body?: string; public?: boolean };
-    const row = await db.selectFrom('incident_updates').select(['kind', 'user_id', 'body', 'public']).where('id', '=', uid).where('incident_id', '=', id).executeTakeFirst();
+  app.patch('/api/incidents/:id/updates/:uid', { ...writer, schema: { tags: ['incidents'], summary: 'Edit a timeline entry', params: Type.Object({ id: Type.Integer({ minimum: 1 }), uid: Type.Integer({ minimum: 1 }) }), body: Type.Object({ body: Type.Optional(Type.String({ minLength: 1, maxLength: 10000 })), bodyEn: Type.Optional(Type.Union([Type.String({ maxLength: 10000 }), Type.Null()])), bodyDe: Type.Optional(Type.Union([Type.String({ maxLength: 10000 }), Type.Null()])), public: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
+    const { id, uid } = req.params as { id: number; uid: number }; const b = req.body as { body?: string; bodyEn?: string | null; bodyDe?: string | null; public?: boolean };
+    const row = await db.selectFrom('incident_updates').select(['kind', 'user_id', 'body', 'body_en', 'body_de', 'public']).where('id', '=', uid).where('incident_id', '=', id).executeTakeFirst();
     if (!row) return reply.code(404).send({ error: 'not_found' });
     if (!(await mayChange(req, reply, id))) return;
     if (row.user_id == null || !EDITABLE.includes(row.kind)) return reply.code(409).send({ error: 'conflict', message: 'Entries written by the system cannot be edited' });
     const set: Record<string, unknown> = {};
     if (b.body !== undefined && b.body.trim() !== row.body) set.body = b.body.trim();
+    if (b.bodyEn !== undefined && textOrNull(b.bodyEn) !== row.body_en) set.body_en = textOrNull(b.bodyEn);
+    if (b.bodyDe !== undefined && textOrNull(b.bodyDe) !== row.body_de) set.body_de = textOrNull(b.bodyDe);
     if (b.public !== undefined && b.public !== bool(row.public)) set.public = b.public ? 1 : 0;
     if (!Object.keys(set).length) return { ok: true };
     await db.updateTable('incident_updates').set({ ...set, edited_at: new Date() }).where('id', '=', uid).execute();
-    await writeAudit(ctx, req.user, 'incident.update_edited', { type: 'incident', id }, { entry: uid, ...(set.public !== undefined ? { public: !!set.public } : {}), ...(set.body !== undefined ? { text: true } : {}) }, req.ip);
+    await writeAudit(ctx, req.user, 'incident.update_edited', { type: 'incident', id }, { entry: uid, ...(set.public !== undefined ? { public: !!set.public } : {}), ...(set.body !== undefined || set.body_en !== undefined || set.body_de !== undefined ? { text: true } : {}) }, req.ip);
     ctx.bus.publish({ type: 'incident', incidentId: id, monitorId: null, status: 'updated' });
     return { ok: true };
   });

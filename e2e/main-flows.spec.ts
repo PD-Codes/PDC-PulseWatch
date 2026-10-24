@@ -139,6 +139,62 @@ test('a status page on its own domain is the start page there, the sign-in stays
   }
 });
 
+test('an incident with an English and a German version reads in the language of the visitor', async ({ page, request, browser }) => {
+  const { headers, monitorId } = await apiSetup(request);
+  const stamp = Date.now();
+  const id = (await (await request.post('/api/incidents', { headers, data: { title: `Cable cut ${stamp}`, titleDe: `Kabel durchtrennt ${stamp}`, severity: 'minor', monitorIds: [monitorId], public: true } })).json()).id as number;
+
+  // the wording can be changed in the admin UI: the German version is there, and the English one can be added
+  await login(page);
+  await page.goto(`/incidents/${id}`);
+  const card = page.locator('.card', { has: page.getByRole('heading', { name: 'Wording on the status page' }) });
+  await expect(card.getByLabel('German')).toHaveValue(`Kabel durchtrennt ${stamp}`);
+  await card.getByLabel('English').fill(`Fibre cut ${stamp}`);
+  await card.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('heading', { name: `Cable cut ${stamp}` })).toBeVisible(); // the title as written stays the default
+
+  // a visitor who switches the language gets the matching wording
+  const ctx = await browser.newContext({ locale: 'en-US' });
+  const visitor = await ctx.newPage();
+  await visitor.goto('/status/demo');
+  await expect(visitor.getByRole('heading', { name: `Fibre cut ${stamp}` })).toBeVisible();
+  await visitor.getByRole('group', { name: 'Language' }).getByRole('button', { name: 'DE' }).click();
+  await expect(visitor.getByRole('heading', { name: `Kabel durchtrennt ${stamp}` })).toBeVisible();
+  await ctx.close();
+  await request.post(`/api/incidents/${id}/resolve`, { headers });
+});
+
+test('the language setting reduces the whole instance to German only and back', async ({ page, request, browser }) => {
+  const { headers, monitorId } = await apiSetup(request);
+  const stamp = Date.now();
+  const id = (await (await request.post('/api/incidents', { headers, data: { title: `Router reboot ${stamp}`, titleDe: `Router-Neustart ${stamp}`, severity: 'minor', monitorIds: [monitorId], public: true } })).json()).id as number;
+  await login(page);
+  await page.goto('/settings?tab=languages');
+  await page.getByLabel('Languages', { exact: true }).selectOption('de');
+  await expect(page.getByText('everything that is sent is German')).toBeVisible();
+  try {
+    // the second wording makes no sense with one language, so the form drops it
+    await page.goto('/incidents');
+    await page.getByRole('button', { name: 'New incident' }).click();
+    await expect(page.getByLabel('Title', { exact: true })).toBeVisible();
+    await expect(page.getByText('English and German wording (optional)')).toHaveCount(0);
+
+    // a visitor with an English browser gets the German page without a language switch
+    const ctx = await browser.newContext({ locale: 'en-US' });
+    const visitor = await ctx.newPage();
+    await visitor.goto('/status/demo');
+    await expect(visitor.getByRole('heading', { name: `Router-Neustart ${stamp}` })).toBeVisible();
+    await expect(visitor.getByRole('group', { name: /^(Language|Sprache)$/ })).toHaveCount(0);
+    await ctx.close();
+  } finally {
+    expect((await request.put('/api/settings/languages', { headers, data: { mode: 'both' } })).ok()).toBe(true);
+    await request.post(`/api/incidents/${id}/resolve`, { headers });
+  }
+  await page.goto('/incidents');
+  await page.getByRole('button', { name: 'New incident' }).click();
+  await expect(page.getByText('English and German wording (optional)').first()).toBeVisible();
+});
+
 test('offers the newer monitor types in their groups and shows their fields', async ({ page }) => {
   await login(page);
   await page.goto('/monitors/new');
@@ -410,4 +466,50 @@ test('sets the language of notifications and emails on the notifications page', 
   await page.reload();
   await expect(select).toHaveValue('de');
   await request.put('/api/settings/notifications', { headers, data: { language: 'en' } });
+});
+
+test('sets interval, retries, retry interval and timeout like in Uptime Kuma', async ({ page, request }) => {
+  await login(page);
+  await page.goto('/monitors/new');
+  await page.getByLabel('Type').selectOption({ label: 'Push / heartbeat' });
+  await page.getByLabel(/^Name/).fill('e2e retry policy');
+  const field = (name: string) => page.getByLabel(name, { exact: true });
+  // a new monitor starts with Kuma's timing: timeout 80% of the interval, retry as often as a check
+  await expect(field('Request timeout')).toHaveValue('48');
+  await expect(field('Heartbeat retry interval')).toHaveValue('60');
+  // the retry interval follows the interval while both are equal; a timeout that is too long is cut to 80% when the field is left
+  await field('Heartbeat interval').fill('30');
+  await expect(field('Heartbeat retry interval')).toHaveValue('30');
+  await field('Heartbeat interval').blur();
+  await expect(field('Request timeout')).toHaveValue('24');
+  await expect(page.getByText('Check every 30 seconds')).toBeVisible();
+  await field('Retries').fill('3');
+  await field('Heartbeat retry interval').fill('20');
+  await field('Request timeout').fill('10');
+  // worst case: 4 attempts of 10 s plus 3 waits of 20 s = 100 s
+  await expect(page.getByTestId('retry-summary')).toContainText('1m 40s');
+  await page.getByRole('button', { name: 'Save' }).first().click();
+  await expect(page.getByRole('heading', { name: 'e2e retry policy' })).toBeVisible();
+  await expect(page.getByText('3 × 20s')).toBeVisible();
+  await apiSetup(request); // signs the API client in
+  const id = (await (await request.get('/api/monitors')).json()).find((m: { name: string }) => m.name === 'e2e retry policy').id;
+  const saved = await (await request.get(`/api/monitors/${id}`)).json();
+  expect([saved.intervalS, saved.timeoutS, saved.retries, saved.retryIntervalS]).toEqual([30, 10, 3, 20]);
+});
+
+test('a monitor in retry shows a yellow block and is only reported as down after the last retry', async ({ page, request }) => {
+  const { headers } = await apiSetup(request);
+  const made = await request.post('/api/monitors', { headers, data: { name: 'e2e retrying', type: 'tcp', config: { host: 'nonexistent.invalid', port: 80 }, intervalS: 3600, timeoutS: 5, retries: 2, retryIntervalS: 60 } });
+  const id = (await made.json()).id;
+  const check = () => request.post(`/api/monitors/${id}/check`, { headers });
+  const status = async () => ((await (await request.get('/api/monitors')).json()) as { id: number; status: string }[]).find((m) => m.id === id)?.status;
+  await check();
+  await login(page);
+  await page.goto(`/monitors/${id}`);
+  await expect(page.getByText('Pending', { exact: true }).first()).toBeVisible();
+  await expect(page.locator('[role=img] span.bg-amber-500').first()).toHaveAttribute('title', /Pending$/);
+  await check();
+  expect(await status()).toBe('pending'); // first failure plus one retry: still not reported as offline
+  await check();
+  expect(await status()).toBe('down'); // the last retry failed
 });

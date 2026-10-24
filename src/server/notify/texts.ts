@@ -44,11 +44,20 @@ export const TEXTS: Record<Lang, typeof en> = { en, de };
 
 export const fill = (s: string, v: Record<string, string | number> = {}) => s.replace(/\{(\w+)\}/g, (_, k) => String(v[k] ?? ''));
 
+/** "both": pages, visitors and people choose; "en" or "de": everything the instance writes and shows is in that one language. */
+export type LangMode = 'both' | Lang;
+export async function langMode(ctx: Pick<Ctx, 'settings'>): Promise<LangMode> {
+  const v = await ctx.settings.get<string>('languages.mode', 'both');
+  return v === 'en' || v === 'de' ? v : 'both';
+}
+
 /**
  * The language of notifications: the explicit setting, else the language of the first administrator who picked one in the profile, else English.
  * shortcut: one language for the whole instance, not per channel or per recipient; add a channel setting when teams need different ones.
  */
 export async function notifyLang(ctx: Pick<Ctx, 'db' | 'settings'>): Promise<{ lang: Lang; explicit: boolean }> {
+  const mode = await langMode(ctx);
+  if (mode !== 'both') return { lang: mode, explicit: true };
   const set = await ctx.settings.get<string | null>('notifications.language', null);
   if (set === 'en' || set === 'de') return { lang: set, explicit: true };
   const admin = await ctx.db.selectFrom('users').select('locale').where('role', '=', 'admin').where('is_active', '=', 1).where('locale', 'is not', null).orderBy('id').executeTakeFirst();
@@ -57,11 +66,15 @@ export async function notifyLang(ctx: Pick<Ctx, 'db' | 'settings'>): Promise<{ l
 
 /** A user's own profile language wins over the instance language (profile "automatic" means: no own choice). */
 export async function userLang(ctx: Pick<Ctx, 'db' | 'settings'>, user: { locale: string | null } | null): Promise<Lang> {
+  const mode = await langMode(ctx);
+  if (mode !== 'both') return mode;
   return user?.locale === 'en' || user?.locale === 'de' ? user.locale : (await notifyLang(ctx)).lang;
 }
 
 /** Splits mail recipients by language: users with a profile language get theirs, everybody else the instance language. */
 export async function groupByLang(ctx: Pick<Ctx, 'db' | 'settings'>, emails: string[]): Promise<Map<Lang, string[]>> {
+  const mode = await langMode(ctx);
+  if (mode !== 'both') return new Map(emails.length ? [[mode, emails]] : []);
   const base = (await notifyLang(ctx)).lang;
   const known = new Map<string, string | null>();
   if (emails.length) for (const u of await ctx.db.selectFrom('users').select(['email', 'locale']).where('is_active', '=', 1).where('email', 'in', emails).execute()) known.set(u.email!.toLowerCase(), u.locale);

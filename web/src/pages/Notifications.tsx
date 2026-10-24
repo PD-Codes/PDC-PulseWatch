@@ -6,7 +6,7 @@ import { CheckList, timeZones } from '../components/ops-shared';
 import { FieldsForm } from '../components/settingsParts';
 import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast, type Tone } from '../components/ui';
 import { ApiError, del, get, post, put } from '../lib/api';
-import { useAuth } from '../lib/auth';
+import { useAuth, useMeta } from '../lib/auth';
 import { fmtDateTime } from '../lib/format';
 import { useT } from '../lib/i18n';
 
@@ -87,11 +87,13 @@ type ChForm = { id?: number; name: string; type: string; config: Record<string, 
 /** One language for alerts, the daily digest and report mails. Without a saved choice the server follows the administrators' profile language. */
 function LanguageSetting() {
   const t = useT(); const qc = useQueryClient(); const toast = useToast(); const fail = useFail();
+  const mode = useMeta()?.languages;
+  const fixed = mode === 'en' || mode === 'de'; // a single instance language from Settings decides
   const q = useQuery({ queryKey: ['notification-language'], queryFn: () => get<{ language: 'en' | 'de'; explicit: boolean }>('/api/settings/notifications') });
   const save = useMutation({ mutationFn: (language: 'en' | 'de') => put('/api/settings/notifications', { language }), onSuccess: () => { void qc.invalidateQueries({ queryKey: ['notification-language'] }); toast(t('common.saved')); }, onError: fail });
   return (
-    <Field label={t('notifications.language')} hint={t('notifications.languageHint')} className="max-w-sm">
-      {(id) => <Select id={id} value={q.data?.language ?? 'en'} disabled={!q.data || save.isPending} onChange={(e) => save.mutate(e.target.value as 'en' | 'de')}><option value="en">English</option><option value="de">Deutsch</option></Select>}
+    <Field label={t('notifications.language')} hint={fixed ? t('notifications.languageFixed') : t('notifications.languageHint')} className="max-w-sm">
+      {(id) => <Select id={id} value={q.data?.language ?? 'en'} disabled={!q.data || save.isPending || fixed} onChange={(e) => save.mutate(e.target.value as 'en' | 'de')}><option value="en">English</option><option value="de">Deutsch</option></Select>}
     </Field>
   );
 }

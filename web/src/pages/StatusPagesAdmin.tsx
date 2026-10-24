@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, ExternalLink, Globe, Home, Lock, Megaphone, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import { NO_VERSIONS, Translations, type Versions } from '../components/Translations';
 import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
 import { del, errorMessage, get, post, put, type Group, type MonitorItem } from '../lib/api';
 import { useAuth, useMeta } from '../lib/auth';
@@ -146,7 +147,9 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
     save.mutate();
   };
 
-  const smtp = useMeta()?.smtp;
+  const meta = useMeta();
+  const smtp = meta?.smtp;
+  const single = meta?.languages === 'en' || meta?.languages === 'de' ? meta.languages : null; // one instance language fixes every page's language
   const tabs: { id: Tab; label: ReactNode }[] = [
     { id: 'general', label: t('statuspages.tab.general') }, { id: 'components', label: t('statuspages.tab.components') }, { id: 'appearance', label: t('statuspages.tab.appearance') },
     ...(id === 'new' ? [] : [{ id: 'announcements' as const, label: t('statuspages.tab.announcements') }, ...(smtp ? [{ id: 'subscribers' as const, label: t('statuspages.tab.subscribers') }] : [])]),
@@ -163,7 +166,7 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
             <Field label={t('statuspages.f.slug')} hint={t('statuspages.f.slugHint')}>{(i) => <Input id={i} value={f.slug} onChange={(e) => { setSlugOwn(e.target.value !== ''); set('slug', e.target.value); }} maxLength={63} placeholder="status" />}</Field>
             <Field label={t('statuspages.f.description')} className="sm:col-span-2">{(i) => <Textarea id={i} rows={2} value={f.description} onChange={(e) => set('description', e.target.value)} maxLength={5000} />}</Field>
             <Field label={t('statuspages.f.domain')} hint={t('statuspages.f.domainHint')} className="sm:col-span-2">{(i) => <Input id={i} value={f.domain} onChange={(e) => set('domain', e.target.value)} placeholder="status.example.com" />}</Field>
-            <Field label={t('statuspages.f.language')} hint={t('statuspages.f.languageHint')}>{(i) => <Select id={i} value={f.language} onChange={(e) => set('language', e.target.value as Form['language'])}><option value="">{t('statuspages.f.language.auto')}</option><option value="en">{t('statuspages.f.language.en')}</option><option value="de">{t('statuspages.f.language.de')}</option></Select>}</Field>
+            <Field label={t('statuspages.f.language')} hint={single ? t('statuspages.f.languageFixed') : t('statuspages.f.languageHint')}>{(i) => <Select id={i} value={single ?? f.language} disabled={!!single} onChange={(e) => set('language', e.target.value as Form['language'])}><option value="">{t('statuspages.f.language.auto')}</option><option value="en">{t('statuspages.f.language.en')}</option><option value="de">{t('statuspages.f.language.de')}</option></Select>}</Field>
             <Field label={t('statuspages.f.serverInfo')} hint={t('statuspages.f.serverInfoHint')}>{(i) => <Select id={i} value={f.serverInfo} onChange={(e) => set('serverInfo', Number(e.target.value))}>{[0, 1, 2].map((n) => <option key={n} value={n}>{t(`statuspages.f.serverInfo.${n}`)}</option>)}</Select>}</Field>
             <div className="flex flex-col items-start gap-3 sm:col-span-2">
               <Toggle checked={f.isPublic} onChange={(v) => set('isPublic', v)} label={t('statuspages.f.isPublic')} />
@@ -326,15 +329,17 @@ function AnnouncementForm({ pageId, onDone }: { pageId: number; onDone?: () => v
   const [kind, setKind] = useState<Announcement['kind']>('info');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
+  const [titleV, setTitleV] = useState<Versions>(NO_VERSIONS);
+  const [bodyV, setBodyV] = useState<Versions>(NO_VERSIONS);
   const [from, setFrom] = useState('');
   const [until, setUntil] = useState('');
   const [notify, setNotify] = useState(false);
   const add = useMutation({
     mutationFn: () => post(`/api/status-pages/${pageId}/announcements`, {
-      kind, title: title.trim(), body: body.trim() || undefined, notify: smtp ? notify : false,
+      kind, title: title.trim(), titleEn: titleV.en, titleDe: titleV.de, body: body.trim() || undefined, bodyEn: bodyV.en, bodyDe: bodyV.de, notify: smtp ? notify : false,
       ...(kind === 'maintenance' && from ? { startsAt: new Date(from).toISOString() } : {}), ...(kind === 'maintenance' && until ? { endsAt: new Date(until).toISOString() } : {}),
     }),
-    onSuccess: () => { setTitle(''); setBody(''); setFrom(''); setUntil(''); void qc.invalidateQueries({ queryKey: ['status-page-announcements', pageId] }); toast(t('statuspages.ann.published')); onDone?.(); },
+    onSuccess: () => { setTitle(''); setBody(''); setTitleV(NO_VERSIONS); setBodyV(NO_VERSIONS); setFrom(''); setUntil(''); void qc.invalidateQueries({ queryKey: ['status-page-announcements', pageId] }); toast(t('statuspages.ann.published')); onDone?.(); },
     onError: (e) => toast(errorMessage(e), 'error'),
   });
   return (
@@ -343,7 +348,9 @@ function AnnouncementForm({ pageId, onDone }: { pageId: number; onDone?: () => v
         {KINDS.map((k) => <button key={k} type="button" role="radio" aria-checked={kind === k} onClick={() => setKind(k)} className={`rounded-lg border-2 px-3 py-2 text-sm font-medium ${kind === k ? KIND_STYLE[k] : 'border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300'}`}>{t(`statuspages.ann.kind.${k}`)}</button>)}
       </div>
       <Field label={t('statuspages.ann.title')}>{(i) => <Input id={i} required maxLength={255} autoFocus value={title} onChange={(e) => setTitle(e.target.value)} />}</Field>
+      <Translations value={titleV} onChange={setTitleV} max={255} />
       <Field label={t('statuspages.ann.body')}>{(i) => <Textarea id={i} rows={3} maxLength={5000} value={body} onChange={(e) => setBody(e.target.value)} />}</Field>
+      <Translations multiline value={bodyV} onChange={setBodyV} max={5000} />
       {kind === 'maintenance' && (
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label={t('statuspages.ann.from')}>{(i) => <Input id={i} type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} />}</Field>

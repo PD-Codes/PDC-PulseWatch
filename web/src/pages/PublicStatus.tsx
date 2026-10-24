@@ -90,8 +90,9 @@ function IncidentCard({ inc }: { inc: Incident }) {
 
 function Subscribe({ slug }: { slug: string }) {
   const t = useT();
+  const { locale } = useI18n();
   const [email, setEmail] = useState('');
-  const m = useMutation({ mutationFn: () => post(`/api/public/status/${encodeURIComponent(slug)}/subscribe`, { email }) });
+  const m = useMutation({ mutationFn: () => post(`/api/public/status/${encodeURIComponent(slug)}/subscribe`, { email, lang: locale }) });
   const submit = (e: FormEvent) => { e.preventDefault(); m.mutate(); };
   if (m.isSuccess) return <p className="text-sm text-emerald-700 dark:text-emerald-400" role="status">{t('public.subscribed')}</p>;
   return (
@@ -127,7 +128,8 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
   const { locale, setLocale } = useI18n();
   const slug = slugProp ?? params.slug ?? '';
   const [unlocked, setUnlocked] = useState(false);
-  const q = useQuery({ queryKey: ['public-status', slug], queryFn: () => get<Page>(`/api/public/status/${encodeURIComponent(slug)}`), refetchInterval: (query) => (query.state.data ? 30_000 : false), retry: false }); // no polling while the gate or an error is shown
+  // the server words incident titles and notes in the language asked for (a page with a fixed language ignores it); switching language loads that wording, the old page stays until it arrives
+  const q = useQuery({ queryKey: ['public-status', slug, locale], queryFn: () => get<Page>(`/api/public/status/${encodeURIComponent(slug)}?lang=${locale}`), placeholderData: (prev) => prev, refetchInterval: (query) => (query.state.data ? 30_000 : false), retry: false }); // no polling while the gate or an error is shown
   const page = q.data;
   useEffect(() => { if (page) document.title = page.title; }, [page]);
   // the page's own language wins; otherwise a ?lang= link; a locked page already speaks its language in the password form
@@ -192,7 +194,7 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
           <section className="card space-y-3 p-4" aria-label={t('public.subscribeTitle')}>
             <h2 className="text-sm font-semibold">{t('public.subscribeTitle')}</h2>
             {page.subscribe.email && <Subscribe slug={slug} />}
-            {!unlocked && <a href={`/api/public/status/${encodeURIComponent(slug)}/rss`} className="inline-flex items-center gap-1.5 text-sm"><Rss className="h-4 w-4" />{t('public.rss')}</a>}
+            {!unlocked && <a href={`/api/public/status/${encodeURIComponent(slug)}/rss?lang=${locale}`} className="inline-flex items-center gap-1.5 text-sm"><Rss className="h-4 w-4" />{t('public.rss')}</a>}
           </section>
         )}
 

@@ -131,7 +131,7 @@ export class Engine {
       await trx.insertInto('monitor_state').values({ monitor_id: m.id }).ignore().execute();
       const st = await trx.selectFrom('monitor_state').selectAll().where('monitor_id', '=', m.id).forUpdate().executeTakeFirstOrThrow();
       const prevMachine = { ...initialState(), status: st.status, consecutiveFail: st.consecutive_fail, consecutiveOk: st.consecutive_ok, attempt: m.attempt, outcomes: st.outcomes, flapping: bool(st.flapping) };
-      const o = step(prevMachine, { retries: m.retries, upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, overlay }, r.ok);
+      const o = step(prevMachine, { retries: m.retries, upThreshold: m.upThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, overlay }, r.ok);
 
       const recent = parseJson<[number, number, number | null][]>(st.recent, []);
       recent.push([Math.floor(now.getTime() / 1000), o.hbStatus, r.latencyMs ?? null]);
@@ -167,7 +167,9 @@ export class Engine {
         ...(r.ok ? (info ? { info: JSON.stringify(info) } : {}) : { info: null }),
       }).where('monitor_id', '=', m.id).execute();
 
-      await trx.insertInto('heartbeats').values({ monitor_id: m.id, location_id: 0, ts: now, status: o.hbStatus, latency_ms: r.latencyMs ?? null, error_kind: r.ok ? null : r.errorKind ?? 'internal', message: r.message?.slice(0, 500) ?? null }).execute();
+      // a failed attempt that is being retried says so, so the check list shows where the monitor is in its round of retries
+      const beatMessage = o.hbStatus === 2 ? `Failed, retry ${o.attempt} of ${m.retries} follows in ${m.retryIntervalS}s: ${r.message ?? r.errorKind ?? 'no details'}` : r.message;
+      await trx.insertInto('heartbeats').values({ monitor_id: m.id, location_id: 0, ts: now, status: o.hbStatus, latency_ms: r.latencyMs ?? null, error_kind: r.ok ? null : r.errorKind ?? 'internal', message: beatMessage?.slice(0, 500) ?? null }).execute();
 
       const events: { type: string; from?: string; to?: string; kind?: string | null; msg?: string | null; details?: unknown }[] = [];
       if (o.transition) events.push({ type: 'status_change', from: o.transition.from, to: o.transition.to, kind: r.ok ? null : r.errorKind, msg: r.message, details: r.details });

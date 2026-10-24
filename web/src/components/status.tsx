@@ -24,7 +24,10 @@ export function StatusBadge({ status }: { status: DisplayStatus }) {
   return <Badge tone={TONE[status]}><StatusDot status={status} className="h-2 w-2" />{t(`status.${status}`)}</Badge>;
 }
 
-const BEAT_COLOR = (s: number) => (s === 1 ? 'bg-emerald-500' : s === 3 ? 'bg-sky-500' : s === 2 ? 'bg-amber-500' : 'bg-red-500');
+// Stored heartbeat status: 0 down, 1 up, 2 pending (failed, a retry follows: the yellow block), 3 maintenance, 4 suppressed.
+const BEAT_STATUS = ['down', 'up', 'pending', 'maintenance', 'suppressed'] as const;
+const beatStatus = (s: number) => BEAT_STATUS[s] ?? 'down';
+const BEAT_COLOR = (s: number) => STATUS_COLOR[beatStatus(s)];
 
 /** Strip of the most recent checks. Each bar is one heartbeat; the strip is padded on the left when history is short. */
 export function HeartbeatBar({ beats, count = 40, className, height = 'h-6' }: { beats: Beat[]; count?: number; className?: string; height?: string }) {
@@ -35,7 +38,7 @@ export function HeartbeatBar({ beats, count = 40, className, height = 'h-6' }: {
   return (
     <div className={cx('flex items-stretch gap-[2px]', height, className)} role="img" aria-label={t('monitors.beatsLabel', { up, total: shown.length })}>
       {Array.from({ length: pad }, (_, i) => <span key={`p${i}`} className="w-full min-w-[2px] max-w-[8px] flex-1 rounded-sm bg-slate-200 dark:bg-slate-800" />)}
-      {shown.map((b) => <span key={b[0]} title={`${fmtDateTime(b[0] * 1000)} · ${b[1] === 1 ? fmtMs(b[2]) : t(b[1] === 3 ? 'status.maintenance' : 'status.down')}`} className={cx('w-full min-w-[2px] max-w-[8px] flex-1 rounded-sm', BEAT_COLOR(b[1]))} />)}
+      {shown.map((b) => <span key={b[0]} title={`${fmtDateTime(b[0] * 1000)} · ${b[1] === 1 ? fmtMs(b[2]) : t(`status.${beatStatus(b[1])}`)}`} className={cx('w-full min-w-[2px] max-w-[8px] flex-1 rounded-sm', BEAT_COLOR(b[1]))} />)}
     </div>
   );
 }

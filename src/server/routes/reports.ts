@@ -3,7 +3,7 @@ import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { accessibleMonitorIds, writeAudit } from '../auth/access';
 import { mailConfigured, sendSystemMail } from '../mail';
-import { LANGS, userLang, type Lang } from '../notify/texts';
+import { LANGS, langMode, userLang, type Lang } from '../notify/texts';
 import { buildDigest, buildSla, DIGEST_DEFAULT, sendReport, slaCsv, slaPdf, type DigestSettings } from '../reports';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
@@ -20,7 +20,7 @@ export async function reportRoutes(app: FastifyInstance) {
     if (q.scope && q.scope !== 'all' && !q.id) return reply.code(400).send({ error: 'validation', message: 'id is required for this scope' });
     const rep = await buildSla(ctx, { type: q.scope ?? 'all', id: q.id }, q.days ?? 30, await accessibleMonitorIds(ctx, req.user!));
     const stamp = rep.to.slice(0, 10);
-    const lang = q.lang ?? (await userLang(ctx, req.user)); // the file speaks the language of the person downloading it unless told otherwise
+    const lang = (await langMode(ctx)) !== 'both' ? await userLang(ctx, req.user) : q.lang ?? (await userLang(ctx, req.user)); // the file speaks the language of the person downloading it unless told otherwise
     if (q.format === 'csv') return reply.type('text/csv; charset=utf-8').header('Content-Disposition', `attachment; filename="sla-${stamp}.csv"`).send(slaCsv(rep, lang));
     if (q.format === 'pdf') return reply.type('application/pdf').header('Content-Disposition', `attachment; filename="sla-${stamp}.pdf"`).send(await slaPdf(rep, lang));
     return rep;

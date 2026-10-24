@@ -6,6 +6,7 @@ import { safeEqual } from '../crypto';
 import { uptimeFor } from '../monitors/service';
 import type { Scheduler } from '../engine/scheduler';
 import { mailConfigured } from '../mail';
+import { langMode } from '../notify/texts';
 import { VERSION } from '../version';
 
 export interface SystemDeps { scheduler?: Scheduler }
@@ -41,7 +42,7 @@ export async function systemRoutes(app: FastifyInstance, deps: SystemDeps) {
     return reply.code(ok ? 200 : 503).send({ ok, ts: new Date().toISOString() });
   });
 
-  app.get('/api/meta', { schema: { tags: ['system'] } }, async () => ({ brand: config.brand, version: VERSION, smtp: mailConfigured(), baseUrl: config.baseUrl, demo: config.demo, role: config.role }));
+  app.get('/api/meta', { schema: { tags: ['system'] } }, async () => ({ brand: config.brand, version: VERSION, smtp: mailConfigured(), baseUrl: config.baseUrl, demo: config.demo, role: config.role, languages: await langMode(ctx) }));
 
   /* ------------------------------ Prometheus ------------------------------ */
   app.get('/metrics', { schema: { tags: ['system'], summary: 'Prometheus metrics (Bearer token)' } }, async (req, reply) => {

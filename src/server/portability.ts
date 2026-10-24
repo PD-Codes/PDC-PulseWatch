@@ -3,6 +3,7 @@ import { getRunner, maskSecrets, restoreSecrets, SECRET_MASK, secretFields, vali
 import type { Ctx } from './context';
 import { decryptJson, encryptJson } from './crypto';
 import { bool, parseJson } from './db';
+import { retriesFromThreshold } from './monitors/defaults';
 import { parseMonitor } from './monitors/model';
 import { saveMonitor, ValidationError } from './monitors/service';
 import { channelRunner, channelTypes } from './notify/channels';
@@ -86,7 +87,7 @@ export async function exportConfig(ctx: Ctx, includeSecrets: boolean): Promise<C
       const runner = getRunner(m.type);
       return {
         name: m.name, type: m.type, group: m.groupId ? gpath(m.groupId) : null, description: m.description, config: runner ? maskCfg(m.type, runner, m.config) : m.config,
-        intervalS: m.intervalS, timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold,
+        intervalS: m.intervalS, timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold,
         active: m.active, publicBadge: m.publicBadge, quorum: m.quorum, locations: m.locations?.map((l) => (l === 'local' ? 'local' : prname.get(l))).filter(Boolean) ?? null,
         // a plain tag is exported as its name, a name + value tag as { name, value }
         tags: mtags.filter((t) => t.monitor_id === m.id && tname.has(t.tag_id)).map((t) => (t.value ? { name: tname.get(t.tag_id)!, value: t.value } : tname.get(t.tag_id)!)),
@@ -224,8 +225,8 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
     if (m.locations && locations!.length !== m.locations.length) rep.warnings.push(`monitor ${m.name}: some probe locations do not exist here and were dropped`);
     const notifications = (m.notifications ?? []).map((n: any) => ({ channelId: n.channel ? channelIds.get(n.channel) : null, policyId: n.policy ? policyIds.get(n.policy) : null, events: n.events })).filter((n: any) => n.channelId || n.policyId);
     const input = {
-      name: m.name, type: m.type, groupId, description: m.description ?? null, config: existing ? m.config ?? {} : stripMasked(runner, m.config ?? {}), intervalS: m.intervalS, timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS,
-      upThreshold: m.upThreshold, downThreshold: m.downThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, active: m.active, publicBadge: m.publicBadge, quorum: locations?.length ? m.quorum : 1,
+      name: m.name, type: m.type, groupId, description: m.description ?? null, config: existing ? m.config ?? {} : stripMasked(runner, m.config ?? {}), intervalS: m.intervalS, timeoutS: m.timeoutS, retries: Number.isInteger(m.downThreshold) && m.downThreshold > 1 ? retriesFromThreshold(m.retries ?? 0, m.downThreshold) : m.retries, retryIntervalS: m.retryIntervalS, // old exports: failure threshold folded into retries
+      upThreshold: m.upThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, active: m.active, publicBadge: m.publicBadge, quorum: locations?.length ? m.quorum : 1,
       locations: locations as (number | 'local')[] | null, tagIds: [...new Set(allTags.filter((t) => !t.value).map((t) => t.tagId))], tagValues: allTags.filter((t) => t.value), notifications: existing && doc.merge && !notifications.length ? undefined : notifications.filter((n: any) => (n.channelId ?? 1) > 0 && (n.policyId ?? 1) > 0),
     };
     if (dryRun) {

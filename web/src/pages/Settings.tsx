@@ -13,7 +13,7 @@ import { useMeta } from '../lib/auth';
 import { useT } from '../lib/i18n';
 import type { FieldDef } from '../../../src/core/types';
 
-const TABS = ['network', 'defaults', 'certificates', 'incidents', 'digest', 'auth', 'backup', 'about'] as const;
+const TABS = ['network', 'defaults', 'certificates', 'incidents', 'languages', 'digest', 'auth', 'backup', 'about'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings() {
@@ -34,6 +34,7 @@ export default function Settings() {
       {tab === 'defaults' && <DefaultsTab />}
       {tab === 'certificates' && <CertsTab />}
       {tab === 'incidents' && <IncidentsTab />}
+      {tab === 'languages' && <LanguagesTab />}
       {tab === 'digest' && <DigestTab />}
       {tab === 'auth' && <AuthTab />}
       {tab === 'backup' && <BackupTab />}
@@ -104,6 +105,31 @@ function IncidentsTab() {
     <Card>
       <CardHeader title={t('settings.incidents.title')} subtitle={t('settings.incidents.intro')} />
       <div className="p-4"><Toggle checked={q.data.autoPublish} onChange={(v) => save.mutate(v)} disabled={save.isPending} label={t('settings.incidents.autoPublish')} /></div>
+    </Card>
+  );
+}
+
+/** One language for everything the instance writes and shows, or both with a choice per page, visitor and person. */
+function LanguagesTab() {
+  const t = useT();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const q = useQuery({ queryKey: ['settings-languages'], queryFn: () => get<{ mode: 'both' | 'en' | 'de' }>('/api/settings/languages') });
+  const save = useMutation({
+    mutationFn: (mode: string) => put('/api/settings/languages', { mode }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['settings-languages'] }); void qc.invalidateQueries({ queryKey: ['meta'] }); void qc.invalidateQueries({ queryKey: ['notification-language'] }); toast(t('common.saved')); },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
+  if (q.isLoading) return <Loading />;
+  if (q.error || !q.data) return <ErrorBox error={q.error} />;
+  return (
+    <Card>
+      <CardHeader title={t('settings.languages.title')} subtitle={t('settings.languages.intro')} />
+      <div className="space-y-3 p-4">
+        <Field label={t('settings.languages.mode')} hint={t(`settings.languages.hint.${q.data.mode}`)} className="max-w-md">
+          {(id) => <Select id={id} value={q.data.mode} disabled={save.isPending} onChange={(e) => save.mutate(e.target.value)}>{['both', 'en', 'de'].map((m) => <option key={m} value={m}>{t(`settings.languages.${m}`)}</option>)}</Select>}
+        </Field>
+      </div>
     </Card>
   );
 }

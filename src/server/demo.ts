@@ -87,7 +87,7 @@ export async function seedDemo(ctx: Ctx): Promise<void> {
     const id = await saveMonitor(ctx, {
       name: p.name, type: p.type, groupId: groups[p.group], description: p.type === 'http' && p.path === '/demo/down' ? 'Always returns 503: shows what an outage looks like.' : null,
       config: p.config ? { ...(p.type === 'tcp' || p.type === 'mysql' || p.type === 'minecraft' ? {} : { url: base + p.path }), ...p.config } : { url: base + p.path },
-      intervalS: p.interval, timeoutS: 10, retries: p.name.includes('flaky') ? 1 : 0, retryIntervalS: 10, upThreshold: 1, downThreshold: p.name.includes('flaky') ? 2 : 1, publicBadge: true,
+      intervalS: p.interval, timeoutS: 10, retries: p.name.includes('flaky') ? 3 : 0, retryIntervalS: 10, upThreshold: 1, publicBadge: true,
       tagIds: p.tags.map((t) => tags[t as keyof typeof tags]), tagValues: [{ tagId: tags.team, value: ({ Web: 'frontend', APIs: 'platform', Data: 'data' } as Record<string, string>)[p.group] ?? 'ops' }], notifications: [{ channelId: hook, events: ['down', 'up'] }],
     }, adminId);
     ids.set(p.name, id);

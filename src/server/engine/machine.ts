@@ -14,20 +14,15 @@ export interface MachineState {
   attempt: number;
   outcomes: string;
   flapping: boolean;
-  /** Epoch ms of the first failure in the current streak, null while the monitor is fine. */
-  failSince: number | null;
 }
 
 export interface MachineParams {
+  /** Like Uptime Kuma: every failure (timeout or not reachable alike) is retried this many times before the monitor is down. */
   retries: number;
   upThreshold: number;
-  downThreshold: number;
   flapWindow: number;
   flapThreshold: number;
   overlay: Overlay;
-  /** Seconds a failure streak has to last before the monitor counts as down (0 = immediately). */
-  downAfterS: number;
-  nowMs: number;
 }
 
 export interface MachineOut extends MachineState {
@@ -38,7 +33,7 @@ export interface MachineOut extends MachineState {
   flapEvent: 'start' | 'stop' | null;
 }
 
-export const initialState = (): MachineState => ({ status: 'unknown', consecutiveFail: 0, consecutiveOk: 0, attempt: 0, outcomes: '', flapping: false, failSince: null });
+export const initialState = (): MachineState => ({ status: 'unknown', consecutiveFail: 0, consecutiveOk: 0, attempt: 0, outcomes: '', flapping: false });
 
 export function countTransitions(outcomes: string): number {
   let n = 0;
@@ -55,7 +50,6 @@ export function step(s: MachineState, p: MachineParams, ok: boolean): MachineOut
   let hb: MachineOut['hbStatus'];
   let retry = false;
   let counted = false;
-  const failSince = ok ? null : s.failSince ?? p.nowMs;
 
   if (ok) {
     attempt = 0; consecutiveFail = 0; consecutiveOk++; counted = true; hb = 1;
@@ -64,9 +58,7 @@ export function step(s: MachineState, p: MachineParams, ok: boolean): MachineOut
   } else if (status !== 'down' && attempt < p.retries) { // a monitor that is already down does not start another round of retries
     attempt++; hb = 2; retry = true; status = 'pending';
   } else {
-    attempt = 0; consecutiveFail++; consecutiveOk = 0; counted = true;
-    if (consecutiveFail >= p.downThreshold && (status === 'down' || p.nowMs - failSince! >= p.downAfterS * 1000)) { status = 'down'; hb = 0; }
-    else { hb = 2; retry = true; if (status !== 'down') status = 'pending'; }
+    attempt = 0; consecutiveFail++; consecutiveOk = 0; counted = true; status = 'down'; hb = 0;
   }
 
   let outcomes = s.outcomes;
@@ -84,7 +76,7 @@ export function step(s: MachineState, p: MachineParams, ok: boolean): MachineOut
   const transition = (status === 'up' || status === 'down') && status !== s.status && !(s.status === 'unknown' && status === 'up') && !(s.status === 'pending' && status === 'up')
     ? { from: s.status, to: status as 'up' | 'down' }
     : null;
-  return { status, consecutiveFail, consecutiveOk, attempt, outcomes, flapping, failSince, hbStatus: hb, retryScheduled: retry, transition, flapEvent };
+  return { status, consecutiveFail, consecutiveOk, attempt, outcomes, flapping, hbStatus: hb, retryScheduled: retry, transition, flapEvent };
 }
 
 /* -------- response-time anomaly hint (EWMA baseline, no ML) -------- */
