@@ -4,8 +4,13 @@ Self-hosted uptime and status monitoring. Think Uptime Kuma, but built on MariaD
 
 Copyright (c) PD-Codes. Licensed under [GPL-3.0-only](LICENSE). No telemetry, no phone-home.
 
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="PulseWatch dashboard with monitor cards, status counters and recent events" width="900">
+</p>
+
 - [Quick start](#quick-start)
 - [Features](#features)
+- [Screenshots](#screenshots)
 - [Configuration reference](#configuration-reference)
 - [Architecture](#architecture)
 - [Probes (multi-location checks)](#probes-multi-location-checks)
@@ -63,6 +68,29 @@ Useful endpoints: `/health` (liveness), `/ready` (database and scheduler), `/met
 **Reports and integrations:** SLA reports as PDF/CSV (also scheduled by mail), daily digest, Prometheus metrics, outgoing webhooks, OpenAPI, Kuma import, YAML/JSON config export and import.
 
 **UI:** light/dark/system theme, German and English (browser language or profile setting), responsive down to phone width, installable PWA, command palette (`Ctrl/Cmd+K`), keyboard shortcuts (`?` lists them), kiosk mode at `/kiosk`, reduced-motion support.
+
+## Screenshots
+
+Captured in demo mode (`PW_DEMO=true`): 10 sample monitors and 90 days of generated history.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/monitor.png" alt="Monitor detail with response time chart, percentiles and uptime"><br><sub><b>Monitor detail</b> — response time with percentiles, outage periods and uptime per window.</sub></td>
+    <td width="50%"><img src="docs/images/incidents.png" alt="Incident list with MTTR, MTTA and most affected monitors"><br><sub><b>Incidents</b> — status workflow, MTTR and MTTA.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/status-page.png" alt="Public status page with 90 day history per service"><br><sub><b>Status page</b> — public, with 90 days of history per service.</sub></td>
+    <td width="50%"><img src="docs/images/dashboard-dark.png" alt="Dashboard in the dark theme"><br><sub><b>Dark theme</b> — light, dark or follow the system.</sub></td>
+  </tr>
+</table>
+
+Responsive down to phone width:
+
+<p align="center">
+  <img src="docs/images/mobile-dashboard.png" alt="Dashboard on a phone" width="240">
+  &nbsp;
+  <img src="docs/images/mobile-status-page.png" alt="Public status page on a phone" width="240">
+</p>
 
 ## Configuration reference
 
