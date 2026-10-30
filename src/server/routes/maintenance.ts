@@ -15,6 +15,8 @@ const body = Type.Object({
 
 function validate(b: any): string | null {
   try { new Intl.DateTimeFormat('en', { timeZone: b.timezone ?? 'UTC' }); } catch { return 'Unknown time zone'; }
+  const bad = (x: unknown) => x != null && x !== '' && Number.isNaN(new Date(x as string).getTime());
+  if (bad(b.startsAt) || bad(b.endsAt)) return 'Start and end must be valid dates';
   if (b.kind === 'once') {
     if (!b.startsAt || !b.endsAt) return 'A one-time window needs start and end';
     if (new Date(b.startsAt) >= new Date(b.endsAt)) return 'End must be after start';

@@ -25,7 +25,7 @@ export function BulkEditModal({ open, onClose, count, groups, tags, onSubmit }: 
   const [addTags, setAddTags] = useState<number[]>([]);
   const [removeTags, setRemoveTags] = useState<number[]>([]);
   const [notifyMode, setNotifyMode] = useState<'' | 'add' | 'replace'>('');
-  const [rules, setRules] = useState<Rule[]>([{ channelId: null, policyId: null, events: ['down', 'up'] }]);
+  const [rules, setRules] = useState<Rule[]>([{ channelId: null, policyId: null, events: ['down', 'up', 'flap'] }]);
   const channels = useQuery({ queryKey: ['notification-channels'], queryFn: () => get<Named[]>('/api/notification-channels'), enabled: open });
   const policies = useQuery({ queryKey: ['escalation-policies'], queryFn: () => get<Named[]>('/api/escalation-policies'), enabled: open });
 
@@ -81,7 +81,7 @@ export function BulkEditModal({ open, onClose, count, groups, tags, onSubmit }: 
                   </div>
                 );
               })}
-              <Button size="sm" onClick={() => setRules([...rules, { channelId: null, policyId: null, events: ['down', 'up'] }])}><Plus className="h-4 w-4" />{t('monitors.form.addRule')}</Button>
+              <Button size="sm" onClick={() => setRules([...rules, { channelId: null, policyId: null, events: ['down', 'up', 'flap'] }])}><Plus className="h-4 w-4" />{t('monitors.form.addRule')}</Button>
               {notifyMode === 'replace' && <p className="text-xs text-amber-600">{t('bulk.replaceWarn')}</p>}
             </>
           )}

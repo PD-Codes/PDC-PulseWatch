@@ -10,7 +10,7 @@ export const LOCAL_LOCATION_ID = 4294967295;
 export interface Monitor {
   id: number; name: string; type: string; groupId: number | null; description: string | null; config: Record<string, any>;
   intervalS: number; timeoutS: number; retries: number; retryIntervalS: number; upThreshold: number;
-  flapWindow: number; flapThreshold: number; active: boolean; locations: (number | 'local')[] | null; quorum: number;
+  flapWindow: number; flapThreshold: number; downAfterS: number | null; active: boolean; locations: (number | 'local')[] | null; quorum: number;
   pushToken: string | null; publicBadge: boolean; attempt: number; nextRunAt: Date | null; createdAt: Date;
 }
 
@@ -45,7 +45,7 @@ export function parseMonitor(row: Selectable<MonitorsTable>): Monitor {
     id: row.id, name: row.name, type: row.type, groupId: row.group_id, description: row.description,
     config: decryptConfig(runner, parseJson(row.config, {})),
     intervalS: row.interval_s, timeoutS: row.timeout_s, retries: row.retries, retryIntervalS: row.retry_interval_s,
-    upThreshold: row.up_threshold, flapWindow: row.flap_window, flapThreshold: row.flap_threshold,
+    upThreshold: row.up_threshold, flapWindow: row.flap_window, flapThreshold: row.flap_threshold, downAfterS: row.down_after_s,
     active: bool(row.active), locations: parseJson(row.locations, null), quorum: row.quorum, pushToken: row.push_token,
     publicBadge: bool(row.public_badge), attempt: row.attempt, nextRunAt: row.next_run_at, createdAt: row.created_at,
   };

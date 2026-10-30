@@ -3,10 +3,12 @@ import type { Ctx } from '../context';
 export interface MonitorDefaults {
   intervalS: number; timeoutS: number; retries: number; retryIntervalS: number;
   upThreshold: number; flapWindow: number; flapThreshold: number;
+  /** "Report as down after": instance-wide rule, applied live to every monitor without a value of its own. */
+  downAfterS: number;
 }
 
 // Like Uptime Kuma: the timeout is 80% of the interval (48 s at 60 s) and a retry comes as often as a regular check.
-export const BUILT_IN_DEFAULTS: MonitorDefaults = { intervalS: 60, timeoutS: 48, retries: 0, retryIntervalS: 60, upThreshold: 1, flapWindow: 10, flapThreshold: 6 };
+export const BUILT_IN_DEFAULTS: MonitorDefaults = { intervalS: 60, timeoutS: 48, retries: 0, retryIntervalS: 60, upThreshold: 1, flapWindow: 10, flapThreshold: 6, downAfterS: 0 };
 
 /** The longest timeout that still leaves room for the next check: 80% of the interval, as in Uptime Kuma. */
 export const maxTimeoutS = (intervalS: number) => Math.max(1, Math.floor(intervalS * 0.8));
@@ -14,7 +16,7 @@ export const maxTimeoutS = (intervalS: number) => Math.max(1, Math.floor(interva
 /** Allowed range per number field, shared by monitor validation and the settings endpoint. */
 export const DEFAULT_LIMITS: Record<keyof MonitorDefaults, [number, number]> = {
   intervalS: [5, 86400], timeoutS: [1, 300], retries: [0, 100], retryIntervalS: [5, 3600],
-  upThreshold: [1, 20], flapWindow: [4, 60], flapThreshold: [0, 60],
+  upThreshold: [1, 20], flapWindow: [4, 60], flapThreshold: [0, 60], downAfterS: [0, 86400],
 };
 
 /** Retries needed to match an old "failure rounds in a row" setting: `threshold` rounds of `retries` retries each. Used for old settings and exports. */

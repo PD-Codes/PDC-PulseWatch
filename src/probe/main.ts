@@ -29,7 +29,8 @@ interface Job { id: number; name: string; type: string; config: Record<string, a
 interface Result { monitorId: number; ts: string; ok: boolean; latencyMs: number | null; errorKind: string | null; message: string | null }
 
 const headers = { Authorization: `Bearer ${token}`, 'X-Probe-Version': pkg.version, 'Content-Type': 'application/json' };
-const jobs = new Map<number, { job: Job; sig: string; timer: NodeJS.Timeout }>();
+const jobs = new Map<number, { job: Job; sig: string; timer: NodeJS.Timeout; first: NodeJS.Timeout }>();
+const stopJob = (e: { timer: NodeJS.Timeout; first: NodeJS.Timeout }) => { clearInterval(e.timer); clearTimeout(e.first); };
 let queue: Result[] = [];
 let etag = '';
 let running = 0;
@@ -57,10 +58,10 @@ async function runJob(job: Job): Promise<void> {
 
 function schedule(job: Job, sig: string) {
   const prev = jobs.get(job.id);
-  if (prev) clearInterval(prev.timer);
+  if (prev) stopJob(prev);
   const timer = setInterval(() => void runJob(job), job.intervalS * 1000);
-  jobs.set(job.id, { job, sig, timer });
-  setTimeout(() => void runJob(job), Math.random() * Math.min(job.intervalS, 10) * 1000); // jitter the first run
+  const first = setTimeout(() => void runJob(job), Math.random() * Math.min(job.intervalS, 10) * 1000); // jitter the first run
+  jobs.set(job.id, { job, sig, timer, first });
 }
 
 async function sync(): Promise<void> {
@@ -76,7 +77,7 @@ async function sync(): Promise<void> {
     const sig = JSON.stringify([j.type, j.config, j.intervalS, j.timeoutS]);
     if (jobs.get(j.id)?.sig !== sig) schedule(j, sig);
   }
-  for (const [id, e] of jobs) if (!seen.has(id)) { clearInterval(e.timer); jobs.delete(id); }
+  for (const [id, e] of jobs) if (!seen.has(id)) { stopJob(e); jobs.delete(id); }
   etag = res.headers.get('etag') ?? body.version;
   log('info', 'jobs synced', { jobs: jobs.size });
 }
@@ -104,7 +105,7 @@ async function shutdown() {
   if (stopping) return;
   stopping = true;
   clearInterval(t1); clearInterval(t2);
-  for (const e of jobs.values()) clearInterval(e.timer);
+  for (const e of jobs.values()) stopJob(e);
   const deadline = Date.now() + 10_000;
   while (running && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
   await flush().catch(() => {});

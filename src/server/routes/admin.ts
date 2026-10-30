@@ -1,16 +1,15 @@
-import net from 'node:net';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { DEFAULT_DENY } from '../../core';
 import { writeAudit } from '../auth/access';
 import { hashPassword } from '../crypto';
 import { bool } from '../db';
-import { applySsrfSettings } from '../guard-sync';
+import { applySsrfSettings, isCidr } from '../guard-sync';
 import { pwSchema } from './auth';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
 const Role = Type.Union([Type.Literal('admin'), Type.Literal('editor'), Type.Literal('viewer')]);
-const cidr = (e: string) => { const [a, b] = e.split('/'); return net.isIP(a) > 0 && (b === undefined || (/^\d+$/.test(b) && Number(b) <= (net.isIPv6(a) ? 128 : 32))); };
+const cidr = isCidr;
 
 export async function adminRoutes(app: FastifyInstance) {
   const ctx = app.ctx;

@@ -36,7 +36,7 @@ describe('down delay rule', () => {
   it('follows the instance-wide rule unless the monitor has its own value, and rejects bad values', async () => {
     const own = await mk('own-zero', { downAfterS: 0 });
     const inherit = await mk('inherits');
-    expect((await c.put('/api/settings/monitor-defaults', { intervalS: 60, timeoutS: 10, retries: 0, retryIntervalS: 20, upThreshold: 1, downThreshold: 1, flapWindow: 10, flapThreshold: 6, downAfterS: 600 })).status).toBe(200);
+    expect((await c.put('/api/settings/monitor-defaults', { intervalS: 60, timeoutS: 10, retries: 0, retryIntervalS: 20, upThreshold: 1, flapWindow: 10, flapThreshold: 6, downAfterS: 600 })).status).toBe(200);
     expect((await c.get(`/api/monitors/${inherit.id}`)).json.downAfterS).toBeNull();
     for (const m of [own, inherit]) { await ping(m.pushToken, true); await ping(m.pushToken, false); }
     expect(await status(own.id)).toBe('down'); // its own 0 wins
@@ -48,6 +48,7 @@ describe('down delay rule', () => {
 
 describe('hiding a component\'s incidents on a status page', () => {
   it('keeps resolved incidents of a flagged component out of the past list, open ones stay', async () => {
+    await t.ctx.settings.set('incidents.autoPublish', true); // detected incidents reach status pages only with this setting
     const quiet = await mk('quiet'); const loud = await mk('loud');
     for (const m of [quiet, loud]) { await ping(m.pushToken, true); await ping(m.pushToken, false); await ping(m.pushToken, true); }
     const page = await c.post('/api/status-pages', { slug: 'hide', title: 'Hide', isPublic: true, sections: [], components: [{ monitorId: quiet.id, hideIncidents: true }, { monitorId: loud.id }] });

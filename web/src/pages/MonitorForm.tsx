@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FolderPlus, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button, Card, CardHeader, ErrorBox, Field, Input, Loading, PageHeader, Select, Textarea, Toggle, useToast } from '../components/ui';
 import { TagValueEditor, toTagValues, type TagValueRow } from '../components/TagEditor';
+import { JsonPicker } from '../components/JsonPicker';
+import { DownDelayField } from '../components/DownDelay';
 import { initValues, MonitorFields, toConfig, type FieldValue, type FieldValues, type MonitorType } from '../components/MonitorFields';
 import { ApiError, errorMessage, get, post, put, type Group, type MonitorItem, type Tag, type TagInfo } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -17,15 +19,15 @@ interface Policy { id: number; name: string }
 interface Rule { channelId: number | null; policyId: number | null; events: string[] }
 interface Detail extends MonitorItem {
   config: Record<string, unknown>; timeoutS: number; retries: number; retryIntervalS: number; upThreshold: number;
-  flapWindow: number; flapThreshold: number; quorum: number; notifications: Rule[];
+  flapWindow: number; flapThreshold: number; downAfterS: number | null; quorum: number; notifications: Rule[];
 }
 const EVENTS = ['down', 'up', 'flap', 'cert'] as const;
 
 interface Common {
   name: string; description: string; groupId: string; intervalS: string; timeoutS: string; retries: string; retryIntervalS: string;
-  upThreshold: string; flapWindow: string; flapThreshold: string; active: boolean; publicBadge: boolean; quorum: string;
+  upThreshold: string; flapWindow: string; flapThreshold: string; downAfterS: string; active: boolean; publicBadge: boolean; quorum: string;
 }
-const COMMON: Common = { name: '', description: '', groupId: '', intervalS: '60', timeoutS: '48', retries: '0', retryIntervalS: '60', upThreshold: '1', flapWindow: '10', flapThreshold: '6', active: true, publicBadge: false, quorum: '1' };
+const COMMON: Common = { name: '', description: '', groupId: '', intervalS: '60', timeoutS: '48', retries: '0', retryIntervalS: '60', upThreshold: '1', flapWindow: '10', flapThreshold: '6', downAfterS: '', active: true, publicBadge: false, quorum: '1' };
 
 export default function MonitorForm() {
   const t = useT();
@@ -33,7 +35,8 @@ export default function MonitorForm() {
   const qc = useQueryClient();
   const toast = useToast();
   const { can } = useAuth();
-  const id = useParams().id ? Number(useParams().id) : null;
+  const idParam = useParams().id;
+  const id = idParam ? Number(idParam) : null;
   const clone = Number(useSearchParams()[0].get('clone')) || null;
   const cloned = useRef(false);
 
@@ -61,13 +64,13 @@ export default function MonitorForm() {
   const runner = types.data?.find((x) => x.type === type);
 
   // New monitors start from the instance-wide defaults (Settings > Defaults).
-  const defaults = useQuery({ queryKey: ['monitor-defaults'], queryFn: () => get<{ defaults: Record<string, number> }>('/api/settings/monitor-defaults'), enabled: id == null && !clone, staleTime: 0 });
+  const defaults = useQuery({ queryKey: ['monitor-defaults'], queryFn: () => get<{ defaults: Record<string, number> }>('/api/settings/monitor-defaults'), staleTime: 0 });
   const seeded = useRef(false);
   useEffect(() => {
     const d = defaults.data?.defaults;
     if (!d || seeded.current || id != null || clone) return;
     seeded.current = true;
-    setC((o) => ({ ...o, ...Object.fromEntries(Object.entries(d).map(([k, v]) => [k, String(v)])) }));
+    setC((o) => ({ ...o, ...Object.fromEntries(Object.entries(d).filter(([k]) => k !== 'downAfterS').map(([k, v]) => [k, String(v)])) }));
   }, [defaults.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Inline "new group": null = closed.
@@ -104,7 +107,7 @@ export default function MonitorForm() {
     if (!d || !rt || loaded) return;
     const r = rt.find((x) => x.type === d.type);
     setType(d.type);
-    setC({ name: d.name, description: d.description ?? '', groupId: d.groupId ? String(d.groupId) : '', intervalS: String(d.intervalS), timeoutS: String(d.timeoutS), retries: String(d.retries), retryIntervalS: String(d.retryIntervalS), upThreshold: String(d.upThreshold), flapWindow: String(d.flapWindow), flapThreshold: String(d.flapThreshold), active: d.active, publicBadge: d.publicBadge, quorum: String(d.quorum) });
+    setC({ name: d.name, description: d.description ?? '', groupId: d.groupId ? String(d.groupId) : '', intervalS: String(d.intervalS), timeoutS: String(d.timeoutS), retries: String(d.retries), retryIntervalS: String(d.retryIntervalS), upThreshold: String(d.upThreshold), flapWindow: String(d.flapWindow), flapThreshold: String(d.flapThreshold), downAfterS: d.downAfterS == null ? '' : String(d.downAfterS), active: d.active, publicBadge: d.publicBadge, quorum: String(d.quorum) });
     setVals(initValues(r?.fields ?? [], d.config));
     setTagIds(d.tags.filter((x) => !x.value).map((x) => x.id)); setTagVals(d.tags.filter((x) => x.value).map((x) => ({ tagId: x.id, value: x.value }))); setDeps(d.dependsOn); setLocations((d.locations ?? []) as (number | 'local')[]); setRules(d.notifications ?? []);
     setLoaded(true);
@@ -120,7 +123,7 @@ export default function MonitorForm() {
       const body = {
         name: c.name.trim(), type, description: c.description.trim() || null, groupId: c.groupId ? n(c.groupId) : null, config,
         intervalS: n(c.intervalS), timeoutS: n(c.timeoutS), retries: n(c.retries), retryIntervalS: n(c.retryIntervalS), upThreshold: n(c.upThreshold),
-        flapWindow: n(c.flapWindow), flapThreshold: n(c.flapThreshold), active: c.active, publicBadge: c.publicBadge, quorum: n(c.quorum),
+        flapWindow: n(c.flapWindow), flapThreshold: n(c.flapThreshold), downAfterS: c.downAfterS === '' ? null : n(c.downAfterS), active: c.active, publicBadge: c.publicBadge, quorum: n(c.quorum),
         locations: locations.length ? locations : null, tagIds, tagValues: toTagValues(tagVals), dependsOn: deps, notifications: rules.filter((r) => r.channelId || r.policyId),
       };
       return id ? put<{ id: number }>(`/api/monitors/${id}`, body) : post<{ id: number }>('/api/monitors', body);
@@ -139,7 +142,7 @@ export default function MonitorForm() {
       const template = {
         description: c.description.trim() || null, groupId: c.groupId ? n(c.groupId) : null, config: toConfig(runner!.fields.filter((f) => f.key !== addressField!.key), vals),
         intervalS: n(c.intervalS), timeoutS: n(c.timeoutS), retries: n(c.retries), retryIntervalS: n(c.retryIntervalS), upThreshold: n(c.upThreshold),
-        flapWindow: n(c.flapWindow), flapThreshold: n(c.flapThreshold), active: c.active, publicBadge: c.publicBadge, quorum: n(c.quorum),
+        flapWindow: n(c.flapWindow), flapThreshold: n(c.flapThreshold), downAfterS: c.downAfterS === '' ? null : n(c.downAfterS), active: c.active, publicBadge: c.publicBadge, quorum: n(c.quorum),
         locations: locations.length ? locations : null, tagIds, tagValues: toTagValues(tagVals), dependsOn: deps, notifications: rules.filter((r) => r.channelId || r.policyId),
       };
       return post<{ created: { index: number }[]; skipped: { index: number }[]; failed: { index: number; errors: string[] }[] }>('/api/monitors/bulk-create', {
@@ -174,6 +177,8 @@ export default function MonitorForm() {
   if (types.isLoading || (id != null && (detail.isLoading || !loaded))) return <Loading />;
   if (types.error || detail.error) return <ErrorBox error={types.error ?? detail.error} />;
 
+  const gd = defaults.data?.defaults.downAfterS ?? 0;
+  const globalDelay = gd === 0 ? t('delay.off') : gd % 60 === 0 ? t('delay.min', { n: gd / 60 }) : t('delay.sec', { n: gd });
   const set = <K extends keyof Common>(k: K, v: Common[K]) => setC((o) => ({ ...o, [k]: v }));
   // Like Uptime Kuma: a retry follows the interval while both are the same, and the timeout never exceeds 80% of the interval (checked when the field is left, so typing "120" does not clamp at "1").
   const changeInterval = (v: string) => setC((o) => ({ ...o, intervalS: v, retryIntervalS: o.retryIntervalS === o.intervalS ? v : o.retryIntervalS }));
@@ -242,7 +247,10 @@ export default function MonitorForm() {
       {runner && runner.fields.length > 0 && (
         <Card>
           <CardHeader title={runner.label} />
-          <div className="p-4"><MonitorFields idPrefix="mf" fields={bulk && addressField ? runner.fields.filter((f) => f.key !== addressField.key) : runner.fields} values={vals} onChange={(k: string, v: FieldValue) => setVals((o) => ({ ...o, [k]: v }))} /></div>
+          <div className="p-4">
+            <MonitorFields idPrefix="mf" fields={bulk && addressField ? runner.fields.filter((f) => f.key !== addressField.key) : runner.fields} values={vals} onChange={(k: string, v: FieldValue) => setVals((o) => ({ ...o, [k]: v }))} />
+            {type === 'json' && !bulk && <JsonPicker fields={runner.fields} values={vals} monitorId={id} onPick={(p) => setVals((o) => ({ ...o, ...p }))} />}
+          </div>
         </Card>
       )}
 
@@ -256,6 +264,7 @@ export default function MonitorForm() {
           {num('upThreshold', t('monitors.upThreshold'), 1, 20, t('monitors.form.upHint'))}
           {num('flapWindow', t('monitors.flapWindow'), 4, 60, t('monitors.form.flapWindowHint'))}
           {num('flapThreshold', t('monitors.flapThreshold'), 0, 60, t('monitors.form.flapThresholdHint'))}
+          <div className="sm:col-span-2"><DownDelayField inherit value={c.downAfterS} onChange={(v) => set('downAfterS', v)} hint={t('delay.hintMonitor', { value: globalDelay })} /></div>
           <p className="hint sm:col-span-2 lg:col-span-4" data-testid="retry-summary">{retrySummary}</p>
         </div>
       </Card>
@@ -280,6 +289,9 @@ export default function MonitorForm() {
         </div>
       </Card>
 
+      {!isPush && probes.isSuccess && probeList.length === 0 && can('admin') && (
+        <p className="rounded-lg border border-dashed border-slate-300 p-3 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300"><strong className="font-semibold">{t('probes.formHint.title')}.</strong> {t('probes.formHint.body')} <Link to="/probes">{t('probes.formHint.link')}</Link></p>
+      )}
       {!isPush && probeList.length > 0 && (
         <Card>
           <CardHeader title={t('monitors.locations')} subtitle={t('monitors.form.locationsHint')} />
@@ -295,7 +307,7 @@ export default function MonitorForm() {
       )}
 
       <Card>
-        <CardHeader title={t('monitors.form.notifications')} subtitle={t('monitors.form.notificationsHint')} actions={<Button size="sm" onClick={() => setRules([...rules, { channelId: null, policyId: null, events: ['down', 'up'] }])}><Plus className="h-4 w-4" />{t('monitors.form.addRule')}</Button>} />
+        <CardHeader title={t('monitors.form.notifications')} subtitle={t('monitors.form.notificationsHint')} actions={<Button size="sm" onClick={() => setRules([...rules, { channelId: null, policyId: null, events: ['down', 'up', 'flap'] }])}><Plus className="h-4 w-4" />{t('monitors.form.addRule')}</Button>} />
         <div className="space-y-3 p-4">
           {rules.length === 0 && <p className="text-sm text-slate-500">{t('monitors.form.noRules')}</p>}
           {rules.map((r, i) => {

@@ -31,16 +31,18 @@ export function StreamProvider({ children }: { children: ReactNode }) {
     };
     const connect = () => {
       es = new EventSource('/api/stream');
-      es.onopen = () => { setConnected(true); void qc.invalidateQueries({ queryKey: ['monitors'] }); };
+      // events missed while disconnected: refetch everything that live updates keep fresh
+      es.onopen = () => { setConnected(true); for (const k of ['monitors', 'monitor', 'incidents', 'timeline', 'maintenance']) void qc.invalidateQueries({ queryKey: [k] }); };
       es.onerror = () => { setConnected(false); es?.close(); if (alive) retry = setTimeout(connect, 3000); };
       es.addEventListener('monitor', (e) => {
         const d = JSON.parse((e as MessageEvent).data);
+        const prev = qc.getQueryData<MonitorItem[]>(['monitors'])?.find((m) => m.id === d.id);
         qc.setQueryData<MonitorItem[]>(['monitors'], (list) => list?.map((m) => m.id !== d.id ? m : {
           ...m, status: d.status, overlay: d.overlay, latencyMs: d.latencyMs, errorKind: d.errorKind, message: d.message, lastCheckAt: d.ts, flapping: d.flapping, statusSince: d.statusSince, anomaly: d.anomalyFlagged,
           recent: d.beat ? [...m.recent, d.beat as Beat].slice(-RECENT_MAX) : m.recent,
         }));
         bus.dispatchEvent(new CustomEvent('monitor', { detail: d }));
-        if (d.statusSince) invalidateSoon('timeline');
+        if (prev && (prev.status !== d.status || prev.statusSince !== d.statusSince)) invalidateSoon('timeline'); // every check carries statusSince, only a change matters
       });
       es.addEventListener('incident', (e) => { const d = JSON.parse((e as MessageEvent).data); invalidateSoon('incidents'); invalidateSoon('timeline'); bus.dispatchEvent(new CustomEvent('incident', { detail: d })); });
       es.addEventListener('maintenance', () => { invalidateSoon('maintenance'); invalidateSoon('monitors'); });

@@ -85,11 +85,13 @@ const ping: Runner = {
     try {
       const ip = (await ctx.guard.resolve(c.host))[0].address;
       const count = c.count ?? 1;
-      const args = ['-c', String(count), '-W', String(Math.max(1, Math.ceil(ctx.timeoutMs / 1000 / count))), ip];
+      // 0.2 s between packets (the fastest interval without root), so several packets fit into the timeout
+      const args = ['-c', String(count), '-i', '0.2', '-W', String(Math.max(1, Math.ceil(ctx.timeoutMs / 1000 / count))), ip];
       const out = await new Promise<string>((resolve, reject) => {
         execFile('ping', args, { timeout: ctx.timeoutMs + 1000, signal: ctx.signal }, (err, stdout, stderr) => {
           if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new CheckError('config', 'ping binary is not installed'));
-          if (err && (err as any).name === 'AbortError') return reject(err);
+          // stopped by the check timeout: the replies that already arrived still count
+          if (err && (err as any).name === 'AbortError' && !/time[=<]\s*[\d.]+\s*ms/.test(String(stdout))) return reject(err);
           resolve(stdout + stderr);
         });
       });
@@ -112,7 +114,7 @@ const dnsRunner: Runner = {
     { key: 'recordType', label: 'Record type', kind: 'select', options: RTYPES.map((v) => ({ value: v, label: v })), default: 'A' },
     { key: 'resolver', label: 'Resolver IP (blank = system)', kind: 'text', placeholder: '1.1.1.1' },
     { key: 'matchMode', label: 'Match', kind: 'select', options: [{ value: 'any', label: 'Any answer' }, { value: 'contains', label: 'An answer contains' }, { value: 'equals', label: 'An answer equals' }, { value: 'regex', label: 'An answer matches regex' }], default: 'any' },
-    { key: 'expected', label: 'Expected value', kind: 'text', showIf: { key: 'matchMode', equals: 'any' } },
+    { key: 'expected', label: 'Expected value', kind: 'text', help: 'Used by every match mode except "Any answer"' },
   ],
   async run(ctx) {
     const c = ctx.config;

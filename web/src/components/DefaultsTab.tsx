@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { RotateCcw } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { DownDelayField } from './DownDelay';
 import { Button, Card, CardHeader, ErrorBox, Field, Input, Loading, useConfirm, useToast } from './ui';
 import { del, errorMessage, get, put } from '../lib/api';
 import { useT } from '../lib/i18n';
 
-type Key = 'intervalS' | 'timeoutS' | 'retries' | 'retryIntervalS' | 'upThreshold' | 'flapWindow' | 'flapThreshold';
+type Key = 'intervalS' | 'timeoutS' | 'retries' | 'retryIntervalS' | 'upThreshold' | 'flapWindow' | 'flapThreshold' | 'downAfterS';
 type Values = Record<Key, number>;
 interface Payload { defaults: Values; builtIn: Values; limits: Record<Key, [number, number]> }
 const ROWS: [Key, string][] = [
@@ -18,10 +19,10 @@ export function DefaultsTab() {
   const t = useT(); const toast = useToast(); const confirm = useConfirm(); const qc = useQueryClient();
   const q = useQuery({ queryKey: ['monitor-defaults', 'admin'], queryFn: () => get<Payload>('/api/settings/monitor-defaults'), staleTime: 0 });
   const [v, setV] = useState<Record<Key, string> | null>(null);
-  useEffect(() => { if (q.data) setV(Object.fromEntries(ROWS.map(([k]) => [k, String(q.data.defaults[k])])) as Record<Key, string>); }, [q.data]);
+  useEffect(() => { if (q.data) setV(Object.fromEntries([...ROWS.map(([k]) => k), 'downAfterS' as const].map((k) => [k, String(q.data.defaults[k] ?? 0)])) as Record<Key, string>); }, [q.data]);
   const done = () => { void qc.invalidateQueries({ queryKey: ['monitor-defaults'] }); };
   const save = useMutation({
-    mutationFn: () => put('/api/settings/monitor-defaults', Object.fromEntries(ROWS.map(([k]) => [k, Number(v![k])]))),
+    mutationFn: () => put('/api/settings/monitor-defaults', Object.fromEntries([...ROWS.map(([k]) => k), 'downAfterS' as const].map((k) => [k, Number(v![k])]))),
     onSuccess: () => { toast(t('common.saved')); done(); }, onError: (e) => toast(errorMessage(e), 'error'),
   });
   const reset = useMutation({ mutationFn: () => del('/api/settings/monitor-defaults'), onSuccess: () => { toast(t('settings.defaults.resetDone')); done(); }, onError: (e) => toast(errorMessage(e), 'error') });
@@ -37,6 +38,7 @@ export function DefaultsTab() {
               {(id) => <Input id={id} type="number" required min={limits[k][0]} max={limits[k][1]} value={v[k]} onChange={(e) => setV({ ...v, [k]: e.target.value })} />}
             </Field>
           ))}
+          <div className="sm:col-span-2"><DownDelayField value={v.downAfterS} onChange={(s) => setV({ ...v, downAfterS: s })} hint={t('delay.hintGlobal')} /></div>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button type="submit" variant="primary" loading={save.isPending}>{t('common.save')}</Button>

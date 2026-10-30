@@ -77,7 +77,7 @@ async function heatmap(ctx: Ctx, ids: number[], days: number): Promise<Day[]> {
 /** Days since the last incident that touched this page ended, counting only incidents the page itself would show. */
 async function streak(ctx: Ctx, ids: number[]) {
   const rows = await ctx.db.selectFrom('incidents as i').innerJoin('incident_monitors as im', 'im.incident_id', 'i.id')
-    .select(['i.started_at', 'i.resolved_at']).where('im.monitor_id', 'in', ids).where('i.hidden', '=', 0).where((eb) => eb.or([eb('i.source', '=', 'auto'), eb('i.public', '=', 1)])).execute();
+    .select(['i.started_at', 'i.resolved_at']).where('im.monitor_id', 'in', ids).where('i.public', '=', 1).execute();
   if (!rows.length) return { days: null, ongoing: false };
   if (rows.some((r) => !r.resolved_at)) return { days: 0, ongoing: true };
   const last = Math.max(...rows.map((r) => r.resolved_at!.getTime()));

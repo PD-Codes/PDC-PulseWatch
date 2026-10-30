@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { lazy, Suspense } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { Loading } from './components/ui';
 import { get } from './lib/api';
@@ -14,6 +14,8 @@ const page = (loader: () => Promise<{ default: React.ComponentType<any> }>) => l
 const Dashboard = page(() => import('./pages/Dashboard'));
 const MonitorDetail = page(() => import('./pages/MonitorDetail'));
 const MonitorForm = page(() => import('./pages/MonitorForm'));
+/** Edit form keyed by monitor, so switching to another monitor (or to New) starts with fresh state. */
+function EditMonitor() { return <MonitorForm key={useParams().id} />; }
 const Kiosk = page(() => import('./pages/Kiosk'));
 const Insights = page(() => import('./pages/Insights'));
 const Incidents = page(() => import('./pages/Incidents'));
@@ -73,9 +75,9 @@ export default function App() {
         <Route path="/admin" element={<Navigate to="/dashboard" replace />} />
         <Route element={<Protected />}>
           <Route path="dashboard" element={<Dashboard />} />
-          <Route path="monitors/new" element={guard(<MonitorForm />, 'editor')} />
+          <Route path="monitors/new" element={guard(<MonitorForm key="new" />, 'editor')} />
           <Route path="monitors/:id" element={<MonitorDetail />} />
-          <Route path="monitors/:id/edit" element={guard(<MonitorForm />, 'editor')} />
+          <Route path="monitors/:id/edit" element={guard(<EditMonitor />, 'editor')} />
           <Route path="incidents" element={<Incidents />} />
           <Route path="incidents/:id" element={<IncidentDetail />} />
           <Route path="maintenance" element={<Maintenance />} />

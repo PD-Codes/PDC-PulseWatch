@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Lock, Rss, Wrench, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, CircleHelp, HelpCircle, Lock, Rss, Wrench, XCircle } from 'lucide-react';
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { ServerInfoBlock } from '../components/ServerInfo';
+import { CalendarHeatmap, type HeatDay } from '../components/CalendarHeatmap';
 import { Pager } from '../components/Pager';
 import { Badge, Button, cx, ErrorBox, Field, Input, Loading, type Tone } from '../components/ui';
 import { ApiError, get, post, type ServerInfo } from '../lib/api';
@@ -12,11 +13,16 @@ import { useForcedLocale, useI18n, useT, type Locale } from '../lib/i18n';
 type CompStatus = 'operational' | 'outage' | 'degraded' | 'maintenance' | 'unknown';
 interface Comp { monitorId: number; name: string; description: string | null; status: CompStatus; since: string | null; info: ServerInfo | null; uptime: number | null; daily: { date: string; uptime: number | null }[] }
 interface Incident { id: number; title: string; status: string; severity: 'minor' | 'major' | 'critical'; startedAt: string; resolvedAt: string | null; updates: { ts: string; kind: string; status?: string | null; body: string | null; edited?: boolean }[] }
+type Block =
+  | { type: 'summary'; uptime: { h24: number | null; d7: number | null; d30: number | null; d90: number | null } }
+  | { type: 'heatmap'; days: HeatDay[] }
+  | { type: 'streak'; days: number | null; ongoing: boolean }
+  | { type: 'text'; title: string; body: string };
 interface Page {
   slug: string; title: string; description: string | null; language: Locale | null; branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number;
-  overall: 'operational' | 'partial' | 'outage' | 'degraded' | 'maintenance'; generatedAt: string; sections: { name: string; components: Comp[] }[]; components: Comp[];
+  overall: 'operational' | 'partial' | 'outage' | 'degraded' | 'maintenance' | 'unknown'; unknownCount: number; generatedAt: string; sections: { name: string; components: Comp[] }[]; components: Comp[];
   announcements: { id: number; kind: 'info' | 'maintenance' | 'incident'; title: string; body: string | null; startsAt: string; endsAt: string | null }[];
-  maintenance: { id: number; name: string; description: string | null; endsAt: string }[]; incidents: Incident[]; recentIncidents: Incident[]; incidentDays: number; incidentPageSize: number; subscribe: { email: boolean };
+  maintenance: { id: number; name: string; description: string | null; endsAt: string }[]; incidents: Incident[]; recentIncidents: Incident[]; incidentDays: number; incidentPageSize: number; blocks: Block[]; subscribe: { email: boolean };
 }
 
 const DOT: Record<CompStatus, string> = { operational: 'bg-emerald-500', outage: 'bg-red-500', degraded: 'bg-amber-500', maintenance: 'bg-sky-500', unknown: 'bg-slate-400' };
@@ -24,6 +30,7 @@ const TEXT: Record<CompStatus, string> = { operational: 'text-emerald-700 dark:t
 const BANNER: Record<Page['overall'], { cls: string; icon: ReactNode }> = {
   operational: { cls: 'bg-emerald-600', icon: <CheckCircle2 className="h-6 w-6" /> }, partial: { cls: 'bg-red-600', icon: <XCircle className="h-6 w-6" /> }, outage: { cls: 'bg-red-700', icon: <XCircle className="h-6 w-6" /> },
   degraded: { cls: 'bg-amber-600', icon: <AlertTriangle className="h-6 w-6" /> }, maintenance: { cls: 'bg-sky-600', icon: <Wrench className="h-6 w-6" /> },
+  unknown: { cls: 'bg-slate-500', icon: <CircleHelp className="h-6 w-6" /> },
 };
 const SEVERITY: Record<Incident['severity'], Tone> = { minor: 'amber', major: 'red', critical: 'red' };
 
@@ -55,6 +62,27 @@ function Component({ comp, history, days }: { comp: Comp; history: boolean; days
       )}
     </li>
   );
+}
+
+function BlockView({ block }: { block: Block }) {
+  const t = useT();
+  if (block.type === 'summary') {
+    return (
+      <section className="card grid grid-cols-2 divide-slate-100 sm:grid-cols-4 sm:divide-x dark:divide-slate-800">
+        {(['h24', 'd7', 'd30', 'd90'] as const).map((k) => <div key={k} className="px-4 py-3"><div className="text-xs text-slate-500">{t(`public.summary.${k}`)}</div><div className="text-xl font-semibold tabular-nums">{block.uptime[k] == null ? '–' : fmtPct(block.uptime[k])}</div></div>)}
+      </section>
+    );
+  }
+  if (block.type === 'heatmap') return block.days.length === 0 ? null : <section className="card p-4"><h2 className="mb-3 text-sm font-semibold">{t('public.heatmap')}</h2><CalendarHeatmap days={block.days} /></section>;
+  if (block.type === 'streak') {
+    const n = block.days;
+    return (
+      <section className="card flex items-baseline gap-3 px-4 py-3" role="status">
+        {n == null ? <span className="text-sm text-slate-500">{t('public.streak.none')}</span> : block.ongoing ? <span className="text-sm font-medium text-amber-700 dark:text-amber-400">{t('public.streak.ongoing')}</span> : n === 0 ? <span className="text-sm font-medium">{t('public.streak.today')}</span> : <><span className="text-3xl font-semibold tabular-nums text-emerald-700 dark:text-emerald-400">{n}</span><span className="text-sm text-slate-600 dark:text-slate-300">{n === 1 ? t('public.streak.day') : t('public.streak.days')}</span></>}
+      </section>
+    );
+  }
+  return <section className="card p-4">{block.title && <h2 className="text-sm font-semibold">{block.title}</h2>}{block.body && <p className="mt-1 whitespace-pre-wrap text-sm">{block.body}</p>}</section>;
 }
 
 const PHASES = new Set(['identified', 'fixing', 'monitoring']);
@@ -171,7 +199,7 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
           )}
         </header>
 
-        <div role="status" className={cx('flex items-center gap-3 rounded-xl px-5 py-4 text-white shadow-sm', banner.cls)}>{banner.icon}<span className="text-lg font-semibold">{t(`public.overall.${page.overall}`)}</span></div>
+        <div role="status" className={cx('flex items-center gap-3 rounded-xl px-5 py-4 text-white shadow-sm', banner.cls)}>{banner.icon}<span className="text-lg font-semibold">{t(`public.overall.${page.overall}`)}</span>{page.overall === 'operational' && page.unknownCount > 0 && <span tabIndex={0} title={t('public.overall.someUnknown', { n: page.unknownCount })} aria-label={t('public.overall.someUnknown', { n: page.unknownCount })} className="cursor-help opacity-80"><HelpCircle className="h-4 w-4" /></span>}</div>
 
         {page.announcements.map((a) => (
           <div key={a.id} className={cx('rounded-xl border px-4 py-3', a.kind === 'incident' ? 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/40' : a.kind === 'maintenance' ? 'border-sky-200 bg-sky-50 dark:border-sky-900 dark:bg-sky-950/40' : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900')}>
@@ -187,6 +215,8 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
         {page.sections.map((s) => list(s.components, s.name))}
         {page.components.length > 0 && list(page.components)}
         {page.sections.length === 0 && page.components.length === 0 && <p className="text-center text-sm text-slate-500">{t('public.noComponents')}</p>}
+
+        {(page.blocks ?? []).map((b, i) => <BlockView key={i} block={b} />)}
 
         {page.recentIncidents.length > 0 && <PastIncidents items={page.recentIncidents} pageSize={page.incidentPageSize} days={page.incidentDays} />}
 

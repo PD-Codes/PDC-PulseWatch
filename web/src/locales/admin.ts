@@ -37,7 +37,7 @@ export const en = {
   'statuspages.sub.kind': 'Channel', 'statuspages.sub.email': 'Email', 'statuspages.sub.webhook': 'Webhook', 'statuspages.sub.target': 'Address', 'statuspages.sub.since': 'Since',
   'statuspages.sub.verified': 'Verified', 'statuspages.sub.pending': 'Pending', 'statuspages.sub.empty': 'No subscribers yet.',
 
-  'public.overall.operational': 'All systems operational', 'public.overall.partial': 'Partial outage', 'public.overall.outage': 'Major outage', 'public.overall.degraded': 'Degraded performance', 'public.overall.maintenance': 'Scheduled maintenance',
+  'public.overall.operational': 'All systems operational', 'public.overall.partial': 'Partial outage', 'public.overall.outage': 'Major outage', 'public.overall.degraded': 'Degraded performance', 'public.overall.maintenance': 'Scheduled maintenance', 'public.overall.unknown': 'Status unknown', 'public.overall.someUnknown': 'No result yet for {n} component(s). All others are operational.',
   'public.status.operational': 'Operational', 'public.status.outage': 'Outage', 'public.status.degraded': 'Degraded', 'public.status.maintenance': 'Maintenance', 'public.status.unknown': 'Unknown',
   'public.severity.minor': 'Minor', 'public.severity.major': 'Major', 'public.severity.critical': 'Critical', 'public.resolved': 'Resolved', 'public.ongoing': 'Ongoing',
   'public.activeIncidents': 'Active incidents', 'public.pastIncidents': 'Past incidents', 'public.noComponents': 'No components are shown on this page yet.',
@@ -86,7 +86,7 @@ export const de: Partial<typeof en> = {
   'statuspages.sub.kind': 'Kanal', 'statuspages.sub.email': 'E-Mail', 'statuspages.sub.webhook': 'Webhook', 'statuspages.sub.target': 'Adresse', 'statuspages.sub.since': 'Seit',
   'statuspages.sub.verified': 'Bestätigt', 'statuspages.sub.pending': 'Ausstehend', 'statuspages.sub.empty': 'Noch keine Abonnenten.',
 
-  'public.overall.operational': 'Alle Systeme laufen', 'public.overall.partial': 'Teilweiser Ausfall', 'public.overall.outage': 'Großer Ausfall', 'public.overall.degraded': 'Eingeschränkte Leistung', 'public.overall.maintenance': 'Geplante Wartung',
+  'public.overall.operational': 'Alle Systeme laufen', 'public.overall.partial': 'Teilweiser Ausfall', 'public.overall.outage': 'Großer Ausfall', 'public.overall.degraded': 'Eingeschränkte Leistung', 'public.overall.maintenance': 'Geplante Wartung', 'public.overall.unknown': 'Status unbekannt', 'public.overall.someUnknown': 'Für {n} Komponente(n) liegt noch kein Ergebnis vor. Alle anderen laufen.',
   'public.status.operational': 'In Betrieb', 'public.status.outage': 'Ausfall', 'public.status.degraded': 'Eingeschränkt', 'public.status.maintenance': 'Wartung', 'public.status.unknown': 'Unbekannt',
   'public.severity.minor': 'Gering', 'public.severity.major': 'Hoch', 'public.severity.critical': 'Kritisch', 'public.resolved': 'Behoben', 'public.ongoing': 'Laufend',
   'public.activeIncidents': 'Aktuelle Störungen', 'public.pastIncidents': 'Vergangene Störungen', 'public.noComponents': 'Auf dieser Seite werden noch keine Komponenten angezeigt.',

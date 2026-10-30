@@ -98,7 +98,7 @@ export default function Dashboard() {
   }, [collapsed, descendants]);
 
   const bulk = useMutation({
-    mutationFn: (b: { action: string; patch?: object }) => post('/api/monitors/bulk', { ids: [...sel], ...b }),
+    mutationFn: (b: { action: string; patch?: object }) => post('/api/monitors/bulk', { ids: chosen, ...b }),
     onSuccess: (r: { affected: number }) => { toast(t('dashboard.bulkDone', { n: r.affected })); setSel(new Set()); void qc.invalidateQueries({ queryKey: ['monitors'] }); },
     onError: (e) => toast(errorMessage(e), 'error'),
   });
@@ -116,6 +116,7 @@ export default function Dashboard() {
   });
   const delView = useMutation({ mutationFn: (id: number) => del(`/api/views/${id}`), onSuccess: () => void qc.invalidateQueries({ queryKey: ['views'] }) });
 
+  const chosen = filtered.filter((m) => sel.has(m.id)).map((m) => m.id);
   const toggle = (id: number) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const filtersActive = f.q || f.status || f.tag || f.group;
   const editor = can('editor');
@@ -164,14 +165,14 @@ export default function Dashboard() {
       </div>
       {views.data?.some((v) => v.own) && <div className="mb-3 flex flex-wrap gap-2 text-xs text-slate-500">{views.data.filter((v) => v.own).map((v) => <span key={v.id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 dark:bg-slate-800"><button type="button" onClick={() => setF({ ...EMPTY, ...v.filters, tag: tagToId(v.filters.tag, tags.data) })} className="hover:underline">{v.name}</button><button type="button" aria-label={t('common.delete')} onClick={() => delView.mutate(v.id)}><X className="h-3 w-3" /></button></span>)}</div>}
 
-      {(sel.size > 0 || selecting) && (
+      {(chosen.length > 0 || selecting) && (
         <div className="sticky top-14 z-20 mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-brand-300 bg-brand-50 px-3 py-2 text-sm dark:border-brand-700 dark:bg-brand-700/20" role="toolbar" aria-label={t('dashboard.bulk')}>
-          <span className="font-medium">{t('dashboard.selected', { n: sel.size })}</span>
-          {sel.size < filtered.length && <Button size="sm" variant="ghost" onClick={() => setSel(new Set(filtered.map((m) => m.id)))}>{t('dashboard.selectAll', { n: filtered.length })}</Button>}
+          <span className="font-medium">{t('dashboard.selected', { n: chosen.length })}</span>
+          {chosen.length < filtered.length && <Button size="sm" variant="ghost" onClick={() => setSel(new Set(filtered.map((m) => m.id)))}>{t('dashboard.selectAll', { n: filtered.length })}</Button>}
           <Button size="sm" onClick={() => bulk.mutate({ action: 'pause' })}><Pause className="h-4 w-4" />{t('monitors.pause')}</Button>
           <Button size="sm" onClick={() => bulk.mutate({ action: 'resume' })}><Play className="h-4 w-4" />{t('monitors.resume')}</Button>
           <Button size="sm" onClick={() => setBulkEdit(true)}>{t('dashboard.editSettings')}</Button>
-          <Button size="sm" variant="danger" onClick={async () => { if (await confirm({ title: t('dashboard.bulkDeleteTitle', { n: sel.size }), body: t('dashboard.bulkDeleteBody'), danger: true, confirmLabel: t('common.delete') })) bulk.mutate({ action: 'delete' }); }}><Trash2 className="h-4 w-4" />{t('common.delete')}</Button>
+          <Button size="sm" variant="danger" onClick={async () => { if (await confirm({ title: t('dashboard.bulkDeleteTitle', { n: chosen.length }), body: t('dashboard.bulkDeleteBody'), danger: true, confirmLabel: t('common.delete') })) bulk.mutate({ action: 'delete' }); }}><Trash2 className="h-4 w-4" />{t('common.delete')}</Button>
           <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setSel(new Set())}>{t('dashboard.clearSelection')}</Button>
         </div>
       )}
@@ -200,7 +201,7 @@ export default function Dashboard() {
       </div>
 
       <SaveViewModal open={saveView} onClose={() => setSaveView(false)} filters={f} tags={tags.data} canShare={editor} />
-      <BulkEditModal key={bulkEdit ? 'open' : 'closed'} open={bulkEdit} onClose={() => setBulkEdit(false)} count={sel.size} groups={groupList} tags={tags.data ?? []} onSubmit={(patch) => { bulk.mutate({ action: 'patch', patch }); setBulkEdit(false); }} />
+      <BulkEditModal key={bulkEdit ? 'open' : 'closed'} open={bulkEdit} onClose={() => setBulkEdit(false)} count={chosen.length} groups={groupList} tags={tags.data ?? []} onSubmit={(patch) => { bulk.mutate({ action: 'patch', patch }); setBulkEdit(false); }} />
     </>
   );
 }

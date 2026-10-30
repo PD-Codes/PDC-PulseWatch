@@ -23,7 +23,7 @@ export function toCheckError(err: unknown, phase?: string, target?: { host: stri
   if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'EAI_FAIL' || code === 'ENODATA' || code === 'ENOTIMP' || code === 'ESERVFAIL' || code === 'EBADNAME')
     return new CheckError('dns', `DNS lookup failed: ${msg}`, d);
   if (code === 'ECONNREFUSED') return new CheckError('refused', `Connection refused: ${msg}`, d);
-  if (e?.name === 'AbortError' || e?.name === 'TimeoutError' || code === 'ETIMEDOUT' || code === 'ABORT_ERR' || code === 'ECONNABORTED')
+  if (e?.name === 'AbortError' || e?.name === 'TimeoutError' || code === 'ETIMEDOUT' || code === 'ABORT_ERR' || code === 'ECONNABORTED' || msg === 'Query read timeout') // the last one is node-postgres' query_timeout
     return new CheckError('timeout', `Timed out${phase ? ` during ${phase}` : ''}`, d);
   if (TLS_CODES.has(code) || code.startsWith('ERR_SSL') || code.startsWith('ERR_TLS') || /certificate|self.signed|tls|ssl/i.test(msg))
     return new CheckError('tls', `TLS error: ${msg}`, d);

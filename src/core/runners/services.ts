@@ -345,7 +345,7 @@ async function kafkaBroker(host: string, port: number, topic: string | undefined
     const found = topics.find((x) => x.name === topic);
     if (!found) throw new CheckError('protocol', 'Broker did not describe the topic');
     if (found.code !== 0) throw new CheckError('content', `Topic ${topic}: ${KAFKA_ERRORS[found.code] ?? `error ${found.code}`}`);
-    const leaderless = found.parts.filter((x) => x.pe !== 0 || x.leader < 0).length;
+    const leaderless = found.parts.filter((x) => x.leader < 0).length;
     if (leaderless) throw new CheckError('content', `Topic ${topic}: ${leaderless} of ${found.parts.length} partitions have no leader`);
     return `topic ${topic} has ${found.parts.length} partitions, all with a leader`;
   } catch (e) {

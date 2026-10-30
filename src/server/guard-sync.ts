@@ -1,8 +1,12 @@
+import net from 'node:net';
 import { DEFAULT_DENY } from '../core';
 import { config } from './config';
 import type { Ctx } from './context';
 
 export interface SsrfSettings { mode: 'allow-private' | 'public-only'; allow: string[]; deny: string[] }
+
+/** An IP address or CIDR range, as the SSRF rules accept it. */
+export const isCidr = (e: string) => { const [a, b] = e.split('/'); return net.isIP(a) > 0 && (b === undefined || (/^\d+$/.test(b) && Number(b) <= (net.isIPv6(a) ? 128 : 32))); };
 
 /** Effective rules: the database setting (editable in the UI) overrides the environment defaults. */
 export async function applySsrfSettings(ctx: Ctx): Promise<void> {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { aggregate, anomalyStep, initialState, step, type MachineParams, type MachineState } from '../../src/server/engine/machine';
 
-const P: MachineParams = { retries: 0, upThreshold: 1, flapWindow: 10, flapThreshold: 6, overlay: 'none' };
+const P: MachineParams = { retries: 0, upThreshold: 1, flapWindow: 10, flapThreshold: 6, overlay: 'none', downAfterS: 0, nowMs: 0 };
 const run = (seq: boolean[], p: Partial<MachineParams> = {}, s: MachineState = initialState()) => {
   const out = [];
   for (const ok of seq) { const o = step(s, { ...P, ...p }, ok); s = o; out.push(o); }
@@ -9,6 +9,17 @@ const run = (seq: boolean[], p: Partial<MachineParams> = {}, s: MachineState = i
 };
 
 describe('state machine', () => {
+  it('report as down after: keeps retrying past the retries until the failure has lasted long enough', () => {
+    let s = initialState();
+    const at = (sec: number, ok: boolean) => (s = step(s, { ...P, retries: 1, downAfterS: 120, nowMs: sec * 1000 }, ok));
+    at(0, true);
+    expect(at(10, false)).toMatchObject({ status: 'pending', failSince: 10_000, retryScheduled: true });
+    expect(at(70, false)).toMatchObject({ status: 'pending', attempt: 2 }); // retries used up, but only 60 s of 120 s
+    expect(at(130, false)).toMatchObject({ status: 'down', transition: { from: 'pending', to: 'down' } });
+    expect(at(140, true)).toMatchObject({ status: 'up', failSince: null });
+    at(150, false);
+    expect(at(160, true)).toMatchObject({ status: 'up', transition: null }); // a blip inside the window never reports down
+  });
   it('first successful check does not count as a recovery', () => {
     const [o] = run([true]);
     expect(o.status).toBe('up');

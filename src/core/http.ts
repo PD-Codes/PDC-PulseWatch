@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import zlib from 'node:zlib';
 import type { Readable } from 'node:stream';
 import type { NetGuard } from './guard';
@@ -86,7 +87,8 @@ function hop(url: URL, method: string, headers: Record<string, string>, body: st
         headers: h,
         agent: false,
         lookup: o.guard.lookup as any,
-        ...(isTls ? { rejectUnauthorized: o.verifyTls !== false, servername: /^[\d.:]+$/.test(url.hostname) ? undefined : url.hostname, ...trustOptions() } : {}),
+        // no SNI for IP addresses; an IPv6 host comes in brackets
+        ...(isTls ? { rejectUnauthorized: o.verifyTls !== false, servername: net.isIP(url.hostname.replace(/^\[|\]$/g, '')) ? undefined : url.hostname, ...trustOptions() } : {}),
       },
       (res) => {
         phase = 'body';

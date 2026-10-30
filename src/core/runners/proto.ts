@@ -136,7 +136,7 @@ const mqtt: Runner = {
     { key: 'username', label: 'Username', kind: 'text' },
     { key: 'password', label: 'Password', kind: 'secret' },
     { key: 'topic', label: 'Topic to subscribe (optional)', kind: 'text', help: 'When set, the check waits for a message on this topic (retained messages count).' },
-    { key: 'expect', label: 'Message must contain (optional)', kind: 'text', showIf: { key: 'topic', equals: '' } },
+    { key: 'expect', label: 'Message must contain (optional)', kind: 'text' },
   ],
   async run(ctx) {
     const c = ctx.config;
@@ -216,7 +216,8 @@ function bread(buf: Buffer, pos: number): { tag: number; start: number; end: num
 function snmpValue(buf: Buffer, tag: number): string | number {
   switch (tag) {
     case 0x02: return buf.length ? buf.readIntBE(0, Math.min(buf.length, 6)) : 0;
-    case 0x41: case 0x42: case 0x43: case 0x46: return buf.length ? Number(buf.readUIntBE(0, Math.min(buf.length, 6))) : 0;
+    case 0x41: case 0x42: case 0x43: return buf.length ? Number(buf.readUIntBE(0, Math.min(buf.length, 6))) : 0;
+    case 0x46: return buf.length ? Number(BigInt('0x' + buf.toString('hex'))) : 0; // Counter64: up to 8 bytes
     case 0x04: { const s = buf.toString('utf8'); return /^[\x20-\x7e\r\n\t]*$/.test(s) ? s : buf.toString('hex'); }
     case 0x40: return [...buf].join('.');
     case 0x06: return 'oid:' + [...buf].join('.');

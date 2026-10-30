@@ -4,6 +4,7 @@ import { config } from '../config';
 import type { Ctx } from '../context';
 import { bool, parseJson } from '../db';
 import { recordSpan } from '../telemetry';
+import { monitorDefaults } from '../monitors/defaults';
 import { pickInfo } from '../monitors/info';
 import { isMultiLocation, LOCAL_LOCATION_ID, parseMonitor, type Monitor } from '../monitors/model';
 import { aggregate, anomalyStep, initialState, step, type AnomalyState, type LocationResult, type Overlay } from './machine';
@@ -62,7 +63,7 @@ export class Engine {
     const age = Date.now() - since.getTime();
     if (!st?.last_push_at && age < limitMs) return null; // never pinged yet, still within the first window
     if (age > limitMs) return fail('missed', `No heartbeat received for ${Math.round(age / 1000)}s (expected every ${m.intervalS}s)`);
-    return { ok: true, message: `Last heartbeat ${Math.round(age / 1000)}s ago` };
+    return null; // the last push already set the status (a push may report down); a scheduled round must not overwrite it with up
   }
 
   /** Persist a single location's raw result and keep its latest state for quorum evaluation. */
@@ -127,11 +128,12 @@ export class Engine {
     if (maintenance.isActive(m.id)) overlay = 'maintenance';
     else if (!r.ok && (await this.suppressedByParent(m.id))) overlay = 'suppressed';
 
+    const downAfterS = m.downAfterS ?? (await monitorDefaults(this.ctx)).downAfterS;
     const result = await db.transaction().execute(async (trx) => {
       await trx.insertInto('monitor_state').values({ monitor_id: m.id }).ignore().execute();
       const st = await trx.selectFrom('monitor_state').selectAll().where('monitor_id', '=', m.id).forUpdate().executeTakeFirstOrThrow();
-      const prevMachine = { ...initialState(), status: st.status, consecutiveFail: st.consecutive_fail, consecutiveOk: st.consecutive_ok, attempt: m.attempt, outcomes: st.outcomes, flapping: bool(st.flapping) };
-      const o = step(prevMachine, { retries: m.retries, upThreshold: m.upThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, overlay }, r.ok);
+      const prevMachine = { ...initialState(), status: st.status, consecutiveFail: st.consecutive_fail, consecutiveOk: st.consecutive_ok, attempt: m.attempt, outcomes: st.outcomes, flapping: bool(st.flapping), failSince: st.fail_since?.getTime() ?? null };
+      const o = step(prevMachine, { retries: m.retries, upThreshold: m.upThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, overlay, downAfterS, nowMs: now.getTime() }, r.ok);
 
       const recent = parseJson<[number, number, number | null][]>(st.recent, []);
       recent.push([Math.floor(now.getTime() / 1000), o.hbStatus, r.latencyMs ?? null]);
@@ -159,7 +161,7 @@ export class Engine {
       const statusChanged = o.status !== st.status;
       await trx.updateTable('monitor_state').set({
         status: o.status, overlay, status_since: statusChanged || !st.status_since ? now : st.status_since,
-        consecutive_fail: o.consecutiveFail, consecutive_ok: o.consecutiveOk, last_check_at: now, last_latency_ms: r.latencyMs ?? null,
+        consecutive_fail: o.consecutiveFail, consecutive_ok: o.consecutiveOk, fail_since: o.failSince ? new Date(o.failSince) : null, last_check_at: now, last_latency_ms: r.latencyMs ?? null,
         last_error_kind: r.ok ? null : r.errorKind ?? 'internal', last_message: r.message?.slice(0, 500) ?? null,
         flapping: o.flapping ? 1 : 0, outcomes: o.outcomes, recent: JSON.stringify(recent), cert_expires_at: certExpires, cert_info: certInfo,
         anomaly: anomaly ? JSON.stringify(anomaly) : null,
@@ -168,7 +170,8 @@ export class Engine {
       }).where('monitor_id', '=', m.id).execute();
 
       // a failed attempt that is being retried says so, so the check list shows where the monitor is in its round of retries
-      const beatMessage = o.hbStatus === 2 ? `Failed, retry ${o.attempt} of ${m.retries} follows in ${m.retryIntervalS}s: ${r.message ?? r.errorKind ?? 'no details'}` : r.message;
+      const why = r.message ?? r.errorKind ?? 'no details';
+      const beatMessage = o.hbStatus !== 2 ? r.message : o.attempt <= m.retries ? `Failed, retry ${o.attempt} of ${m.retries} follows in ${m.retryIntervalS}s: ${why}` : `Failed, reported as down once it has been failing for ${downAfterS}s: ${why}`;
       await trx.insertInto('heartbeats').values({ monitor_id: m.id, location_id: 0, ts: now, status: o.hbStatus, latency_ms: r.latencyMs ?? null, error_kind: r.ok ? null : r.errorKind ?? 'internal', message: beatMessage?.slice(0, 500) ?? null }).execute();
 
       const events: { type: string; from?: string; to?: string; kind?: string | null; msg?: string | null; details?: unknown }[] = [];
@@ -202,8 +205,9 @@ export class Engine {
     const { incidents, notifier } = this.ctx;
     const muted = o.flapping && !o.flapEvent;
     if (o.transition?.to === 'down') {
-      const inc = await incidents.openFor(m, r);
-      if (!o.flapping) await notifier.notify({ event: 'down', monitor: m, result: r, incidentId: inc.id });
+      // a failure while opening the incident must not swallow the alert
+      const inc = await incidents.openFor(m, r).catch((e) => { this.ctx.log.error({ err: e, monitor: m.id }, 'could not open the incident'); return null; });
+      if (!o.flapping) await notifier.notify({ event: 'down', monitor: m, result: r, incidentId: inc?.id });
     } else if (o.transition?.to === 'up') {
       const ids = await incidents.resolveFor(m);
       for (const id of ids) await incidents.stopEscalation(id);
@@ -222,6 +226,6 @@ export class Engine {
     const m = parseMonitor(row);
     // Same path as a scheduled round, so multi-location monitors still go through the quorum.
     const r = await this.runRound(m, { advance: false });
-    return r ?? { ok: true, message: m.type === 'push' ? 'Waiting for the first heartbeat' : 'Waiting for results from the configured locations' };
+    return r ?? { ok: true, message: m.type === 'push' ? 'Nothing to check: the status follows the last heartbeat' : 'Waiting for results from the configured locations' };
   }
 }

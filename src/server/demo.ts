@@ -155,7 +155,7 @@ export async function seedDemo(ctx: Ctx): Promise<void> {
   await resolved('Database failover caused API errors', 'App database', 41, 55, 'critical', 'Root cause: the primary database restarted during a routine update. Applications reconnected automatically after about one hour. Follow-up: add a connection retry with backoff.');
 
   // status page, maintenance window, saved view
-  const page = Number((await db.insertInto('status_pages').values({ slug: 'demo', title: 'Demo Status', description: 'Live status of the demo services.', is_public: 1, branding: JSON.stringify({ primaryColor: '#4f46e5' }) }).executeTakeFirstOrThrow()).insertId);
+  const page = Number((await db.insertInto('status_pages').values({ slug: 'demo', title: 'Demo Status', description: 'Live status of the demo services.', is_public: 1, branding: JSON.stringify({ primaryColor: '#4f46e5' }), blocks: JSON.stringify([{ type: 'summary' }, { type: 'streak' }, { type: 'heatmap', days: 90 }]) }).executeTakeFirstOrThrow()).insertId);
   const sec = async (name: string, sort: number) => Number((await db.insertInto('status_page_sections').values({ page_id: page, name, sort }).executeTakeFirstOrThrow()).insertId);
   const sWeb = await sec('Websites', 0), sApi = await sec('APIs and data', 1), sGames = await sec('Game servers', 2);
   let sort = 0;

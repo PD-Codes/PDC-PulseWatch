@@ -1,8 +1,10 @@
+import { normalizeBlocks } from './status-blocks';
 import { Cron } from 'croner';
 import { getRunner, maskSecrets, restoreSecrets, SECRET_MASK, secretFields, validateConfig } from '../core';
 import type { Ctx } from './context';
 import { decryptJson, encryptJson } from './crypto';
 import { bool, parseJson } from './db';
+import { applySsrfSettings, isCidr } from './guard-sync';
 import { retriesFromThreshold } from './monitors/defaults';
 import { parseMonitor } from './monitors/model';
 import { saveMonitor, ValidationError } from './monitors/service';
@@ -87,7 +89,7 @@ export async function exportConfig(ctx: Ctx, includeSecrets: boolean): Promise<C
       const runner = getRunner(m.type);
       return {
         name: m.name, type: m.type, group: m.groupId ? gpath(m.groupId) : null, description: m.description, config: runner ? maskCfg(m.type, runner, m.config) : m.config,
-        intervalS: m.intervalS, timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold,
+        intervalS: m.intervalS, timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, downAfterS: m.downAfterS,
         active: m.active, publicBadge: m.publicBadge, quorum: m.quorum, locations: m.locations?.map((l) => (l === 'local' ? 'local' : prname.get(l))).filter(Boolean) ?? null,
         // a plain tag is exported as its name, a name + value tag as { name, value }
         tags: mtags.filter((t) => t.monitor_id === m.id && tname.has(t.tag_id)).map((t) => (t.value ? { name: tname.get(t.tag_id)!, value: t.value } : tname.get(t.tag_id)!)),
@@ -100,9 +102,9 @@ export async function exportConfig(ctx: Ctx, includeSecrets: boolean): Promise<C
       targets: targets.filter((t) => t.window_id === w.id).map((t) => ({ type: t.target_type, name: t.target_type === 'monitor' ? mname.get(t.target_id) : t.target_type === 'group' ? (groups.some((g) => g.id === t.target_id) ? gpath(t.target_id) : undefined) : tname.get(t.target_id) })).filter((t) => t.name),
     })),
     statusPages: pages.map((p) => ({
-      slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), ssoRequired: bool(p.sso_required), branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size, language: p.language, serverInfo: p.server_info,
-      sections: sections.filter((s) => s.page_id === p.id).map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name })).filter((c) => c.monitor) })),
-      components: comps.filter((c) => c.page_id === p.id && !c.section_id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name })).filter((c) => c.monitor),
+      slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), ssoRequired: bool(p.sso_required), branding: parseJson(p.branding, {}), customCss: p.custom_css, blocks: normalizeBlocks(parseJson(p.blocks, [])), showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size, language: p.language, serverInfo: p.server_info,
+      sections: sections.filter((s) => s.page_id === p.id).map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name, ...(c.hide_incidents ? { hideIncidents: true } : {}) })).filter((c) => c.monitor) })),
+      components: comps.filter((c) => c.page_id === p.id && !c.section_id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name, ...(c.hide_incidents ? { hideIncidents: true } : {}) })).filter((c) => c.monitor),
     })),
   };
   const ssrf = await ctx.settings.get<SsrfSettings | null>('ssrf', null);
@@ -138,7 +140,7 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
   // --- groups (parents first because paths sort that way)
   const groupIds = new Map<string, number>();
   const allGroups = await db.selectFrom('monitor_groups').select(['id', 'parent_id', 'name']).execute();
-  const pathOf = (id: number): string => { const g = allGroups.find((x) => x.id === id)!; return (g.parent_id && g.parent_id !== id ? `${pathOf(g.parent_id)}/` : '') + g.name; };
+  const pathOf = (id: number): string => { const g = allGroups.find((x) => x.id === id)!; return (g.parent_id && g.parent_id !== id ? `${pathOf(g.parent_id)}/` : '') + g.name.replace(/\//g, '-'); };
   for (const g of allGroups) groupIds.set(pathOf(g.id), g.id);
   const ensureGroup = async (path: string, description?: string | null): Promise<number | undefined> => {
     if (groupIds.has(path)) return groupIds.get(path);
@@ -156,15 +158,15 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
   }
 
   // --- tags
-  const tagIds = new Map((await db.selectFrom('tags').select(['id', 'name']).execute()).map((t) => [t.name, t.id]));
+  const tagIds = new Map((await db.selectFrom('tags').select(['id', 'name']).execute()).map((t) => [t.name.toLowerCase(), t.id]));
   const ensureTag = async (name: string, color?: string) => {
-    if (tagIds.has(name)) return tagIds.get(name)!;
+    if (tagIds.has(name.toLowerCase())) return tagIds.get(name.toLowerCase())!;
     count('tags', false);
     const id = (await w(async () => Number((await db.insertInto('tags').values({ name: name.slice(0, 64), ...(color && /^#[0-9a-f]{6}$/i.test(color) ? { color } : {}) }).executeTakeFirstOrThrow()).insertId))) ?? -1;
-    tagIds.set(name, id);
+    tagIds.set(name.toLowerCase(), id);
     return id;
   };
-  for (const t of doc.tags ?? []) try { const existed = tagIds.has(t.name); await ensureTag(t.name, t.color); if (existed) { count('tags', true); if (t.color && /^#[0-9a-f]{6}$/i.test(t.color)) await w(() => db.updateTable('tags').set({ color: t.color! }).where('id', '=', tagIds.get(t.name)!).execute()); } } catch (e) { err(`tag ${t.name}`, e); }
+  for (const t of doc.tags ?? []) try { const existed = tagIds.has(t.name.toLowerCase()); await ensureTag(t.name, t.color); if (existed) { count('tags', true); if (t.color && /^#[0-9a-f]{6}$/i.test(t.color)) await w(() => db.updateTable('tags').set({ color: t.color! }).where('id', '=', tagIds.get(t.name)!).execute()); } } catch (e) { err(`tag ${t.name}`, e); }
 
   // --- templates
   const templateIds = new Map((await db.selectFrom('notification_templates').select(['id', 'name']).execute()).map((t) => [t.name, t.id]));
@@ -202,7 +204,7 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
   } catch (e) { err(`policy ${p.name}`, e); }
 
   // --- monitors (pass 1: everything except dependencies, which may point forward)
-  const monitorRows = await db.selectFrom('monitors').select(['id', 'name', 'type']).execute();
+  const monitorRows = await db.selectFrom('monitors').select(['id', 'name', 'type', 'group_id']).execute();
   const monitorIds = new Map(monitorRows.map((m) => [m.name, m.id]));
   const pending: { id: number; name: string; dependsOn: string[] }[] = [];
   const tagsByMonitor = new Map<number, { tagId: number; value: string }[]>();
@@ -212,7 +214,9 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
     step('monitors');
     const runner = getRunner(m.type);
     if (!runner) { rep.warnings.push(`monitor ${m.name}: unknown type ${m.type}, skipped`); continue; }
-    const row = monitorIds.has(m.name) ? monitorRows.find((r) => r.name === m.name)! : undefined;
+    // names need not be unique: with several equal names the group path decides, and without a match a new monitor is created
+    const named = monitorRows.filter((r) => r.name === m.name);
+    const row = named.length <= 1 ? named[0] : named.find((r) => (r.group_id ? pathOf(r.group_id) : null) === (m.group ?? null));
     if (row && row.type !== m.type) { rep.errors.push(`monitor ${m.name}: exists with type ${row.type}, cannot import as ${m.type}`); continue; }
     const existing = row ? parseMonitor((await db.selectFrom('monitors').selectAll().where('id', '=', row.id).executeTakeFirstOrThrow())) : undefined;
     const keepGroup = !!existing && (m.group === undefined || (doc.merge && !m.group));
@@ -226,7 +230,7 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
     const notifications = (m.notifications ?? []).map((n: any) => ({ channelId: n.channel ? channelIds.get(n.channel) : null, policyId: n.policy ? policyIds.get(n.policy) : null, events: n.events })).filter((n: any) => n.channelId || n.policyId);
     const input = {
       name: m.name, type: m.type, groupId, description: m.description ?? null, config: existing ? m.config ?? {} : stripMasked(runner, m.config ?? {}), intervalS: m.intervalS, timeoutS: m.timeoutS, retries: Number.isInteger(m.downThreshold) && m.downThreshold > 1 ? retriesFromThreshold(m.retries ?? 0, m.downThreshold) : m.retries, retryIntervalS: m.retryIntervalS, // old exports: failure threshold folded into retries
-      upThreshold: m.upThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, active: m.active, publicBadge: m.publicBadge, quorum: locations?.length ? m.quorum : 1,
+      upThreshold: m.upThreshold, flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, downAfterS: Number.isInteger(m.downAfterS) ? m.downAfterS : null, active: m.active, publicBadge: m.publicBadge, quorum: locations?.length ? m.quorum : 1,
       locations: locations as (number | 'local')[] | null, tagIds: [...new Set(allTags.filter((t) => !t.value).map((t) => t.tagId))], tagValues: allTags.filter((t) => t.value), notifications: existing && doc.merge && !notifications.length ? undefined : notifications.filter((n: any) => (n.channelId ?? 1) > 0 && (n.policyId ?? 1) > 0),
     };
     if (dryRun) {
@@ -256,7 +260,7 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
     step('maintenance');
     const targets: { target_type: 'monitor' | 'group' | 'tag'; target_id: number }[] = [];
     for (const t of mw.targets ?? []) {
-      const id = t.type === 'monitor' ? monitorIds.get(t.name) : t.type === 'group' ? groupIds.get(t.name) : tagIds.get(t.name);
+      const id = t.type === 'monitor' ? monitorIds.get(t.name) : t.type === 'group' ? groupIds.get(t.name) : tagIds.get(String(t.name).toLowerCase());
       if (id) targets.push({ target_type: t.type, target_id: id }); else rep.warnings.push(`maintenance ${mw.name}: ${t.type} "${t.name}" not found`);
     }
     if (!targets.length) {
@@ -280,8 +284,8 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
   for (const p of doc.statusPages ?? []) try {
     step('statusPages');
     const id = pageIds.get(p.slug); count('statusPages', !!id);
-    const values = { slug: p.slug, title: p.title, description: p.description ?? null, domain: p.domain ?? null, is_public: p.isPublic === false ? 0 : 1, sso_required: p.ssoRequired ? 1 : 0, branding: JSON.stringify(p.branding ?? {}), custom_css: p.customCss ?? null, show_history: p.showHistory === false ? 0 : 1, history_days: [14, 30, 60, 90, 120, 150, 180].includes(p.historyDays as number) ? (p.historyDays as number) : 90, ...(p.isDefault === true ? { is_default: 1 } : {}), ...(Number.isInteger(p.incidentDays) && p.incidentDays >= 0 && p.incidentDays <= 365 ? { incident_days: p.incidentDays as number } : {}), ...(Number.isInteger(p.incidentPageSize) && p.incidentPageSize >= 5 && p.incidentPageSize <= 50 ? { incident_page_size: p.incidentPageSize as number } : {}), ...(p.language === 'en' || p.language === 'de' ? { language: p.language } : p.language === null ? { language: null } : {}), ...(Number.isInteger(p.serverInfo) && p.serverInfo >= 0 && p.serverInfo <= 2 ? { server_info: p.serverInfo } : {}) };
-    const comp = (c: any) => { const mid = monitorIds.get(c.monitor); if (!mid) rep.warnings.push(`status page ${p.slug}: monitor "${c.monitor}" not found`); return mid ? { monitor_id: mid, display_name: c.displayName ?? null } : null; };
+    const values = { slug: p.slug, title: p.title, description: p.description ?? null, domain: p.domain ?? null, is_public: p.isPublic === false ? 0 : 1, sso_required: p.ssoRequired ? 1 : 0, branding: JSON.stringify(p.branding ?? {}), custom_css: p.customCss ?? null, ...(Array.isArray(p.blocks) ? { blocks: JSON.stringify(normalizeBlocks(p.blocks)) } : {}), show_history: p.showHistory === false ? 0 : 1, history_days: [14, 30, 60, 90, 120, 150, 180].includes(p.historyDays as number) ? (p.historyDays as number) : 90, ...(p.isDefault === true ? { is_default: 1 } : {}), ...(Number.isInteger(p.incidentDays) && p.incidentDays >= 0 && p.incidentDays <= 365 ? { incident_days: p.incidentDays as number } : {}), ...(Number.isInteger(p.incidentPageSize) && p.incidentPageSize >= 5 && p.incidentPageSize <= 50 ? { incident_page_size: p.incidentPageSize as number } : {}), ...(p.language === 'en' || p.language === 'de' ? { language: p.language } : p.language === null ? { language: null } : {}), ...(Number.isInteger(p.serverInfo) && p.serverInfo >= 0 && p.serverInfo <= 2 ? { server_info: p.serverInfo } : {}) };
+    const comp = (c: any) => { const mid = monitorIds.get(c.monitor); if (!mid) rep.warnings.push(`status page ${p.slug}: monitor "${c.monitor}" not found`); return mid ? { monitor_id: mid, display_name: c.displayName ?? null, hide_incidents: c.hideIncidents ? 1 : 0 } : null; };
     await w(() => db.transaction().execute(async (trx) => {
       let pid = id;
       if (values.is_default === 1) await trx.updateTable('status_pages').set({ is_default: 0 }).execute(); // only one home page; the update below or the insert sets this one
@@ -309,7 +313,13 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
   } catch (e) { err(`status page ${p.slug}`, e); }
 
   onProgress?.({ phase: 'finishing', done: total, total });
-  if (doc.settings?.ssrf && !dryRun) await ctx.settings.set('ssrf', doc.settings.ssrf);
+  if (doc.settings?.ssrf && !dryRun) {
+    // the same check as the settings page: rules that do not parse would be stored but never applied
+    const s = doc.settings.ssrf as Partial<SsrfSettings>;
+    const bad = !['public-only', 'allow-private'].includes(s.mode as string) || ![...(s.allow ?? []), ...(s.deny ?? [])].every((x) => typeof x === 'string' && isCidr(x));
+    if (bad) rep.warnings.push('SSRF settings were not imported: invalid mode or address range');
+    else { await ctx.settings.set('ssrf', { mode: s.mode, allow: s.allow ?? [], deny: s.deny ?? [] }); await applySsrfSettings(ctx); }
+  }
   if (!dryRun) ctx.bus.publish({ type: 'config', entity: 'import' });
   return rep;
 }
@@ -801,9 +811,9 @@ export function convertKuma(raw: unknown): { doc: ConfigDoc; warnings: string[];
     nameById.set(Number(m.id), name);
     monitors.push({
       name, type, group: groupPath(m.parent), description: m.description ?? null, config: cfg,
-      intervalS: clamp(m.interval, 5, 86400, 60), timeoutS: clamp(m.timeout, 1, 300, 10), retries: clamp(m.maxretries, 0, 20, 0), retryIntervalS: clamp(m.retryInterval, 5, 3600, 60), active: m.active !== false && m.active !== 0,
+      intervalS: clamp(m.interval, 5, 86400, 60), timeoutS: clamp(m.timeout, 1, 300, 10), retries: clamp(m.maxretries, 0, 100, 0), retryIntervalS: clamp(m.retryInterval, 5, 3600, 60), flapThreshold: 0, active: m.active !== false && m.active !== 0,
       tags: list(m.tags).map((t) => (present(t.value) ? { name: String(t.name), value: String(t.value).trim().slice(0, 255) } : String(t.name))),
-      notifications: linked.map(([id]) => chName.get(id)).filter(Boolean).map((channel) => ({ channel, events: ['down', 'up'] })),
+      notifications: linked.map(([id]) => chName.get(id)).filter(Boolean).map((channel) => ({ channel, events: ['down', 'up', 'flap'] })),
       ...(mnotes.length ? { notes: mnotes } : {}),
     });
   }
