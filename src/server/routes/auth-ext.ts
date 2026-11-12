@@ -145,6 +145,9 @@ export async function authExtRoutes(app: FastifyInstance) {
   app.post('/api/auth/passkeys/register/options', { ...auth, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, schema: { tags: ['auth'], body: Type.Object({ password: Type.Optional(Type.String({ maxLength: 1000 })), code: Type.Optional(Type.String({ maxLength: 32 })) }) } }, async (req, reply) => {
     const u = req.user!;
     const b = req.body as { password?: string; code?: string };
+    // single sign-on and LDAP accounts must keep going through their provider: a passkey would skip its group checks and a disabled account
+    const src = await db.selectFrom('users').select('auth_source').where('id', '=', u.id).executeTakeFirst();
+    if (src?.auth_source !== 'local') return reply.code(400).send({ error: 'not_supported', message: 'Passkeys are only available for local accounts; sign in through your provider instead' });
     const bad = await reauthError(ctx, u.id, b.password, b.code);
     if (bad) return reply.code(400).send({ error: 'invalid_credentials', message: bad });
     const existing = await db.selectFrom('passkeys').select(['credential_id', 'transports']).where('user_id', '=', u.id).execute();
@@ -182,8 +185,9 @@ export async function authExtRoutes(app: FastifyInstance) {
     const resp = (req.body as any).credential;
     const deny = async (why: string) => { await writeAudit(ctx, null, 'login.failed', { type: 'passkey' }, { why }, req.ip); return reply.code(401).send({ error: 'invalid_credentials', message: 'Passkey sign-in failed' }); };
     if (!st || typeof resp?.id !== 'string') return deny('expired');
-    const pk = await db.selectFrom('passkeys as p').innerJoin('users as u', 'u.id', 'p.user_id').select(['p.id', 'p.public_key', 'p.counter', 'p.transports', 'p.credential_id', 'u.id as uid', 'u.username', 'u.is_active']).where('p.credential_id', '=', resp.id).executeTakeFirst();
+    const pk = await db.selectFrom('passkeys as p').innerJoin('users as u', 'u.id', 'p.user_id').select(['p.id', 'p.public_key', 'p.counter', 'p.transports', 'p.credential_id', 'u.id as uid', 'u.username', 'u.is_active', 'u.auth_source']).where('p.credential_id', '=', resp.id).executeTakeFirst();
     if (!pk || !bool(pk.is_active)) return deny('unknown credential');
+    if (pk.auth_source !== 'local') return deny('passkeys are for local accounts only');
     try {
       const v = await verifyAuthenticationResponse({ response: resp, expectedChallenge: st.c, expectedOrigin: origin, expectedRPID: rpID, requireUserVerification: true, credential: { id: pk.credential_id, publicKey: Buffer.from(pk.public_key, 'base64url'), counter: pk.counter, transports: parseJson(pk.transports, undefined) } });
       if (!v.verified) return deny('not verified');

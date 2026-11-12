@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import dgram from 'node:dgram';
 import dns from 'node:dns';
+import net from 'node:net';
 import tls from 'node:tls';
 import { connect } from '../conn';
 import { compileRegex, regexInput } from '../regex';
@@ -86,7 +87,7 @@ const ping: Runner = {
       const ip = (await ctx.guard.resolve(c.host))[0].address;
       const count = c.count ?? 1;
       // 0.2 s between packets (the fastest interval without root), so several packets fit into the timeout
-      const args = ['-c', String(count), '-i', '0.2', '-W', String(Math.max(1, Math.ceil(ctx.timeoutMs / 1000 / count))), ip];
+      const args = ['-c', String(count), '-i', '0.2', '-W', String(Math.max(1, Math.min(10, Math.ceil(ctx.timeoutMs / 1000 / count)))), ip];
       const out = await new Promise<string>((resolve, reject) => {
         execFile('ping', args, { timeout: ctx.timeoutMs + 1000, signal: ctx.signal }, (err, stdout, stderr) => {
           if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new CheckError('config', 'ping binary is not installed'));
@@ -120,7 +121,11 @@ const dnsRunner: Runner = {
     const c = ctx.config;
     try {
       const r = new dns.promises.Resolver({ timeout: ctx.timeoutMs, tries: 1 });
-      if (c.resolver) { ctx.guard.assertAddress(c.resolver); r.setServers([c.resolver]); }
+      if (c.resolver) {
+        // "ip:port" is accepted by setServers but not understood by the guard's address lists, so it would slip past them
+        if (!net.isIP(c.resolver)) return fail('config', 'Resolver must be a plain IP address');
+        ctx.guard.assertAddress(c.resolver); r.setServers([c.resolver]);
+      }
       const t0 = process.hrtime.bigint();
       let answers: string[];
       const t = (c.recordType ?? 'A') as string;

@@ -116,7 +116,8 @@ export default function Kiosk() {
   useEffect(() => {
     try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch { /* storage unavailable */ }
     setParams(toParams(cfg), { replace: true });
-  }, [cfg, setParams]);
+    // only on a settings change: setParams changes identity with every address change and would pull the address back to the kiosk after Esc
+  }, [cfg]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { document.title = `${t('kiosk.title')} · PulseWatch`; }, [t]);
   // zoom scales the root font size, so everything sized in rem (text, padding, tiles) grows together; the tile grid below uses the same factor

@@ -49,7 +49,7 @@ export function countTransitions(outcomes: string): number {
 export function step(s: MachineState, p: MachineParams, ok: boolean): MachineOut {
   const keep = (hb: MachineOut['hbStatus'], extra: Partial<MachineOut> = {}): MachineOut => ({ ...s, hbStatus: hb, retryScheduled: false, transition: null, flapEvent: null, ...extra });
   if (p.overlay === 'maintenance') return keep(3);
-  if (!ok && p.overlay === 'suppressed') return keep(4, { attempt: 0 });
+  if (!ok && p.overlay === 'suppressed') return keep(4);
 
   let { status, consecutiveFail, consecutiveOk, attempt } = s;
   let hb: MachineOut['hbStatus'];

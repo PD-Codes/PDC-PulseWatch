@@ -158,9 +158,13 @@ export async function monitorRoutes(app: FastifyInstance) {
   app.patch('/api/monitors/:id', { ...writer, schema: { tags: ['monitors'], params: Id, body } }, update);
   app.put('/api/monitors/:id', { ...writer, schema: { tags: ['monitors'], params: Id, body } }, update);
 
+  /** A deleted monitor can never come back up, so its automatic incidents would stay open forever. */
+  const closeIncidentsOf = (ids: number[]) => db.updateTable('incidents').set({ status: 'resolved', resolved_at: new Date() }).where('monitor_id', 'in', ids).where('source', '=', 'auto').where('status', '!=', 'resolved').execute();
+
   app.delete('/api/monitors/:id', { ...writer, schema: { tags: ['monitors'], params: Id } }, async (req, reply) => {
     const id = await guardMonitor(req, reply, 'manage'); if (!id) return;
     await db.deleteFrom('monitors').where('id', '=', id).execute();
+    await closeIncidentsOf([id]);
     await db.deleteFrom('heartbeats').where('monitor_id', '=', id).execute();
     await db.deleteFrom('rollups').where('monitor_id', '=', id).execute();
     await db.deleteFrom('events').where('monitor_id', '=', id).execute();
@@ -260,7 +264,7 @@ export async function monitorRoutes(app: FastifyInstance) {
     if (b.action === 'patch' && b.patch?.groupId != null && !(await db.selectFrom('monitor_groups').select('id').where('id', '=', b.patch.groupId).executeTakeFirst())) return reply.code(400).send({ error: 'validation', message: 'Group not found' });
     if (b.action === 'pause') await db.updateTable('monitors').set({ active: 0 }).where('id', 'in', ids).execute();
     else if (b.action === 'resume') { await db.updateTable('monitors').set({ active: 1, next_run_at: new Date(), attempt: 0 }).where('id', 'in', ids).execute(); await startPushGrace(ids); }
-    else if (b.action === 'delete') { await db.deleteFrom('monitors').where('id', 'in', ids).execute(); for (const t of ['heartbeats', 'rollups', 'events'] as const) await db.deleteFrom(t).where('monitor_id', 'in', ids).execute(); }
+    else if (b.action === 'delete') { await db.deleteFrom('monitors').where('id', 'in', ids).execute(); await closeIncidentsOf(ids); for (const t of ['heartbeats', 'rollups', 'events'] as const) await db.deleteFrom(t).where('monitor_id', 'in', ids).execute(); }
     else {
       const p = b.patch ?? {};
       const cols: Record<string, string> = { intervalS: 'interval_s', timeoutS: 'timeout_s', retries: 'retries', retryIntervalS: 'retry_interval_s', upThreshold: 'up_threshold', flapWindow: 'flap_window', flapThreshold: 'flap_threshold', downAfterS: 'down_after_s', groupId: 'group_id' };
@@ -356,7 +360,11 @@ export async function monitorRoutes(app: FastifyInstance) {
       return { total, page: q.page, pageSize: q.pageSize ?? 5, statuses, items: (await s.limit(q.pageSize ?? 5).offset((q.page - 1) * (q.pageSize ?? 5)).execute()).map(map) };
     }
     s = s.limit(q.limit ?? 100);
-    if (q.before) s = s.where('ts', '<', new Date(q.before));
+    if (q.before) {
+      const before = new Date(q.before);
+      if (Number.isNaN(before.getTime())) return reply.code(400).send({ error: 'validation', message: '"before" must be a date' });
+      s = s.where('ts', '<', before);
+    }
     return (await s.execute()).map(map);
   });
 
@@ -475,7 +483,7 @@ export async function monitorRoutes(app: FastifyInstance) {
   app.post('/api/groups', { ...writer, schema: { tags: ['monitors'], body: groupBody } }, async (req, reply) => {
     const b = req.body as any;
     if (b.parentId && !(await canManageGroup(req, b.parentId))) return reply.code(403).send({ error: 'forbidden' });
-    if (!b.parentId && req.user!.scopeRestricted) return reply.code(403).send({ error: 'forbidden', message: 'Restricted users can only create sub-groups' });
+    if (!b.parentId && req.user!.scopeRestricted && req.user!.role !== 'admin') return reply.code(403).send({ error: 'forbidden', message: 'Restricted users can only create sub-groups' });
     const r = await db.insertInto('monitor_groups').values({ name: b.name, parent_id: b.parentId ?? null, description: b.description ?? null, sort: b.sort ?? 0 }).executeTakeFirstOrThrow();
     await writeAudit(ctx, req.user, 'group.created', { type: 'group', id: Number(r.insertId) }, { name: b.name }, req.ip);
     return { id: Number(r.insertId) };

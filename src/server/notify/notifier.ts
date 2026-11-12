@@ -121,8 +121,12 @@ export class Notifier {
     const pol = await db.selectFrom('escalation_policies').select('steps').where('id', '=', policyId).executeTakeFirst();
     const steps = parseJson<Policy>(pol?.steps ?? null, { steps: [] }).steps;
     if (!steps.length) return;
-    const exists = await db.selectFrom('escalation_runs').select('id').where('incident_id', '=', i.incidentId!).where('policy_id', '=', policyId).executeTakeFirst();
-    if (exists) return;
+    const exists = await db.selectFrom('escalation_runs').select(['id', 'active']).where('incident_id', '=', i.incidentId!).where('policy_id', '=', policyId).executeTakeFirst();
+    if (exists) {
+      // a run that was stopped (incident set to monitoring) starts over when the monitor fails again
+      if (!exists.active) await db.updateTable('escalation_runs').set({ active: 1, next_step: 0, next_at: new Date(Date.now() + steps[0].delayMin * 60_000) }).where('id', '=', exists.id).where('active', '=', 0).execute();
+      return;
+    }
     await db.insertInto('escalation_runs').values({ incident_id: i.incidentId!, monitor_id: i.monitor.id, policy_id: policyId, next_step: 0, next_at: new Date(Date.now() + steps[0].delayMin * 60_000) }).execute();
   }
 

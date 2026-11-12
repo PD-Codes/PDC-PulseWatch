@@ -94,7 +94,9 @@ const mssql: Runner = {
         const conn = new Tedious({
           server: addr,
           authentication: { type: 'default', options: { userName: c.username, password: c.password } },
-          options: { port: c.port, database: c.database || undefined, encrypt: !!c.useTls, trustServerCertificate: c.verifyTls === false, cryptoCredentialsDetails: trustOptions(), connectTimeout: ctx.timeoutMs, requestTimeout: ctx.timeoutMs, serverName: c.host, rowCollectionOnRequestCompletion: true },
+          options: { port: c.port, database: c.database || undefined, encrypt: !!c.useTls, trustServerCertificate: c.verifyTls === false, cryptoCredentialsDetails: trustOptions(), connectTimeout: ctx.timeoutMs, requestTimeout: ctx.timeoutMs, serverName: c.host, rowCollectionOnRequestCompletion: true,
+            // every connect goes through the guard, including the one a server asks for with a routing redirect
+            connector: ((o: { host: string; port: number }) => connect({ host: o.host, port: o.port, signal: ctx.signal, guard: ctx.guard }).then((x) => x.sock)) as any },
         });
         const stop = () => conn.close();
         ctx.signal.addEventListener('abort', () => { stop(); reject(new CheckError('timeout', 'Timed out')); }, { once: true });
@@ -171,6 +173,7 @@ const mongo: Runner = {
         auth: c.username ? { username: c.username, password: c.password } : undefined,
         authSource: c.database || 'admin', serverSelectionTimeoutMS: ctx.timeoutMs, connectTimeoutMS: ctx.timeoutMs, socketTimeoutMS: ctx.timeoutMs,
         tls: !!c.useTls, tlsAllowInvalidCertificates: c.useTls && c.verifyTls === false, directConnection: true, ...trustOptions(),
+        lookup: ctx.guard.lookup as any, // the driver resolves the name again when it connects: check that answer too
       });
       await client.db(c.database || 'admin').command({ ping: 1 });
       return ok(hrMs(t0), { message: 'ping OK' });

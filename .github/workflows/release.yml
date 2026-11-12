@@ -87,8 +87,11 @@ jobs:
         if: steps.check.outputs.publish == 'true'
         run: npm ci --ignore-scripts
 
-      # Unit tests need no database. `npm run typecheck` is left out on purpose: it does not
-      # pass on main right now and would block every release; add it back once it is clean.
+      # Both run only for a version that is about to be published. Unit tests need no database.
+      - name: Typecheck
+        if: steps.check.outputs.publish == 'true'
+        run: npm run typecheck && npx tsc --noEmit -p tsconfig.web.json
+
       - name: Unit tests
         if: steps.check.outputs.publish == 'true'
         run: npm run test:unit

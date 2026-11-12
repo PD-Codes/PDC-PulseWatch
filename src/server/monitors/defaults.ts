@@ -7,8 +7,8 @@ export interface MonitorDefaults {
   downAfterS: number;
 }
 
-// Like Uptime Kuma: the timeout is 80% of the interval (48 s at 60 s) and a retry comes as often as a regular check.
-export const BUILT_IN_DEFAULTS: MonitorDefaults = { intervalS: 60, timeoutS: 48, retries: 0, retryIntervalS: 60, upThreshold: 1, flapWindow: 10, flapThreshold: 6, downAfterS: 0 };
+// Like Uptime Kuma: the timeout is 80% of the interval (48 s at 60 s), a retry comes as often as a regular check, and there is no flap detection (0 = off).
+export const BUILT_IN_DEFAULTS: MonitorDefaults = { intervalS: 60, timeoutS: 48, retries: 0, retryIntervalS: 60, upThreshold: 1, flapWindow: 10, flapThreshold: 0, downAfterS: 0 };
 
 /** The longest timeout that still leaves room for the next check: 80% of the interval, as in Uptime Kuma. */
 export const maxTimeoutS = (intervalS: number) => Math.max(1, Math.floor(intervalS * 0.8));

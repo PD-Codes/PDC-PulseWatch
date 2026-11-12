@@ -11,6 +11,8 @@ import { fail, hrMs, ok, toCheckError, udpRequest } from '../util';
 
 /** Upper bound for what a protocol runner buffers from a remote server while waiting for a complete reply. */
 const MAX_REPLY = 1 << 20;
+/** grpc-message is percent-encoded by convention, but a server can send anything; a malformed escape must not throw inside an event handler. */
+const safeDecode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
 
 const wrap = (e: unknown) => { const ce = toCheckError(e); return fail(ce.kind, ce.message, { details: ce.details }); };
 
@@ -28,10 +30,12 @@ const websocket: Runner = {
     const c = ctx.config;
     try {
       const u = new URL(c.url);
+      // ws also understands ws+unix://, which would open a local socket (docker.sock) past the SSRF guard
+      if (u.protocol !== 'ws:' && u.protocol !== 'wss:') return fail('config', 'URL must start with ws:// or wss://');
       ctx.guard.assertLiteral(u.hostname.replace(/^\[|\]$/g, ''));
       const t0 = process.hrtime.bigint();
       return await new Promise<CheckResult>((resolve) => {
-        const ws = new WebSocket(c.url, { headers: c.headers, rejectUnauthorized: c.verifyTls !== false, ...trustOptions(), lookup: ctx.guard.lookup as any, handshakeTimeout: ctx.timeoutMs });
+        const ws = new WebSocket(c.url, { maxPayload: MAX_REPLY, headers: c.headers, rejectUnauthorized: c.verifyTls !== false, ...trustOptions(), lookup: ctx.guard.lookup as any, handshakeTimeout: ctx.timeoutMs });
         let connectedAt = 0;
         const done = (r: CheckResult) => { ws.terminate(); resolve(r); };
         ctx.signal.addEventListener('abort', () => done(fail('timeout', 'Timed out waiting for the WebSocket peer')), { once: true });
@@ -88,12 +92,13 @@ const grpc: Runner = {
         let message: string | undefined;
         req.on('response', (h) => { if (h['grpc-status'] !== undefined) status = String(h['grpc-status']); message = h['grpc-message'] as string | undefined; });
         req.on('trailers', (t) => { status = String(t['grpc-status'] ?? status); message = (t['grpc-message'] as string) ?? message; });
-        req.on('data', (d) => chunks.push(Buffer.from(d)));
+        let size = 0;
+        req.on('data', (d) => { size += d.length; if (size > MAX_REPLY) return done(fail('protocol', 'Server reply too large')); chunks.push(Buffer.from(d)); });
         req.on('error', (e) => done(wrap(e)));
         req.on('close', () => {
           const body = Buffer.concat(chunks);
           if (status === undefined) return done(fail('protocol', 'No grpc-status in response (not a gRPC server?)'));
-          if (status !== '0') return done(fail('protocol', `gRPC status ${status}${message ? `: ${decodeURIComponent(message)}` : ''}`));
+          if (status !== '0') return done(fail('protocol', `gRPC status ${status}${message ? `: ${safeDecode(message)}` : ''}`));
           const serving = body.length >= 7 ? body[6] : 0; // field 1 varint after the 5 byte frame header
           if (serving !== 1) return done(fail('content', `Service status is ${['UNKNOWN', 'SERVING', 'NOT_SERVING', 'SERVICE_UNKNOWN'][serving] ?? serving}`, { latencyMs: Math.round(hrMs(t0)) }));
           done(ok(hrMs(t0), { message: 'SERVING' }));
@@ -317,7 +322,7 @@ const minecraft: Runner = {
         });
         const st = JSON.parse(json);
         const d = st.description;
-        const motd = (typeof d === 'string' ? d : d?.text ?? (d?.extra ?? []).map((x: any) => x.text ?? '').join('')).replace(/§./g, '').trim();
+        const motd = (typeof d === 'string' ? d : (d?.text ?? '') + (Array.isArray(d?.extra) ? d.extra : []).map((x: any) => (typeof x === 'string' ? x : x?.text ?? '')).join('')).replace(/§./g, '').trim();
         return ok(hrMs(t0), { message: `${motd || 'Minecraft'} - ${st.players?.online ?? '?'}/${st.players?.max ?? '?'} players (${st.version?.name ?? '?'})`, details: { online: st.players?.online, max: st.players?.max, version: st.version?.name, motd, names: (st.players?.sample ?? []).map((p: any) => p?.name) } }); // the sample is what the server chooses to reveal, often not everyone
       } finally { conn.close(); }
     } catch (e) { return wrap(e); }
@@ -343,8 +348,10 @@ const docker: Runner = {
       const { status, body } = await new Promise<{ status: number; body: string }>((resolve, reject) => {
         const req = http.get({ ...opts, agent: false, signal: ctx.signal }, (res) => {
           let b = '';
-          res.on('data', (d) => (b += d));
+          res.on('data', (d) => { b += d; if (b.length > MAX_REPLY) req.destroy(new CheckError('protocol', 'Docker API reply too large')); });
           res.on('end', () => resolve({ status: res.statusCode ?? 0, body: b }));
+          // a peer that drops the connection mid-body never emits 'end'; without this the check would never settle
+          res.on('close', () => { if (!res.complete) reject(new CheckError('network', 'Docker API closed the connection')); });
         });
         req.on('error', reject);
       });

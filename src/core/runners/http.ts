@@ -56,6 +56,7 @@ export function assertBody(res: HttpResponse, a: { keyword?: string; caseSensiti
     const needle = a.caseSensitive ? a.keyword : a.keyword.toLowerCase();
     const found = hay.includes(needle);
     if (a.invert && found) return new CheckError('content', `Unwanted keyword "${a.keyword}" found in response`);
+    if (a.invert && res.truncated) return new CheckError('content', `Response was cut off at the size limit, so the unwanted keyword "${a.keyword}" cannot be ruled out`);
     if (!a.invert && !found) return new CheckError('content', `Keyword "${a.keyword}" not found in response${res.truncated ? ' (response truncated)' : ''}`);
   }
   if (a.jsonPath) {

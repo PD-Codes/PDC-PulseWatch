@@ -60,7 +60,10 @@ export async function notificationRoutes(app: FastifyInstance) {
     if (id) {
       const old = await db.selectFrom('notification_channels').select('config_enc').where('id', '=', id).executeTakeFirst();
       if (!old) return reply.code(404).send({ error: 'not_found' });
-      cfg = restoreSecrets(asRunner(b.type), cfg, decryptJson(old.config_enc));
+      // after a key change the stored config cannot be read any more; saving the channel again (with its secrets) must still work
+      let prev: Record<string, any> = {};
+      try { prev = decryptJson(old.config_enc); } catch { /* unreadable: nothing to restore */ }
+      cfg = restoreSecrets(asRunner(b.type), cfg, prev);
     }
     const v = validateConfig(asRunner(b.type), cfg);
     if (v.errors.length) return reply.code(400).send({ error: 'validation', message: v.errors.join('; '), errors: v.errors });

@@ -59,3 +59,63 @@ describe('overall status of a status page', () => {
     expect(await page()).toMatchObject({ overall: 'operational', unknownCount: 1 });
   });
 });
+
+describe('retry timing', () => {
+  it('counts the retry interval from the start of the failed attempt, like Uptime Kuma', async () => {
+    const id = (await c.post('/api/monitors', { name: 'rt', type: 'push', config: {}, intervalS: 60, timeoutS: 48, retries: 3, retryIntervalS: 60 })).json.id;
+    const { parseMonitor } = await import('../../src/server/monitors/model');
+    const m = parseMonitor(await t.ctx.db.selectFrom('monitors').selectAll().where('id', '=', id).executeTakeFirstOrThrow());
+    const now = Date.now();
+    const slow = t.ctx.engine.nextRun(m, undefined, true, now - 48_000).getTime() - now; // the attempt ran into its 48 s timeout
+    expect(slow).toBeGreaterThan(5_000);
+    expect(slow).toBeLessThan(20_000); // about 12 s left of the 60 s retry interval, not another full 60 s
+    expect(t.ctx.engine.nextRun(m, undefined, true, now - 120_000).getTime() - now).toBeLessThanOrEqual(1_000); // overdue: right away
+  });
+});
+
+describe('outages seen only by a probe', () => {
+  it('a probe that stops reporting counts as failing, so the monitor goes down instead of freezing', async () => {
+    const p = (await c.post('/api/probes', { name: 'site-b' })).json;
+    const m = (await c.post('/api/monitors', { name: 'via-probe', type: 'tcp', config: { host: '127.0.0.1', port: 9 }, intervalS: 60, timeoutS: 5, retries: 1, retryIntervalS: 60, locations: [p.id], quorum: 1 })).json;
+    await t.client({ bearer: p.token }).post('/api/probe/v1/results', { results: [{ monitorId: m.id, ok: true }] });
+    const { parseMonitor } = await import('../../src/server/monitors/model');
+    const round = async () => t.ctx.engine.runRound(parseMonitor(await t.ctx.db.selectFrom('monitors').selectAll().where('id', '=', m.id).executeTakeFirstOrThrow()), { advance: true });
+    const status = async () => (await t.ctx.db.selectFrom('monitor_state').select('status').where('monitor_id', '=', m.id).executeTakeFirstOrThrow()).status;
+    await round();
+    expect(await status()).toBe('up');
+    // the probe's uplink is gone: its last result ages past the stale window
+    await t.ctx.db.updateTable('monitor_location_state').set({ ts: new Date(Date.now() - 600_000) }).where('monitor_id', '=', m.id).execute();
+    await t.ctx.db.updateTable('monitors').set({ created_at: new Date(Date.now() - 3_600_000) }).where('id', '=', m.id).execute();
+    expect((await round())?.errorKind).toBe('missed');
+    expect(await status()).toBe('pending');
+    await round();
+    expect(await status()).toBe('down');
+  });
+});
+
+describe('second review round', () => {
+  it('a duplicate value is a 409 without database details', async () => {
+    const r1 = await c.post('/api/users', { username: 'dup-a', password: 'long-password-123', role: 'viewer', email: 'dup@example.com' });
+    expect(r1.status).toBe(200);
+    const r = await c.post('/api/users', { username: 'dup-b', password: 'long-password-123', role: 'viewer', email: 'dup@example.com' });
+    expect(r.status).toBe(409);
+    expect(JSON.stringify(r.json)).not.toMatch(/ER_|uq_|pw_it_/);
+  });
+
+  it('webhook JSON templates escape quotes and line breaks in values', async () => {
+    const { render } = await import('../../src/server/notify/channels');
+    const out = render('{"text":"{{text}}"}', { text: 'Keyword "ok" not found\nsecond line' }, (v) => JSON.stringify(v).slice(1, -1));
+    expect(JSON.parse(out).text).toBe('Keyword "ok" not found\nsecond line');
+  });
+
+  it('passkeys are refused for single sign-on accounts', async () => {
+    const u = (await c.post('/api/users', { username: 'sso-user', password: 'long-password-123', role: 'viewer' })).json;
+    await t.ctx.db.updateTable('users').set({ auth_source: 'oidc', password_hash: null }).where('id', '=', u.id).execute();
+    const x = t.client();
+    await t.ctx.db.updateTable('users').set({ auth_source: 'local' }).where('id', '=', u.id).execute(); // sign in once with a password ...
+    await t.ctx.db.updateTable('users').set({ password_hash: (await t.ctx.db.selectFrom('users').select('password_hash').where('username', '=', 'dup-a').executeTakeFirstOrThrow()).password_hash }).where('id', '=', u.id).execute();
+    expect((await x.post('/api/auth/login', { username: 'sso-user', password: 'long-password-123' })).status).toBe(200);
+    await t.ctx.db.updateTable('users').set({ auth_source: 'oidc' }).where('id', '=', u.id).execute(); // ... then it is an SSO account
+    expect((await x.post('/api/auth/passkeys/register/options', {})).status).toBe(400);
+  });
+});

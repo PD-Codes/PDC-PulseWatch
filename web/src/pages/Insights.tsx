@@ -17,7 +17,7 @@ interface IncidentRow { id: number; title: string; startedAt: string; status: st
 export default function Insights() {
   const t = useT();
   const [params, setParams] = useSearchParams();
-  const tab: Tab = params.get('tab') === 'changes' || params.get('incidentId') ? 'changes' : 'heatmap';
+  const tab: Tab = params.get('tab') === 'heatmap' ? 'heatmap' : params.get('tab') === 'changes' || params.get('incidentId') ? 'changes' : 'heatmap';
   const setTab = (v: Tab) => { const p = new URLSearchParams(params); p.set('tab', v); setParams(p, { replace: true }); };
   return (
     <>

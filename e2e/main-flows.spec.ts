@@ -452,8 +452,9 @@ test('the wall display zoom scales the whole page, can be changed by key and is 
   await page.keyboard.press('Escape');
   await expect(page).toHaveURL(/\/dashboard/);
   await expect.poll(fontSize).toBe('16px');
-  await page.goto('/kiosk?zoom=999'); // out of range: ignored
-  await expect.poll(fontSize).toBe('16px');
+  await page.goto('/kiosk?zoom=999'); // out of range: ignored, the remembered zoom (110%) applies
+  await expect(page.getByRole('heading').first()).toBeVisible();
+  await expect.poll(fontSize).toBe('17.6px');
 });
 
 test('sets the language of notifications and emails on the notifications page', async ({ page, request }) => {
@@ -486,8 +487,8 @@ test('sets interval, retries, retry interval and timeout like in Uptime Kuma', a
   await field('Retries').fill('3');
   await field('Heartbeat retry interval').fill('20');
   await field('Request timeout').fill('10');
-  // worst case: 4 attempts of 10 s plus 3 waits of 20 s = 100 s
-  await expect(page.getByTestId('retry-summary')).toContainText('1m 40s');
+  // worst case like Kuma: a retry every 20 s from the start of the failed attempt, then the last attempt's 10 s = 70 s
+  await expect(page.getByTestId('retry-summary')).toContainText('1m 10s');
   await page.getByRole('button', { name: 'Save' }).first().click();
   await expect(page.getByRole('heading', { name: 'e2e retry policy' })).toBeVisible();
   await expect(page.getByText('3 × 20s')).toBeVisible();

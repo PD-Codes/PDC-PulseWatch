@@ -118,8 +118,11 @@ export async function authRoutes(app: FastifyInstance) {
     schema: { tags: ['auth'], body: Type.Object({ current: Type.String(), next: pwSchema }) },
   }, async (req, reply) => {
     const b = req.body as { current: string; next: string };
-    const u = await db.selectFrom('users').select(['password_hash', 'auth_source']).where('id', '=', req.user!.id).executeTakeFirst();
-    if (!u?.password_hash || !(await verifyPassword(b.current, u.password_hash))) { await countFailure(ctx, req.user!.id); return reply.code(400).send({ error: 'invalid_password', message: 'Current password is wrong' }); }
+    const u = await db.selectFrom('users').select(['password_hash', 'auth_source', 'locked_until']).where('id', '=', req.user!.id).executeTakeFirst();
+    if (!u?.password_hash) return reply.code(400).send({ error: 'not_supported', message: 'This account has no local password, it is managed by its sign-in provider' });
+    // same lock as the login: a hijacked session must not get unlimited guesses at the current password
+    if (u.locked_until && u.locked_until > new Date()) return reply.code(429).send({ error: 'locked', message: 'Account is temporarily locked after too many failed attempts' });
+    if (!(await verifyPassword(b.current, u.password_hash))) { await countFailure(ctx, req.user!.id); return reply.code(400).send({ error: 'invalid_password', message: 'Current password is wrong' }); }
     await db.updateTable('users').set({ password_hash: await hashPassword(b.next) }).where('id', '=', req.user!.id).execute();
     // end all other sessions
     let q = db.deleteFrom('sessions').where('user_id', '=', req.user!.id);
@@ -150,6 +153,8 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/auth/2fa/enable', { preHandler: app.requireSession, schema: { tags: ['auth'], body: Type.Object({ code: Type.String() }) } }, async (req, reply) => {
+    // enabling again would hand out a fresh set of recovery codes without asking for the password
+    if (req.user!.totpEnabled) return reply.code(409).send({ error: 'conflict', message: 'Two-factor authentication is already on' });
     const u = await db.selectFrom('users').select('totp_secret_enc').where('id', '=', req.user!.id).executeTakeFirst();
     if (!u?.totp_secret_enc || !verifyTotp(decrypt(u.totp_secret_enc), (req.body as any).code)) return reply.code(400).send({ error: 'invalid_code', message: 'The code is not valid' });
     const codes = Array.from({ length: 8 }, () => randomToken(6).toLowerCase().replace(/[^a-z0-9]/g, 'x').slice(0, 10));

@@ -11,7 +11,7 @@ import { pickText, textOrNull } from '../incidents';
 import { mailConfigured, sendSystemMail } from '../mail';
 import { publicInfo, type ServerInfo } from '../monitors/info';
 import { langMode, type Lang } from '../notify/texts';
-import { MAX_BLOCKS, normalizeBlocks, renderBlocks } from '../status-blocks';
+import { cached, MAX_BLOCKS, normalizeBlocks, renderBlocks } from '../status-blocks';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
 const Slug = Type.Object({ slug: Type.String({ minLength: 1, maxLength: 64 }) });
@@ -50,7 +50,7 @@ const unlockValue = (p: Page) => hmac(`status-unlock:${p.id}:${p.password_hash}`
 function publicStatus(state: { status: string; overlay: string } | undefined): 'operational' | 'outage' | 'degraded' | 'maintenance' | 'unknown' {
   if (!state) return 'unknown';
   if (state.overlay === 'maintenance') return 'maintenance';
-  if (state.overlay === 'suppressed') return 'degraded';
+  if (state.overlay === 'suppressed') return 'outage'; // failing while a dependency is down: alerts are held back, the component is still unavailable
   return ({ up: 'operational', down: 'outage', pending: 'degraded', unknown: 'unknown' } as const)[state.status as 'up'] ?? 'unknown';
 }
 
@@ -196,7 +196,12 @@ export async function statusPageRoutes(app: FastifyInstance) {
     try {
       const r = await db.insertInto('status_page_subscribers').values({ page_id: pageId, kind, target_enc: encrypt(target.trim()), target_hash: hash, token, verified: verified ? 1 : 0, lang }).executeTakeFirstOrThrow();
       return { token, id: Number(r.insertId) };
-    } catch (e: any) { if (e.code === 'ER_DUP_ENTRY') return null; throw e; }
+    } catch (e: any) {
+      if (e.code !== 'ER_DUP_ENTRY') throw e;
+      // an address that never confirmed gets its confirmation again (the first mail may have been lost)
+      const old = await db.selectFrom('status_page_subscribers').select(['id', 'token']).where('page_id', '=', pageId).where('target_hash', '=', hash).where('verified', '=', 0).executeTakeFirst();
+      return old && !verified ? { token: old.token, id: old.id } : null;
+    }
   }
 
   /* ------------------------------- public API ------------------------------- */
@@ -248,7 +253,9 @@ export async function statusPageRoutes(app: FastifyInstance) {
   });
 
   /** Daily uptime for the last N days from day rollups (today from hourly). */
-  async function dailyUptime(monitorIds: number[], days: number) {
+  // every open browser polls the page, and the history reads up to 180 days of hourly rows per monitor, so it is shared for a minute
+  const dailyUptime = (monitorIds: number[], days: number) => cached(`daily:${days}:${monitorIds.join(',')}`, () => loadDailyUptime(monitorIds, days));
+  async function loadDailyUptime(monitorIds: number[], days: number) {
     const since = new Date(Math.floor(Date.now() / DAY) * DAY - (days - 1) * DAY);
     const rows = monitorIds.length ? await db.selectFrom('rollups').select(['monitor_id', 'bucket', 'up_n', 'down_n']).where('monitor_id', 'in', monitorIds).where('res', '=', 'hour').where('bucket', '>=', since).execute() : [];
     const by = new Map<number, Map<string, { up: number; down: number }>>();
@@ -328,7 +335,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     if (!p) return;
     if (!bool(p.show_history)) return reply.code(404).send({ error: 'not_found' });
     const { ids, names, hide } = await pageMonitors(p.id);
-    return { incidents: ids.length ? await listIncidents(ids, new Date(Date.now() - ((req.query as any).days ?? p.history_days) * DAY), names, langOf(p, req), hide) : [] };
+    return { incidents: ids.length ? await listIncidents(ids, new Date(Date.now() - Math.min((req.query as any).days ?? p.incident_days, p.incident_days) * DAY), names, langOf(p, req), hide) : [] };
   });
 
   app.get('/api/public/status/:slug/rss', { ...pub, schema: { tags: ['public'], params: Slug, querystring: Type.Object({ lang: LangQ }) } }, async (req, reply) => {

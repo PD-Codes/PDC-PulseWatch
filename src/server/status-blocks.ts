@@ -43,7 +43,7 @@ const pct = (up: unknown, down: unknown): number | null => {
 
 // Public pages are polled by every open browser, so the heavy aggregates are shared for a minute.
 const cache = new Map<string, { exp: number; value: unknown }>();
-async function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
+export async function cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
   if (hit && hit.exp > Date.now()) return hit.value as T;
   const value = await fn();

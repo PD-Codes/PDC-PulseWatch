@@ -23,7 +23,9 @@ export interface ChannelType {
 }
 
 /** {{path}} placeholder substitution; unknown keys render empty. */
-export const render = (tpl: string, vars: Record<string, string>) => tpl.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => vars[k] ?? '');
+export const render = (tpl: string, vars: Record<string, string>, escape: (v: string) => string = (v) => v) => tpl.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => escape(vars[k] ?? ''));
+/** HTTP header values must be Latin-1: anything else (emoji, umlauts outside Latin-1, CJK) goes as an RFC 2047 encoded word. */
+const headerText = (s: string) => (/^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s).toString('base64')}?=`);
 
 async function post(url: string, ctx: SendContext, body: string, headers: Record<string, string>, method = 'POST'): Promise<void> {
   const res = await httpRequest({ url, method, headers, body, signal: ctx.signal, guard: ctx.guard, followRedirects: false, maxBodyBytes: 64 * 1024 });
@@ -94,7 +96,7 @@ const ntfy: ChannelType = {
     { key: 'priority', label: 'Priority (1-5)', kind: 'number', default: 4, min: 1, max: 5 },
   ],
   send: (c, m, ctx) => post(`${String(c.server || 'https://ntfy.sh').replace(/\/$/, '')}/${encodeURIComponent(c.topic)}`, ctx, m.text, {
-    Title: m.subject, Priority: String(m.event === 'up' ? 3 : c.priority ?? 4), Tags: m.event === 'up' ? 'white_check_mark' : m.event === 'down' ? 'rotating_light' : 'warning',
+    Title: headerText(m.subject), Priority: String(m.event === 'up' ? 3 : c.priority ?? 4), Tags: m.event === 'up' ? 'white_check_mark' : m.event === 'down' ? 'rotating_light' : 'warning',
     ...(m.vars.url ? { Click: m.vars.url } : {}), ...(c.token ? { Authorization: `Bearer ${c.token}` } : {}),
   }),
 };
@@ -128,7 +130,9 @@ const webhook: ChannelType = {
     { key: 'bodyTemplate', label: 'Body template', kind: 'textarea', help: 'Placeholders: {{event}} {{subject}} {{text}} {{monitor.name}} {{monitor.type}} {{status}} {{message}} {{errorKind}} {{url}} {{time}} {{incident.id}}. Leave empty for a default JSON payload.' },
   ],
   async send(c, m, ctx) {
-    const body = c.bodyTemplate ? render(c.bodyTemplate, { ...m.vars, event: m.event, subject: m.subject, text: m.text }) : JSON.stringify({ event: m.event, subject: m.subject, text: m.text, ...m.vars });
+    // inside a JSON template the values are JSON-escaped, so quotes and line breaks in a message cannot break the document
+    const jsonTpl = /^\s*[[{]/.test(c.bodyTemplate ?? '');
+    const body = c.bodyTemplate ? render(c.bodyTemplate, { ...m.vars, event: m.event, subject: m.subject, text: m.text }, jsonTpl ? (v) => JSON.stringify(v).slice(1, -1) : undefined) : JSON.stringify({ event: m.event, subject: m.subject, text: m.text, ...m.vars });
     const looksJson = body.trim().startsWith('{') || body.trim().startsWith('[');
     await post(c.url, ctx, c.method === 'GET' ? '' : body, { 'content-type': looksJson ? 'application/json' : 'text/plain', ...(c.headers ?? {}) }, c.method ?? 'POST');
   },

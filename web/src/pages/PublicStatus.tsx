@@ -40,7 +40,7 @@ function UptimeStrip({ comp, days }: { comp: Comp; days: number }) {
   const t = useT();
   return (
     <div className="flex h-7 items-stretch gap-px" role="img" aria-label={t('public.uptimeStrip', { n: days, pct: fmtPct(comp.uptime) })}>
-      {comp.daily.map((d) => <span key={d.date} title={`${fmtDate(d.date)}: ${d.uptime == null ? t('public.noData') : fmtPct(d.uptime)}`} className={cx('min-w-px flex-1 rounded-[1px]', barColor(d.uptime))} />)}
+      {comp.daily.map((d) => <span key={d.date} title={`${fmtDate(`${d.date}T12:00:00Z`)}: ${d.uptime == null ? t('public.noData') : fmtPct(d.uptime)}`} className={cx('min-w-px flex-1 rounded-[1px]', barColor(d.uptime))} />)}
     </div>
   );
 }
@@ -199,7 +199,7 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
           )}
         </header>
 
-        <div role="status" className={cx('flex items-center gap-3 rounded-xl px-5 py-4 text-white shadow-sm', banner.cls)}>{banner.icon}<span className="text-lg font-semibold">{t(`public.overall.${page.overall}`)}</span>{page.overall === 'operational' && page.unknownCount > 0 && <span tabIndex={0} title={t('public.overall.someUnknown', { n: page.unknownCount })} aria-label={t('public.overall.someUnknown', { n: page.unknownCount })} className="cursor-help opacity-80"><HelpCircle className="h-4 w-4" /></span>}</div>
+        <div role="status" className={cx('flex items-center gap-3 rounded-xl px-5 py-4 text-white shadow-sm', banner.cls)}>{banner.icon}<span className="text-lg font-semibold">{t(`public.overall.${page.overall}`)}</span>{page.overall === 'operational' && page.unknownCount > 0 && <details className="relative text-sm"><summary className="cursor-pointer list-none opacity-80 hover:opacity-100" title={t('public.overall.someUnknown', { n: page.unknownCount })}><HelpCircle className="h-4 w-4" aria-hidden /><span className="sr-only">{t('public.overall.someUnknown', { n: page.unknownCount })}</span></summary><p className="absolute left-0 top-6 z-10 w-64 rounded-lg bg-slate-900 p-2 text-xs font-normal text-white shadow-lg">{t('public.overall.someUnknown', { n: page.unknownCount })}</p></details>}</div>
 
         {page.announcements.map((a) => (
           <div key={a.id} className={cx('rounded-xl border px-4 py-3', a.kind === 'incident' ? 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/40' : a.kind === 'maintenance' ? 'border-sky-200 bg-sky-50 dark:border-sky-900 dark:bg-sky-950/40' : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900')}>

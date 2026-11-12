@@ -107,7 +107,8 @@ async function upsertExternal(ctx: Ctx, source: 'oidc' | 'ldap' | 'saml', extern
       return Number(r.insertId);
     } catch (e: any) {
       if (e.code !== 'ER_DUP_ENTRY') throw e;
-      if (/email/i.test(e.message)) { p = { ...p, email: null }; i--; }
+      // only the email key counts, and only once: a taken user name that merely contains "email" must move on to the next candidate
+      if (p.email && /for key '[^']*uq_users_email'/i.test(e.message)) { p = { ...p, email: null }; i--; }
     }
   }
   return null;

@@ -47,9 +47,6 @@ async function main() {
   reportJobs?.start();
   tailer?.start();
   deadman.start();
-  if (app) await app.listen({ host: config.host, port: config.port });
-  else await new Promise(() => {});
-
   let stopping = false;
   const shutdown = async (sig: string) => {
     if (stopping) return;
@@ -65,6 +62,9 @@ async function main() {
   };
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
+
+  // a worker has no listener; its scheduler and housekeeping timers keep the process alive
+  if (app) await app.listen({ host: config.host, port: config.port });
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

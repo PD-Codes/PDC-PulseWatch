@@ -46,7 +46,9 @@ async function runJob(job: Job): Promise<void> {
     if (!runner) r = { ok: false, errorKind: 'config', message: `Probe does not support monitor type ${job.type}` };
     else {
       const ms = job.timeoutS * 1000;
-      r = await runner.run({ config: job.config, timeoutMs: ms, signal: AbortSignal.timeout(ms), guard, monitor: { id: job.id, name: job.name } });
+      let hard: NodeJS.Timeout | undefined;
+      const stop = new Promise<CheckResult>((resolve) => { hard = setTimeout(() => resolve({ ok: false, errorKind: 'timeout', message: 'Check exceeded its timeout' }), ms + 2000); });
+      try { r = await Promise.race([runner.run({ config: job.config, timeoutMs: ms, signal: AbortSignal.timeout(ms), guard, monitor: { id: job.id, name: job.name } }), stop]); } finally { clearTimeout(hard); }
     }
   } catch (e) {
     const ce = toCheckError(e);

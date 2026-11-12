@@ -105,6 +105,7 @@ services:
     environment:
       PW_SERVER_URL: ${PW_SERVER_URL:-http://app:3000}
       PW_PROBE_TOKEN: ${PW_PROBE_TOKEN:-} # create a probe in the UI first
+      # the probe refuses a plain http:// server unless this is true; the default URL above stays inside this compose network
       PW_PROBE_ALLOW_INSECURE: ${PW_PROBE_ALLOW_INSECURE:-false}
       PW_PROBE_SSRF_MODE: ${PW_PROBE_SSRF_MODE:-allow-private}
     read_only: true

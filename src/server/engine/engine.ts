@@ -13,6 +13,8 @@ export interface RecordOpts {
   /** Move next_run_at forward (scheduler rounds). Manual checks leave the schedule alone. */
   advance: boolean;
   scheduledFor?: Date;
+  /** When the check began; a retry is due retry_interval after it, as in Uptime Kuma (a slow failing attempt does not add its timeout on top). */
+  startedAt?: number;
 }
 
 const CERT_THRESHOLDS = [0, 1, 3, 7, 14, 30];
@@ -52,7 +54,7 @@ export class Engine {
       if (opts.advance) await this.reschedule(m, opts.scheduledFor);
       return null;
     }
-    await this.record(m, verdict, opts);
+    await this.record(m, verdict, { ...opts, startedAt: start });
     return verdict;
   }
 
@@ -80,11 +82,15 @@ export class Engine {
     const rows = await db.selectFrom('monitor_location_state').selectAll().where('monitor_id', '=', m.id).where('ts', '>', staleBefore).execute();
     const wanted = new Set<number>((m.locations ?? []).map((l) => (l === 'local' ? LOCAL_LOCATION_ID : l)));
     const fresh = rows.filter((r) => wanted.has(r.location_id));
-    if (!fresh.length) return null;
-    const probeIds = fresh.filter((r) => r.location_id !== LOCAL_LOCATION_ID).map((r) => r.location_id);
+    // a new monitor waits for its first results; afterwards a location that stopped reporting (probe offline) counts as failing, so the monitor cannot freeze in its last state
+    const settling = m.createdAt > staleBefore;
+    if (!fresh.length && settling) return null;
+    const probeIds = [...wanted].filter((id) => id !== LOCAL_LOCATION_ID);
     const names = new Map<number, string>();
     if (probeIds.length) for (const p of await db.selectFrom('probes').select(['id', 'name']).where('id', 'in', probeIds).execute()) names.set(p.id, p.name);
-    const results: LocationResult[] = fresh.map((r) => ({ id: r.location_id, name: r.location_id === LOCAL_LOCATION_ID ? 'Server' : names.get(r.location_id) ?? `Probe ${r.location_id}`, ok: bool(r.ok), latencyMs: r.latency_ms, errorKind: r.error_kind, message: r.message }));
+    const nameOf = (id: number) => (id === LOCAL_LOCATION_ID ? 'Server' : names.get(id) ?? `Probe ${id}`);
+    const results: LocationResult[] = fresh.map((r) => ({ id: r.location_id, name: nameOf(r.location_id), ok: bool(r.ok), latencyMs: r.latency_ms, errorKind: r.error_kind, message: r.message }));
+    if (!settling) for (const id of wanted) if (!fresh.some((r) => r.location_id === id)) results.push({ id, name: nameOf(id), ok: false, errorKind: 'missed', message: `No result from ${nameOf(id)} for ${Math.round((Date.now() - staleBefore.getTime()) / 1000)}s` });
     const agg = aggregate(results, m.quorum);
     return { ok: agg.ok, latencyMs: agg.latencyMs, errorKind: agg.errorKind as CheckResult['errorKind'], message: agg.message, details: { locations: results } };
   }
@@ -110,11 +116,11 @@ export class Engine {
     await this.ctx.db.updateTable('monitors').set({ next_run_at: next, lease_owner: null, lease_until: null }).where('id', '=', m.id).execute();
   }
 
-  nextRun(m: Monitor, scheduledFor: Date | undefined, retry: boolean): Date {
+  nextRun(m: Monitor, scheduledFor: Date | undefined, retry: boolean, startedAt?: number): Date {
     const now = Date.now();
     const base = retry ? m.retryIntervalS * 1000 : m.intervalS * 1000;
     const jitter = (Math.random() - 0.5) * base * (config.scheduler.jitterPct / 100);
-    if (retry) return new Date(now + base + jitter);
+    if (retry) return new Date(Math.max((startedAt ?? now) + base + jitter, now + 1000));
     const planned = (scheduledFor?.getTime() ?? now) + base;
     // After a long stall do not fire a burst of catch-up checks: restart the cadence from now.
     return new Date(planned > now ? planned + jitter : now + Math.random() * Math.min(base, 5000));
@@ -185,7 +191,7 @@ export class Engine {
       }
 
       const patch: Record<string, unknown> = { attempt: o.attempt };
-      if (o.retryScheduled) { patch.next_run_at = this.nextRun(m, opts.scheduledFor, true); patch.lease_owner = null; patch.lease_until = null; }
+      if (o.retryScheduled) { patch.next_run_at = this.nextRun(m, opts.scheduledFor, true, opts.startedAt); patch.lease_owner = null; patch.lease_until = null; }
       else if (opts.advance) { patch.next_run_at = this.nextRun(m, opts.scheduledFor, false); patch.lease_owner = null; patch.lease_until = null; }
       await trx.updateTable('monitors').set(patch).where('id', '=', m.id).execute();
       return { o, recent: recent[recent.length - 1], certAlert, anomaly, statusSince: statusChanged || !st.status_since ? now : st.status_since };

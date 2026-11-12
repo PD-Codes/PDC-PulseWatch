@@ -6,7 +6,7 @@ export const slugify = (s: string) => s.toLowerCase().replace(/ä/g, 'ae').repla
   .replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 63).replace(/-+$/, '');
 
 export const fmtMs = (v: number | null | undefined) => (v == null ? '–' : v >= 10_000 ? `${(v / 1000).toFixed(1)} s` : v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${Math.round(v)} ms`);
-export const fmtPct = (v: number | null | undefined, digits = 2) => (v == null ? '–' : `${v.toFixed(digits).replace(/\.?0+$/, '') || '0'}%`);
+export const fmtPct = (v: number | null | undefined, digits = 2) => (v == null ? '–' : `${v.toFixed(digits).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')}%`);
 
 export function fmtDuration(seconds: number | null | undefined): string {
   if (seconds == null) return '–';

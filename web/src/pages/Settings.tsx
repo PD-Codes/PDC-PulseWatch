@@ -311,7 +311,7 @@ function BackupTab() {
       <ImportCard title={t('settings.backup.kuma')} intro={t('settings.backup.kumaIntro')} endpoint="/api/import/kuma" accept=".json,application/json" />
       <Card>
         <CardHeader title={t('settings.backup.dbTitle')} subtitle={t('settings.backup.dbBody')} />
-        <pre className="m-4 overflow-x-auto rounded-md bg-slate-100 p-3 text-xs dark:bg-slate-800">{'docker compose exec mariadb sh -c \'mariadb-dump -uroot -p"$MARIADB_ROOT_PASSWORD" --single-transaction --routines pulsewatch\' > pulsewatch.sql'}</pre>
+        <pre className="m-4 overflow-x-auto rounded-md bg-slate-100 p-3 text-xs dark:bg-slate-800">{'docker compose exec mariadb sh -c \'mariadb-dump -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" --single-transaction --routines "$MARIADB_DATABASE"\' > pulsewatch.sql'}</pre>
       </Card>
     </div>
   );

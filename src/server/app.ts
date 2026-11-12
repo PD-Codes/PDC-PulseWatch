@@ -21,12 +21,20 @@ export interface AppDeps { scheduler?: Scheduler; extraRoutes?: ((app: import('f
 export async function buildApp(ctx: Ctx, deps: AppDeps = {}) {
   const app = Fastify({ loggerInstance: ctx.log as import('fastify').FastifyBaseLogger, trustProxy: config.trustProxy, logController: new LogController({ disableRequestLogging: (req) => /^\/(health|ready|metrics|demo\/|assets\/)/.test(req.url) }), bodyLimit: 8 * 1024 * 1024, ajv: { customOptions: { coerceTypes: 'array', removeAdditional: true } } });
   app.decorate('ctx', ctx);
+  // database constraint errors are the caller's mistake; any other 500 is logged but its message (SQL, schema names) stays on the server
+  app.setErrorHandler((err: import('fastify').FastifyError, req, reply) => {
+    if (err.code === 'ER_DUP_ENTRY') return reply.code(409).send({ error: 'conflict', message: 'An entry with this value already exists' });
+    if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_NO_REFERENCED_ROW') return reply.code(400).send({ error: 'validation', message: 'A referenced item does not exist' });
+    if (err.statusCode && err.statusCode < 500) return reply.send(err);
+    req.log.error({ err }, 'request failed');
+    return reply.code(500).send({ error: 'internal', message: 'Internal server error' });
+  });
 
   await app.register(cookie);
   // Only the API is rate limited; static assets and /health, /ready are never limited.
   await app.register(rateLimit, { global: true, max: config.rateLimit.max, timeWindow: '1 minute', allowList: (req) => !req.url.startsWith('/api/') && !req.url.startsWith('/metrics') });
   await app.register(helmet, {
-    contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], imgSrc: ["'self'", 'data:', 'blob:'], connectSrc: ["'self'"], fontSrc: ["'self'", 'data:'], objectSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'self'"], formAction: ["'self'"] } },
+    contentSecurityPolicy: { directives: { defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"], imgSrc: ["'self'", 'data:', 'blob:', 'https:'], connectSrc: ["'self'"], fontSrc: ["'self'", 'data:'], objectSrc: ["'none'"], frameAncestors: ["'none'"], baseUri: ["'self'"], formAction: ["'self'"] } },
     crossOriginEmbedderPolicy: false, hsts: config.session.cookieSecure,
   });
   await app.register(swagger, {

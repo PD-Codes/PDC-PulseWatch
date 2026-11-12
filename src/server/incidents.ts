@@ -30,7 +30,7 @@ export class IncidentService {
     const now = new Date();
     // nothing reaches a status page (or its subscribers) unless an admin chose to publish detected incidents
     const pub = (await this.ctx.settings.get('incidents.autoPublish', false)) ? 1 : 0;
-    const res = await db.insertInto('incidents').values({ title: `${m.name} is down`, severity: 'major', source: 'auto', monitor_id: m.id, started_at: now, public: pub }).executeTakeFirstOrThrow();
+    const res = await db.insertInto('incidents').values({ title: `${m.name.slice(0, 247)} is down`, severity: 'major', source: 'auto', monitor_id: m.id, started_at: now, public: pub }).executeTakeFirstOrThrow();
     const id = Number(res.insertId);
     await db.insertInto('incident_monitors').values({ incident_id: id, monitor_id: m.id }).execute();
     await db.insertInto('incident_updates').values({ incident_id: id, kind: 'auto', status: 'open', body: r.message ?? 'Monitor went down', ts: now }).execute();

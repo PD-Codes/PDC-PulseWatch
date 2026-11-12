@@ -107,7 +107,9 @@ export async function systemRoutes(app: FastifyInstance, deps: SystemDeps) {
   /* -------------------------------- badges -------------------------------- */
   app.get('/badge/:id/:kind', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } }, schema: { tags: ['badges'], summary: 'Uptime badge for READMEs (only for monitors with public badge enabled)', params: { type: 'object', properties: { id: { type: 'integer' }, kind: { type: 'string' } } } } }, async (req, reply) => {
     const { id, kind } = req.params as { id: number; kind: string };
-    const q = req.query as { label?: string; range?: string };
+    const one = (v: unknown) => (Array.isArray(v) ? v[0] : v);
+    const raw = req.query as Record<string, unknown>;
+    const q = { label: typeof one(raw.label) === 'string' ? (one(raw.label) as string) : undefined, range: typeof one(raw.range) === 'string' ? (one(raw.range) as string) : undefined };
     const row = await db.selectFrom('monitors as m').leftJoin('monitor_state as s', 's.monitor_id', 'm.id').select(['m.name', 'm.public_badge', 's.status', 's.overlay', 's.last_latency_ms']).where('m.id', '=', id).executeTakeFirst();
     reply.header('Cache-Control', 'max-age=60, s-maxage=60').type('image/svg+xml');
     if (!row || !row.public_badge) return reply.code(404).send(badge('badge', 'not found', COLORS.unknown));

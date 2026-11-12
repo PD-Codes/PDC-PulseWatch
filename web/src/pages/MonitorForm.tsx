@@ -27,7 +27,7 @@ interface Common {
   name: string; description: string; groupId: string; intervalS: string; timeoutS: string; retries: string; retryIntervalS: string;
   upThreshold: string; flapWindow: string; flapThreshold: string; downAfterS: string; active: boolean; publicBadge: boolean; quorum: string;
 }
-const COMMON: Common = { name: '', description: '', groupId: '', intervalS: '60', timeoutS: '48', retries: '0', retryIntervalS: '60', upThreshold: '1', flapWindow: '10', flapThreshold: '6', downAfterS: '', active: true, publicBadge: false, quorum: '1' };
+const COMMON: Common = { name: '', description: '', groupId: '', intervalS: '60', timeoutS: '48', retries: '0', retryIntervalS: '60', upThreshold: '1', flapWindow: '10', flapThreshold: '0', downAfterS: '', active: true, publicBadge: false, quorum: '1' };
 
 export default function MonitorForm() {
   const t = useT();
@@ -190,7 +190,7 @@ export default function MonitorForm() {
   const onSubmit = (e: FormEvent) => { e.preventDefault(); setErrors([]); try { if (bulk) { if (bulkLines.length) saveBulk.mutate(); else setErrors([t('monitors.bulk.empty')]); } else save.mutate(); } catch (err) { setErrors([errorMessage(err)]); } };
   // Worst case until the monitor is reported as down: every attempt may run into the timeout, and each retry waits for the retry interval.
   const retries = Number(c.retries) || 0;
-  const retrySummary = retries === 0 ? t('monitors.retryNow') : t('monitors.retrySummary', { time: fmtDuration((retries + 1) * (Number(c.timeoutS) || 0) + retries * (Number(c.retryIntervalS) || 0)) });
+  const retrySummary = retries === 0 ? t('monitors.retryNow') : t('monitors.retrySummary', { time: fmtDuration(retries * Math.max(Number(c.retryIntervalS) || 0, Number(c.timeoutS) || 0) + (Number(c.timeoutS) || 0)) });
   const probeList = probes.data ?? [];
   const isPush = type === 'push';
   const locCount = locations.length;

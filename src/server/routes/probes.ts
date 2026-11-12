@@ -41,7 +41,7 @@ export async function probeRoutes(app: FastifyInstance) {
     return { token };
   });
 
-  app.patch('/api/probes/:id', { ...admin, schema: { tags: ['probes'], params: Id, body: Type.Object({ name: Type.Optional(Type.String({ minLength: 1 })), location: Type.Optional(Type.String()), enabled: Type.Optional(Type.Boolean()) }) } }, async (req) => {
+  app.patch('/api/probes/:id', { ...admin, schema: { tags: ['probes'], params: Id, body: Type.Object({ name: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })), location: Type.Optional(Type.String({ maxLength: 128 })), enabled: Type.Optional(Type.Boolean()) }) } }, async (req) => {
     const b = req.body as any; const set: Record<string, unknown> = {};
     if (b.name !== undefined) set.name = b.name; if (b.location !== undefined) set.location = b.location; if (b.enabled !== undefined) set.enabled = b.enabled ? 1 : 0;
     if (Object.keys(set).length) await db.updateTable('probes').set(set).where('id', '=', (req.params as any).id).execute();

@@ -9,7 +9,7 @@ import { useT } from '../lib/i18n';
 import { relTime } from '../lib/format';
 
 interface Probe { id: number; name: string; location: string | null; version: string | null; lastSeenAt: string | null; lastIp: string | null; enabled: boolean; createdAt: string; online: boolean; monitorCount: number }
-const IMAGE = 'pulsewatch-probe:latest'; // image name is a placeholder until the probe image is published
+const IMAGE = 'pulsewatch/probe:latest'; // image name is a placeholder until the probe image is published
 
 /** Plain-language introduction: open while there are no probes, folded away afterwards. */
 function Explainer({ open }: { open: boolean }) {

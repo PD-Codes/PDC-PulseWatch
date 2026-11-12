@@ -51,7 +51,7 @@ export default function Users() {
         )}
       </Card>
       <CreateUser open={create} onClose={() => setCreate(false)} onDone={() => { setCreate(false); void refresh(); toast(t('common.saved')); }} />
-      {edit && <EditUser user={edit} selfId={me?.id} onClose={() => setEdit(null)} onChanged={() => void refresh()} onGrants={(u) => { setEdit(null); setGrants(u); }} />}
+      {edit && <EditUser user={users.data?.find((x) => x.id === edit.id) ?? edit} selfId={me?.id} onClose={() => setEdit(null)} onChanged={() => void refresh()} onGrants={(u) => { setEdit(null); setGrants(u); }} />}
       {grants && <Grants user={grants} onClose={() => setGrants(null)} />}
     </>
   );

@@ -20,7 +20,7 @@ export function CardHeader({ title, actions, subtitle }: { title: ReactNode; sub
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 dark:border-slate-800">
       <div><h2 className="text-sm font-semibold">{title}</h2>{subtitle && <p className="text-xs text-slate-500">{subtitle}</p>}</div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
   );
 }

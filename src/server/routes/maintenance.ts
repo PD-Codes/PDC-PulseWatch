@@ -49,13 +49,15 @@ export async function maintenanceRoutes(app: FastifyInstance) {
   };
 
   type Target = { type: 'monitor' | 'group' | 'tag'; id: number };
+  // an unused (or not yet existing) tag is nobody's: a window on it would later silence whatever an admin tags with it
+  const tagScope = (tagged: number[], mine: number[]) => tagged.length > 0 && tagged.every((m) => mine.includes(m));
   /** Which of these targets lie inside the user's scope. Unrestricted users own everything; a tag counts only when every monitor carrying it is in scope. */
   async function inScope(user: any, targets: Target[], level: 'view' | 'manage'): Promise<boolean[] | null> {
     const [mons, groups] = await Promise.all([accessibleMonitorIds(ctx, user, level), accessibleGroupIds(ctx, user, level)]);
     if (mons === null || groups === null) return null;
     const tagIds = targets.filter((t) => t.type === 'tag').map((t) => t.id);
     const tagged = tagIds.length ? await db.selectFrom('monitor_tags').select(['tag_id', 'monitor_id']).where('tag_id', 'in', tagIds).execute() : [];
-    return targets.map((t) => t.type === 'monitor' ? mons.includes(t.id) : t.type === 'group' ? groups.has(t.id) : tagged.filter((x) => x.tag_id === t.id).every((x) => mons.includes(x.monitor_id)));
+    return targets.map((t) => t.type === 'monitor' ? mons.includes(t.id) : t.type === 'group' ? groups.has(t.id) : tagScope(tagged.filter((x) => x.tag_id === t.id).map((x) => x.monitor_id), mons));
   }
   const targetsOf = async (id: number): Promise<Target[]> => (await db.selectFrom('maintenance_targets').select(['target_type', 'target_id']).where('window_id', '=', id).execute()).map((t) => ({ type: t.target_type as Target['type'], id: t.target_id }));
   /** A scope-restricted editor may only change windows whose targets they all manage. */

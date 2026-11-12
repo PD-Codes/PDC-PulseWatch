@@ -80,7 +80,8 @@ export async function exportConfig(ctx: Ctx, includeSecrets: boolean): Promise<C
     templates: templates.map((t) => ({ name: t.name, subject: t.subject, body: t.body })),
     channels: channels.map((c) => {
       let cfg: Record<string, any> = {};
-      try { cfg = maskCfg(c.type, channelTypes.has(c.type) ? channelRunner(c.type) : undefined, decryptJson(c.config_enc)); } catch { /* key mismatch: export without config */ }
+      // a type this version no longer knows has no field list to mask by, so its config stays out of the file
+      try { if (channelTypes.has(c.type)) cfg = maskCfg(c.type, channelRunner(c.type), decryptJson(c.config_enc)); } catch { /* key mismatch: export without config */ }
       return { name: c.name, type: c.type, config: cfg, active: bool(c.active), isDefault: bool(c.is_default), quietHours: parseJson(c.quiet_hours, null) };
     }),
     policies: policies.map((p) => { const v = parseJson<any>(p.steps, { steps: [] }); return { name: p.name, steps: v.steps.map((s: any) => ({ delayMin: s.delayMin, channels: (s.channelIds as number[]).map((i) => cname.get(i)).filter(Boolean) })), repeatEveryMin: v.repeatEveryMin ?? null }; }),
@@ -102,7 +103,7 @@ export async function exportConfig(ctx: Ctx, includeSecrets: boolean): Promise<C
       targets: targets.filter((t) => t.window_id === w.id).map((t) => ({ type: t.target_type, name: t.target_type === 'monitor' ? mname.get(t.target_id) : t.target_type === 'group' ? (groups.some((g) => g.id === t.target_id) ? gpath(t.target_id) : undefined) : tname.get(t.target_id) })).filter((t) => t.name),
     })),
     statusPages: pages.map((p) => ({
-      slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), ssoRequired: bool(p.sso_required), branding: parseJson(p.branding, {}), customCss: p.custom_css, blocks: normalizeBlocks(parseJson(p.blocks, [])), showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size, language: p.language, serverInfo: p.server_info,
+      slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), ...(p.password_hash ? { passwordProtected: true } : {}), ssoRequired: bool(p.sso_required), branding: parseJson(p.branding, {}), customCss: p.custom_css, blocks: normalizeBlocks(parseJson(p.blocks, [])), showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size, language: p.language, serverInfo: p.server_info,
       sections: sections.filter((s) => s.page_id === p.id).map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name, ...(c.hide_incidents ? { hideIncidents: true } : {}) })).filter((c) => c.monitor) })),
       components: comps.filter((c) => c.page_id === p.id && !c.section_id).map((c) => ({ monitor: mname.get(c.monitor_id), displayName: c.display_name, ...(c.hide_incidents ? { hideIncidents: true } : {}) })).filter((c) => c.monitor),
     })),
@@ -166,7 +167,7 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
     tagIds.set(name.toLowerCase(), id);
     return id;
   };
-  for (const t of doc.tags ?? []) try { const existed = tagIds.has(t.name.toLowerCase()); await ensureTag(t.name, t.color); if (existed) { count('tags', true); if (t.color && /^#[0-9a-f]{6}$/i.test(t.color)) await w(() => db.updateTable('tags').set({ color: t.color! }).where('id', '=', tagIds.get(t.name)!).execute()); } } catch (e) { err(`tag ${t.name}`, e); }
+  for (const t of doc.tags ?? []) try { const existed = tagIds.has(t.name.toLowerCase()); await ensureTag(t.name, t.color); if (existed) { count('tags', true); if (t.color && /^#[0-9a-f]{6}$/i.test(t.color)) await w(() => db.updateTable('tags').set({ color: t.color! }).where('id', '=', tagIds.get(t.name.toLowerCase())!).execute()); } } catch (e) { err(`tag ${t.name}`, e); }
 
   // --- templates
   const templateIds = new Map((await db.selectFrom('notification_templates').select(['id', 'name']).execute()).map((t) => [t.name, t.id]));
@@ -292,7 +293,12 @@ export async function importConfig(ctx: Ctx, doc: ConfigDoc, userId: number | nu
       if (pid) {
         const { is_public, sso_required, ...rest } = values; // a source that says nothing about access must not open a private page
         await trx.updateTable('status_pages').set({ ...rest, ...(p.isPublic !== undefined ? { is_public } : {}), ...(p.ssoRequired !== undefined ? { sso_required } : {}) }).where('id', '=', pid).execute(); await trx.deleteFrom('status_page_components').where('page_id', '=', pid).execute(); await trx.deleteFrom('status_page_sections').where('page_id', '=', pid).execute();
-      } else pid = Number((await trx.insertInto('status_pages').values(values).executeTakeFirstOrThrow()).insertId);
+      } else {
+        // the password itself is never exported: a page that had one must not come back open to everyone
+        const locked = (p as { passwordProtected?: boolean }).passwordProtected === true && values.is_public === 1 && values.sso_required === 0;
+        if (locked) rep.warnings.push(`status page ${p.slug}: was password protected, imported as private. Set a new password and make it public again.`);
+        pid = Number((await trx.insertInto('status_pages').values(locked ? { ...values, is_public: 0 } : values).executeTakeFirstOrThrow()).insertId);
+      }
       let sort = 0;
       for (const [i, s] of (p.sections ?? []).entries()) {
         const sid = Number((await trx.insertInto('status_page_sections').values({ page_id: pid!, name: s.name, sort: i }).executeTakeFirstOrThrow()).insertId);

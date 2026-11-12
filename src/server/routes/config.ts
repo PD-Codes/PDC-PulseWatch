@@ -36,7 +36,9 @@ export async function configRoutes(app: FastifyInstance) {
     const b = req.body as { content: string; dryRun?: boolean };
     let raw: unknown;
     try { raw = JSON.parse(b.content); } catch { return reply.code(400).send({ error: 'validation', message: 'The file is not valid JSON' }); }
-    const { doc, warnings } = convertKuma(raw);
+    let converted: ReturnType<typeof convertKuma>;
+    try { converted = convertKuma(raw); } catch (e) { return reply.code(400).send({ error: 'validation', message: `This is not a usable Uptime Kuma backup: ${(e as Error).message}` }); }
+    const { doc, warnings } = converted;
     const report = await importConfig(ctx, doc, req.user!.id, !!b.dryRun);
     report.warnings.unshift(...warnings, ...noteWarnings(doc));
     if (!b.dryRun) await writeAudit(ctx, req.user, 'config.kuma_imported', { type: 'config' }, { counts: report.counts, errors: report.errors.length }, req.ip);
