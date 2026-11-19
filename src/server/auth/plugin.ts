@@ -11,7 +11,7 @@ import { bool } from '../db';
 
 export interface AuthUser {
   id: number; username: string; displayName: string; email: string | null; role: 'admin' | 'editor' | 'viewer';
-  scopeRestricted: boolean; locale: string | null; theme: string; totpEnabled: boolean; authSource: string;
+  scopeRestricted: boolean; locale: string | null; theme: string; uiTheme: string | null; totpEnabled: boolean; authSource: string;
   /** Present when authenticated with an API token. */
   tokenScopes?: string[];
   sessionId?: number;
@@ -38,7 +38,7 @@ export async function createSession(ctx: Ctx, userId: number, req: FastifyReques
 
 const toUser = (u: any): AuthUser => ({
   id: u.id, username: u.username, displayName: u.display_name, email: u.email, role: u.role, scopeRestricted: bool(u.scope_restricted),
-  locale: u.locale, theme: u.theme, totpEnabled: bool(u.totp_enabled), authSource: u.auth_source,
+  locale: u.locale, theme: u.theme, uiTheme: u.ui_theme ?? null, totpEnabled: bool(u.totp_enabled), authSource: u.auth_source,
 });
 
 /** Resolve the caller from an API token or a session cookie. */
@@ -51,7 +51,7 @@ export default fp(async function authPlugin(app: FastifyInstance) {
     const header = req.headers.authorization;
     if (header?.startsWith('Bearer ')) {
       const raw = header.slice(7).trim();
-      const tok = await ctx.db.selectFrom('api_tokens as t').innerJoin('users as u', 'u.id', 't.user_id').select(['t.id as tid', 't.scopes', 't.expires_at', 't.last_used_at', 'u.id', 'u.username', 'u.display_name', 'u.email', 'u.role', 'u.scope_restricted', 'u.locale', 'u.theme', 'u.totp_enabled', 'u.auth_source', 'u.is_active'])
+      const tok = await ctx.db.selectFrom('api_tokens as t').innerJoin('users as u', 'u.id', 't.user_id').select(['t.id as tid', 't.scopes', 't.expires_at', 't.last_used_at', 'u.id', 'u.username', 'u.display_name', 'u.email', 'u.role', 'u.scope_restricted', 'u.locale', 'u.theme', 'u.ui_theme', 'u.totp_enabled', 'u.auth_source', 'u.is_active'])
         .where('t.token_hash', '=', sha256(raw)).executeTakeFirst();
       if (tok && bool(tok.is_active) && (!tok.expires_at || tok.expires_at > new Date())) {
         req.user = { ...toUser(tok), tokenScopes: tok.scopes.split(',').map((s) => s.trim()) };
@@ -62,7 +62,7 @@ export default fp(async function authPlugin(app: FastifyInstance) {
     const cookie = req.cookies[COOKIE];
     if (!cookie) return;
     const row = await ctx.db.selectFrom('sessions as s').innerJoin('users as u', 'u.id', 's.user_id')
-      .select(['s.id as sid', 's.expires_at', 's.last_seen_at', 'u.id', 'u.username', 'u.display_name', 'u.email', 'u.role', 'u.scope_restricted', 'u.locale', 'u.theme', 'u.totp_enabled', 'u.auth_source', 'u.is_active'])
+      .select(['s.id as sid', 's.expires_at', 's.last_seen_at', 'u.id', 'u.username', 'u.display_name', 'u.email', 'u.role', 'u.scope_restricted', 'u.locale', 'u.theme', 'u.ui_theme', 'u.totp_enabled', 'u.auth_source', 'u.is_active'])
       .where('s.token_hash', '=', sha256(cookie)).executeTakeFirst();
     if (!row || !bool(row.is_active) || row.expires_at < new Date()) return;
     if (Date.now() - row.last_seen_at.getTime() > 60_000) void ctx.db.updateTable('sessions').set({ last_seen_at: sql<Date>`NOW(3)` }).where('id', '=', row.sid).execute().catch(() => {});

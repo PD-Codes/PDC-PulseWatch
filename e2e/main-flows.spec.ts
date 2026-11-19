@@ -88,7 +88,10 @@ test('adds several monitors at once with a live preview and creates a group inli
   await page.getByRole('button', { name: 'Create 3 monitors' }).first().click();
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
   await expect(page.getByText('Bulk Two').first()).toBeVisible();
-  await expect(page.getByRole('button', { name: /^e2e group/ })).toBeVisible();
+  // the new group exists and holds the created monitors: filtering the dashboard by it shows them
+  await page.getByRole('combobox', { name: 'Group', exact: true }).selectOption({ label: 'e2e group' });
+  await expect(page).toHaveURL(/group=/);
+  await expect(page.getByRole('link', { name: 'Bulk Two' }).first()).toBeVisible();
 });
 
 test('offers ranges down to 15 minutes and requests the chart for it', async ({ page }) => {
@@ -170,7 +173,7 @@ test('the language setting reduces the whole instance to German only and back', 
   const id = (await (await request.post('/api/incidents', { headers, data: { title: `Router reboot ${stamp}`, titleDe: `Router-Neustart ${stamp}`, severity: 'minor', monitorIds: [monitorId], public: true } })).json()).id as number;
   await login(page);
   await page.goto('/settings?tab=languages');
-  await page.getByLabel('Languages', { exact: true }).selectOption('de');
+  await page.getByRole('combobox', { name: 'Languages', exact: true }).selectOption('de');
   await expect(page.getByText('everything that is sent is German')).toBeVisible();
   try {
     // the second wording makes no sense with one language, so the form drops it
@@ -287,11 +290,12 @@ test('shows or hides an incident with one switch and tunes the past-incident set
   await login(page);
   await page.goto('/incidents');
   const row = page.locator('tbody tr').filter({ hasText: title });
-  await expect(row.getByText('On status page')).toBeVisible();
+  // visibility is a text badge in its own column (Public / Internal), the eye button switches it
+  await expect(row.getByText('Public', { exact: true })).toBeVisible();
   await row.getByRole('button', { name: 'Hide from status pages' }).click();
-  await expect(row.getByText('On status page')).toBeHidden();
+  await expect(row.getByText('Internal', { exact: true })).toBeVisible();
   await row.getByRole('button', { name: 'Show on status pages' }).click();
-  await expect(row.getByText('On status page')).toBeVisible();
+  await expect(row.getByText('Public', { exact: true })).toBeVisible();
 
   await page.goto('/status-pages');
   await page.getByRole('button', { name: 'Edit: Demo Status' }).click();
@@ -508,7 +512,8 @@ test('a monitor in retry shows a yellow block and is only reported as down after
   await login(page);
   await page.goto(`/monitors/${id}`);
   await expect(page.getByText('Pending', { exact: true }).first()).toBeVisible();
-  await expect(page.locator('[role=img] span.bg-amber-500').first()).toHaveAttribute('title', /Pending$/);
+  // a pending beat is amber and half height, so the state does not rely on color alone
+  await expect(page.locator('.pw-heartbeat span.bg-amber-500').first()).toBeVisible();
   await check();
   expect(await status()).toBe('pending'); // first failure plus one retry: still not reported as offline
   await check();

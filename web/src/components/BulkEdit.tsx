@@ -7,7 +7,7 @@ import { useT } from '../lib/i18n';
 
 interface Named { id: number; name: string }
 interface Rule { channelId: number | null; policyId: number | null; events: string[] }
-const EVENTS = ['down', 'up', 'flap', 'cert'] as const;
+const EVENTS = ['down', 'up', 'flap', 'cert', 'slo'] as const;
 const NUMS = [
   ['intervalS', 'monitors.interval', 5, 86400], ['timeoutS', 'monitors.timeout', 1, 300], ['retries', 'monitors.retries', 0, 100], ['retryIntervalS', 'monitors.retryInterval', 5, 3600],
   ['upThreshold', 'monitors.upThreshold', 1, 20], ['flapWindow', 'monitors.flapWindow', 4, 60], ['flapThreshold', 'monitors.flapThreshold', 0, 60],
@@ -82,7 +82,7 @@ export function BulkEditModal({ open, onClose, count, groups, tags, onSubmit }: 
                 );
               })}
               <Button size="sm" onClick={() => setRules([...rules, { channelId: null, policyId: null, events: ['down', 'up', 'flap'] }])}><Plus className="h-4 w-4" />{t('monitors.form.addRule')}</Button>
-              {notifyMode === 'replace' && <p className="text-xs text-amber-600">{t('bulk.replaceWarn')}</p>}
+              {notifyMode === 'replace' && <p className="text-xs text-amber-600 dark:text-amber-400">{t('bulk.replaceWarn')}</p>}
             </>
           )}
         </fieldset>

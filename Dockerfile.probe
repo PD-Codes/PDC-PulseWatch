@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 # Small image for the remote probe agent: one self-contained bundle, no database access.
+# The build stage output is platform-independent JavaScript, so it runs on the build machine
+# (no QEMU); only the runtime stage is built for the target platform.
 
-FROM node:22-alpine AS build
+FROM --platform=$BUILDPLATFORM node:26-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -10,12 +12,14 @@ COPY scripts scripts
 COPY src src
 RUN node -e "require('esbuild')" && node scripts/build.mjs --skip-web
 
-FROM node:22-alpine AS runtime
+FROM node:26-alpine AS runtime
 RUN apk add --no-cache iputils tini \
  && addgroup -S -g 10001 probe && adduser -S -u 10001 -G probe probe
 WORKDIR /app
-ENV NODE_ENV=production
+# UV_THREADPOOL_SIZE: DNS lookups run on the libuv thread pool; the default of 4 is too small for parallel checks
+ENV NODE_ENV=production UV_THREADPOOL_SIZE=64
 COPY --from=build /app/dist/probe/main.js ./main.js
 USER 10001:10001
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "main.js"]
+# The regex flag cannot be set through NODE_OPTIONS (Node rejects it), see Dockerfile.
+CMD ["node", "--enable-source-maps", "--enable-experimental-regexp-engine-on-excessive-backtracks", "main.js"]

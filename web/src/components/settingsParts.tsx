@@ -16,7 +16,7 @@ export function CopyButton({ text, label }: { text: string; label?: string }) {
 }
 
 /** Renders a list of server-defined field definitions (text, number, bool, select, secret, textarea). */
-export function FieldsForm({ fields, value, onChange }: { fields: FieldDef[]; value: Record<string, any>; onChange: (v: Record<string, any>) => void }) {
+export function FieldsForm({ fields, value, onChange, errors }: { fields: FieldDef[]; value: Record<string, any>; onChange: (v: Record<string, any>) => void; errors?: Record<string, string> }) {
   const set = (k: string, v: unknown) => onChange({ ...value, [k]: v });
   return (
     <div className="space-y-4">
@@ -26,7 +26,7 @@ export function FieldsForm({ fields, value, onChange }: { fields: FieldDef[]; va
         const label = <>{f.label}{f.required && <span aria-hidden> *</span>}</>;
         if (f.kind === 'bool') return <Toggle key={f.key} checked={!!v} onChange={(x) => set(f.key, x)} label={f.label} />;
         return (
-          <Field key={f.key} label={label} hint={f.help}>
+          <Field key={f.key} label={label} hint={f.help} error={errors?.[f.key]}>
             {(id) => f.kind === 'select' ? (
               <Select id={id} value={v ?? ''} onChange={(e) => set(f.key, e.target.value)}>{f.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>
             ) : f.kind === 'textarea' ? (
@@ -41,6 +41,14 @@ export function FieldsForm({ fields, value, onChange }: { fields: FieldDef[]; va
     </div>
   );
 }
+
+/** Empties the secret fields of a config so that the person has to type them again (kv fields keep their keys). */
+export function clearSecrets(config: Record<string, any>, keys: string[]): Record<string, any> {
+  const out = { ...config };
+  for (const k of keys) out[k] = out[k] && typeof out[k] === 'object' ? Object.fromEntries(Object.keys(out[k]).map((h) => [h, ''])) : '';
+  return out;
+}
+export const isEmptySecret = (v: unknown) => v == null || v === '' || (typeof v === 'object' && Object.values(v as object).every((x) => x === '' || x == null));
 
 /** One entry per line or comma, empties dropped. */
 export const splitList = (s: string) => s.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);

@@ -1,14 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BookOpen, KeyRound, Pencil, Plus, Radio, Trash2 } from 'lucide-react';
 import { useState } from 'react';
+import { CancelButton, FormAlert, useFieldErrors } from '../components/ops-shared';
+import { Pager } from '../components/Pager';
 import { CopyButton } from '../components/settingsParts';
-import { Badge, Button, Card, CardHeader, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Toggle, useConfirm, useToast } from '../components/ui';
+import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Toggle, useConfirm, useToast } from '../components/ui';
 import { ApiError, del, get, patch, post } from '../lib/api';
 import { useAuth, useMeta } from '../lib/auth';
+import { useDirty } from '../lib/dirty';
 import { useT } from '../lib/i18n';
+import { usePagedList } from '../lib/usePagedList';
 import { relTime } from '../lib/format';
 
 interface Probe { id: number; name: string; location: string | null; version: string | null; lastSeenAt: string | null; lastIp: string | null; enabled: boolean; createdAt: string; online: boolean; monitorCount: number }
+const PROBE_FIELDS = ['name', 'location'];
 const IMAGE = 'pulsewatch/probe:latest'; // image name is a placeholder until the probe image is published
 
 /** Plain-language introduction: open while there are no probes, folded away afterwards. */
@@ -75,6 +80,8 @@ export default function Probes() {
   const [form, setForm] = useState<{ id?: number; name: string; location: string } | null>(null);
   const [secret, setSecret] = useState<{ name: string; token: string } | null>(null);
   const [guide, setGuide] = useState(false);
+  const dirty = useDirty(form);
+  const { pageRows, pagerProps } = usePagedList(q.data ?? [], { key: 'probes' });
   const fail = (e: unknown) => toast(e instanceof ApiError ? e.message : t('common.failed'), 'error');
   const refresh = () => void qc.invalidateQueries({ queryKey: ['probes'] });
 
@@ -84,8 +91,9 @@ export default function Probes() {
       return post<{ id: number; token: string }>('/api/probes', { name: v.name.trim(), location: v.location.trim() || undefined });
     },
     onSuccess: (r, v) => { refresh(); setForm(null); if (r) setSecret({ name: v.name, token: r.token }); else toast(t('common.saved')); },
-    onError: fail,
   });
+  const { fieldErrors: fe, rest } = useFieldErrors(save.error, PROBE_FIELDS);
+  const open = (v: { id?: number; name: string; location: string }) => { save.reset(); setForm(v); };
   const toggle = useMutation({ mutationFn: (p: Probe) => patch(`/api/probes/${p.id}`, { enabled: !p.enabled }), onSuccess: refresh, onError: fail });
   const rotate = async (p: Probe) => {
     if (!(await confirm({ title: t('probes.rotate'), body: t('probes.rotateConfirm', { name: p.name }), danger: true, confirmLabel: t('probes.rotate') }))) return;
@@ -98,7 +106,7 @@ export default function Probes() {
 
   return (
     <>
-      <PageHeader title={t('nav.probes')} subtitle={t('probes.subtitle')} actions={admin && <><Button onClick={() => setGuide(true)}><BookOpen className="h-4 w-4" />{t('probes.guide.setup')}</Button><Button variant="primary" onClick={() => setForm({ name: '', location: '' })}><Plus className="h-4 w-4" />{t('probes.new')}</Button></>} />
+      <PageHeader title={t('nav.probes')} subtitle={t('probes.subtitle')} actions={admin && <><Button onClick={() => setGuide(true)}><BookOpen className="h-4 w-4" />{t('probes.guide.setup')}</Button><Button variant="primary" onClick={() => open({ name: '', location: '' })}><Plus className="h-4 w-4" />{t('probes.new')}</Button></>} />
       <Explainer open={!q.isLoading && !q.data?.length} />
       <Card>
         {q.isLoading ? <Loading /> : q.error ? <div className="p-4"><ErrorBox error={q.error} /></div> : !q.data?.length ? (
@@ -106,7 +114,7 @@ export default function Probes() {
         ) : (
           <div className="overflow-x-auto"><table className="tbl">
             <thead><tr><th>{t('common.name')}</th><th title={t('probes.statusHelp')}>{t('common.status')}</th><th className="hidden sm:table-cell">{t('probes.location')}</th><th className="hidden md:table-cell">{t('probes.usedBy')}</th><th className="hidden md:table-cell">{t('probes.version')}</th><th>{t('probes.lastSeen')}</th>{admin && <th><span className="sr-only">{t('common.actions')}</span></th>}</tr></thead>
-            <tbody>{q.data.map((p) => (
+            <tbody>{pageRows.map((p) => (
               <tr key={p.id}>
                 <td className="font-medium">{p.name}</td>
                 <td>{!p.enabled ? <Badge tone="gray">{t('common.disabled')}</Badge> : <Badge tone={p.online ? 'green' : 'red'}>{t(p.online ? 'probes.online' : 'probes.offline')}</Badge>}</td>
@@ -116,7 +124,7 @@ export default function Probes() {
                 <td className="whitespace-nowrap" title={p.lastIp ?? undefined}>{p.lastSeenAt ? relTime(p.lastSeenAt) : t('common.never')}</td>
                 {admin && <td className="whitespace-nowrap text-right">
                   <Toggle checked={p.enabled} onChange={() => toggle.mutate(p)} label={<span className="sr-only">{t('common.enabled')}</span>} />
-                  <Button size="sm" variant="ghost" aria-label={t('common.edit')} onClick={() => setForm({ id: p.id, name: p.name, location: p.location ?? '' })}><Pencil className="h-4 w-4" /></Button>
+                  <Button size="sm" variant="ghost" aria-label={t('common.edit')} onClick={() => open({ id: p.id, name: p.name, location: p.location ?? '' })}><Pencil className="h-4 w-4" /></Button>
                   <Button size="sm" variant="ghost" aria-label={t('probes.rotate')} onClick={() => void rotate(p)}><KeyRound className="h-4 w-4" /></Button>
                   <Button size="sm" variant="ghost" aria-label={t('common.delete')} onClick={() => void remove(p)}><Trash2 className="h-4 w-4" /></Button>
                 </td>}
@@ -124,13 +132,15 @@ export default function Probes() {
             ))}</tbody>
           </table></div>
         )}
+        <Pager {...pagerProps} />
       </Card>
 
       {form && (
-        <Modal open onClose={() => setForm(null)} title={form.id ? t('probes.edit') : t('probes.new')} footer={<><Button onClick={() => setForm(null)}>{t('common.cancel')}</Button><Button variant="primary" loading={save.isPending} disabled={!form.name.trim()} onClick={() => save.mutate(form)}>{t('common.save')}</Button></>}>
+        <Modal open dirty={dirty} onClose={() => setForm(null)} title={form.id ? t('probes.edit') : t('probes.new')} footer={<><CancelButton /><Button variant="primary" loading={save.isPending} disabled={!form.name.trim()} onClick={() => save.mutate(form)}>{t('common.save')}</Button></>}>
           <div className="space-y-4">
-            <Field label={t('common.name')}>{(id) => <Input id={id} value={form.name} maxLength={80} onChange={(e) => setForm({ ...form, name: e.target.value })} />}</Field>
-            <Field label={t('probes.location')} hint={t('probes.locationHint')}>{(id) => <Input id={id} value={form.location} maxLength={80} placeholder="Frankfurt, DE" onChange={(e) => setForm({ ...form, location: e.target.value })} />}</Field>
+            <FormAlert messages={rest} />
+            <Field label={t('common.name')} error={fe.name}>{(id) => <Input id={id} value={form.name} maxLength={80} onChange={(e) => setForm({ ...form, name: e.target.value })} />}</Field>
+            <Field label={t('probes.location')} hint={t('probes.locationHint')} error={fe.location}>{(id) => <Input id={id} value={form.location} maxLength={80} placeholder="Frankfurt, DE" onChange={(e) => setForm({ ...form, location: e.target.value })} />}</Field>
           </div>
         </Modal>
       )}

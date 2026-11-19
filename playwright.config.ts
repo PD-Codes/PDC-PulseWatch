@@ -22,6 +22,7 @@ export default defineConfig({
       PW_DB_HOST: process.env.PW_TEST_DB_HOST ?? '127.0.0.1', PW_DB_PORT: process.env.PW_TEST_DB_PORT ?? '3306',
       PW_DB_USER: process.env.PW_TEST_DB_USER ?? 'root', PW_DB_PASSWORD: process.env.PW_TEST_DB_PASSWORD ?? 'dev', PW_DB_NAME: 'pw_e2e',
       PW_DATA_DIR: '.e2e-data', PW_SECRET_KEY: 'e2e-secret-key-not-for-production', PW_RATE_LIMIT_LOGIN: '1000', PW_RATE_LIMIT_MAX: '100000',
+      PW_SETUP_TOKEN: 'e2e-setup-token-not-for-production', // demo mode seeds its admin; the token only matters if a test ever runs the setup page
     },
   },
 });

@@ -62,14 +62,63 @@ export function maskSecrets(runner: Runner | undefined, config: Record<string, a
   return out;
 }
 
-/** When a client sends the mask back unchanged, keep the stored secret. */
+/** Thrown by restoreSecrets when a masked secret would be sent to a different target. Status 400, shaped as a validation error by the API. */
+export class SecretTargetError extends Error {
+  readonly statusCode = 400;
+  constructor(public errors: string[]) { super(errors.join('; ')); }
+}
+
+/** Fields that decide where a request (and with it the secret) goes. Derived from the field keys, so new runners are covered without extra metadata. */
+const TARGET_KEY = /^(url|uri|host|hostname|port|server|endpoint|issuer|entryPoint|steps)$|Url$/;
+export const targetFields = (runner: Runner): FieldDef[] => runner.fields.filter((f) => TARGET_KEY.test(f.key) && f.kind !== 'secret' && !(f.kind === 'kv' && f.secretValues));
+
+/** Comparable form of a target value: URLs by origin (a new path on the same server keeps the secret), host names case-insensitive, steps by the set of origins they call. */
+function targetValue(f: FieldDef, v: unknown, vars: Record<string, string> = {}): string {
+  if (v === undefined || v === null || v === '') v = f.default ?? '';
+  // {{NAME}} placeholders (multistep variables) are filled in first, so a changed variable that moves a URL counts as a changed target; unknown ones stay as they are
+  const fill = (text: string) => text.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (m, k: string) => (Object.hasOwn(vars, k) ? String(vars[k]) : m));
+  if (typeof v === 'string') v = fill(v);
+  else if (f.kind === 'json' && v && typeof v === 'object') v = fill(JSON.stringify(v));
+  const origin = (s: string) => { try { const u = new URL(s); return /^[a-z][a-z0-9+.-]*:$/i.test(u.protocol) && u.host ? `${u.protocol}//${u.host}`.toLowerCase() : s.trim().toLowerCase(); } catch { return s.trim().toLowerCase(); } };
+  if (f.kind === 'json') {
+    const text = typeof v === 'string' ? v : JSON.stringify(v);
+    return [...new Set((text.match(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>\\]+/gi) ?? []).map(origin))].sort().join(' ');
+  }
+  if (f.kind === 'number') return String(Number(v));
+  return origin(String(v));
+}
+
+/**
+ * When a client sends the mask back unchanged, keep the stored secret, but only while the target fields (URL, host, port, ...) are unchanged.
+ * Otherwise an editor who cannot read a secret could point the monitor at their own server and receive it there.
+ */
 export function restoreSecrets(runner: Runner, incoming: Record<string, any>, stored: Record<string, any>): Record<string, any> {
   const out = { ...incoming };
+  // values of secret key/value fields as they would be used: the stored value where the mask came back
+  const storedVars: Record<string, string> = {}, incomingVars: Record<string, string> = {};
   for (const f of runner.fields) {
-    if (f.kind === 'secret' && out[f.key] === SECRET_MASK) out[f.key] = stored[f.key];
-    if (f.kind === 'kv' && f.secretValues && out[f.key]) {
-      out[f.key] = Object.fromEntries(Object.entries(out[f.key]).map(([k, v]) => [k, v === SECRET_MASK ? stored[f.key]?.[k] ?? '' : v]));
+    if (f.kind !== 'kv' || !f.secretValues) continue;
+    const st = stored[f.key] && typeof stored[f.key] === 'object' ? stored[f.key] : {};
+    const inc = incoming[f.key] && typeof incoming[f.key] === 'object' ? incoming[f.key] : {};
+    Object.assign(storedVars, st);
+    for (const [k, v] of Object.entries(inc)) incomingVars[k] = v === SECRET_MASK ? String(st[k] ?? '') : String(v);
+  }
+  const changed = targetFields(runner).filter((f) => targetValue(f, incoming[f.key], incomingVars) !== targetValue(f, stored[f.key], storedVars));
+  const refused: string[] = [];
+  const reuse = (f: FieldDef, have: unknown) => {
+    if (!changed.length || have === undefined || have === null || have === '') return true;
+    refused.push(f.label);
+    return false;
+  };
+  for (const f of runner.fields) {
+    if (f.kind === 'secret' && out[f.key] === SECRET_MASK) out[f.key] = reuse(f, stored[f.key]) ? stored[f.key] : undefined;
+    if (f.kind === 'kv' && f.secretValues && out[f.key] && typeof out[f.key] === 'object') {
+      out[f.key] = Object.fromEntries(Object.entries(out[f.key]).map(([k, v]) => [k, v === SECRET_MASK ? (reuse(f, stored[f.key]?.[k]) ? stored[f.key]?.[k] ?? '' : '') : v]));
     }
+  }
+  if (refused.length) {
+    const labels = [...new Set(refused)].join(', ');
+    throw new SecretTargetError([`${changed.map((f) => f.label).join(', ')} changed: enter ${labels} again, a stored secret is only reused for the same target`]);
   }
   return out;
 }

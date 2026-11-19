@@ -1,10 +1,19 @@
 // Builds the server and probe bundles with esbuild and the web UI with Vite.
 // Usage: node scripts/build.mjs [--skip-web]
 import { build } from 'esbuild';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
 const root = path.resolve(import.meta.dirname, '..');
+
+// One id for this build, shared by server and web UI: open browsers compare it with /api/meta to notice a new deploy,
+// also when the version number did not change. Git is not available inside the Docker build, so the build time stands in.
+const pkgVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+let rev = '';
+try { rev = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { /* no git */ }
+const buildId = `${pkgVersion}+${rev || new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '')}`;
+process.env.PW_BUILD_ID = buildId;
 const out = path.join(root, 'dist');
 fs.rmSync(path.join(out, 'server'), { recursive: true, force: true });
 fs.rmSync(path.join(out, 'probe'), { recursive: true, force: true });
@@ -13,9 +22,9 @@ fs.rmSync(path.join(out, 'probe'), { recursive: true, force: true });
 // swagger-ui and pdfkit load assets from their own package directory at runtime and cannot be bundled.
 // The probe is self-contained and bundles everything except optional add-ons that are never used: the MongoDB driver's extras and the native speedups of ssh2 (it falls back to pure JavaScript).
 const optional = ['kerberos', '@mongodb-js/zstd', 'snappy', 'mongodb-client-encryption', '@aws-sdk/credential-providers', 'gcp-metadata', 'socks', 'aws4', 'pg-native', 'cloudflare:sockets', 'cpu-features', '*.node'];
-const common = { bundle: true, platform: 'node', target: 'node22', format: 'esm', sourcemap: true, logLevel: 'info', legalComments: 'none', loader: { '.json': 'json' } };
+const common = { bundle: true, platform: 'node', target: 'node26', format: 'esm', sourcemap: true, logLevel: 'info', legalComments: 'none', loader: { '.json': 'json' } };
 
-await build({ ...common, packages: 'external', entryPoints: [path.join(root, 'src/server/main.ts')], outfile: path.join(out, 'server/main.js') });
+await build({ ...common, packages: 'external', define: { __PW_BUILD__: JSON.stringify(buildId) }, entryPoints: [path.join(root, 'src/server/main.ts')], outfile: path.join(out, 'server/main.js') });
 await build({
   ...common, external: optional, entryPoints: [path.join(root, 'src/probe/main.ts')], outfile: path.join(out, 'probe/main.js'),
   // bundled CommonJS packages (ssh2) still expect require, __filename and __dirname
@@ -26,4 +35,4 @@ if (!process.argv.includes('--skip-web')) {
   const { build: viteBuild } = await import('vite');
   await viteBuild({ configFile: path.join(root, 'web/vite.config.ts') });
 }
-console.log('build complete');
+console.log(`build complete (${buildId})`);

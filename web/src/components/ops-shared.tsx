@@ -1,8 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { get, type Group, type MonitorItem, type TagInfo } from '../lib/api';
+import { useFocusFirstError, mapApiError, type FieldAliases, type MappedErrors } from '../lib/formErrors';
 import { useT } from '../lib/i18n';
-import { Badge, Input, cx, type Tone } from './ui';
+import { usePagedList } from '../lib/usePagedList';
+import { Pager } from './Pager';
+import { Badge, Button, Input, cx, useModalClose, type Tone } from './ui';
 
 export const incidentTone: Record<string, Tone> = { open: 'red', acknowledged: 'amber', identified: 'violet', fixing: 'blue', monitoring: 'brand', resolved: 'green' };
 /** Statuses an operator can set, in the order of an incident's life. */
@@ -22,13 +25,14 @@ export function CheckList<T extends number | string>({ items, value, onChange, s
   const t = useT();
   const [q, setQ] = useState('');
   const shown = useMemo(() => items.filter((i) => i.label.toLowerCase().includes(q.toLowerCase())), [items, q]);
+  const { pageRows, pagerProps } = usePagedList(shown, { key: 'checklist', resetKey: q });
   const toggle = (id: T) => onChange(value.includes(id) ? value.filter((x) => x !== id) : [...value, id]);
   return (
     <div className="rounded-lg border border-slate-200 dark:border-slate-700">
       {searchable && <div className="border-b border-slate-200 p-2 dark:border-slate-700"><Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('common.search')} aria-label={t('common.search')} className="py-1" /></div>}
-      <ul className="max-h-44 overflow-y-auto p-1">
+      <ul className="max-h-80 overflow-y-auto p-1">
         {shown.length === 0 && <li className="px-2 py-3 text-center text-sm text-slate-500">{empty ?? t('common.noResults')}</li>}
-        {shown.map((i) => (
+        {pageRows.map((i) => (
           <li key={String(i.id)}>
             <label className={cx('flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-slate-50 dark:hover:bg-slate-800')}>
               <input type="checkbox" checked={value.includes(i.id)} onChange={() => toggle(i.id)} className="h-4 w-4 rounded border-slate-300" />
@@ -37,6 +41,7 @@ export function CheckList<T extends number | string>({ items, value, onChange, s
           </li>
         ))}
       </ul>
+      <Pager {...pagerProps} />
     </div>
   );
 }
@@ -68,3 +73,39 @@ export function MonitorPicker({ monitors, groups, value, onChange }: { monitors:
 
 /** Timezone names the browser knows, with UTC first. */
 export const timeZones: string[] = (() => { try { const z = (Intl as any).supportedValuesOf('timeZone') as string[]; return ['UTC', ...z.filter((x) => x !== 'UTC')]; } catch { return ['UTC']; } })();
+
+/** Cancel button for a Modal footer: closes through the modal, which asks first when there is unsaved input. */
+export function CancelButton({ label }: { label?: string }) {
+  const t = useT();
+  const close = useModalClose();
+  return <Button onClick={close}>{label ?? t('common.cancel')}</Button>;
+}
+
+const NO_ERRORS: MappedErrors = { fieldErrors: {}, rest: [] };
+
+/**
+ * Splits the server's answer to a failed save into messages for fields and a rest, and moves focus to the first invalid field.
+ * `fields` must be a stable value (module constant); the result changes only with `error`.
+ */
+export function useFieldErrors(error: unknown, fields: FieldAliases | string[]): MappedErrors {
+  const mapped = useMemo(() => (error ? mapApiError(error, fields) : NO_ERRORS), [error]); // eslint-disable-line react-hooks/exhaustive-deps
+  useFocusFirstError(mapped.fieldErrors);
+  return mapped;
+}
+
+/** Messages that belong to no field, in one alert at the top of a form. */
+export function FormAlert({ messages }: { messages: string[] }) {
+  if (!messages.length) return null;
+  return <div role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300">{messages.length === 1 ? messages[0] : <ul className="list-disc pl-4">{messages.map((m, i) => <li key={i}>{m}</li>)}</ul>}</div>;
+}
+
+/** Attributes for a user name input: the format rule with a message in the interface language instead of the browser's generic one. */
+export function useUsernameRule() {
+  const t = useT();
+  const msg = t('ux.username.pattern');
+  return {
+    pattern: '[A-Za-z0-9._@\\-]+', title: msg,
+    onInvalid: (e: FormEvent<HTMLInputElement>) => { if (e.currentTarget.validity.patternMismatch) e.currentTarget.setCustomValidity(msg); },
+    onInput: (e: FormEvent<HTMLInputElement>) => e.currentTarget.setCustomValidity(''),
+  };
+}

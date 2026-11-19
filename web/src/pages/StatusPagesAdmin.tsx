@@ -1,19 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, ExternalLink, EyeOff, Globe, Home, Lock, Megaphone, Pencil, Plus, Trash2, X } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import { CancelButton, FormAlert } from '../components/ops-shared';
+import { Pager } from '../components/Pager';
 import { NO_VERSIONS, Translations, type Versions } from '../components/Translations';
-import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
+import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, TabPanel, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
 import { del, errorMessage, get, post, put, type Group, type MonitorItem } from '../lib/api';
 import { useAuth, useMeta } from '../lib/auth';
+import { useDirty } from '../lib/dirty';
+import { focusFirstError, mapApiError, type MappedErrors } from '../lib/formErrors';
 import { fmtDateTime, slugify } from '../lib/format';
 import { useT } from '../lib/i18n';
+import { THEMES, isThemeId, type ThemeId } from '../lib/theme';
+import { usePagedList } from '../lib/usePagedList';
 
 interface PageRow { id: number; slug: string; title: string; domain: string | null; isPublic: boolean; protected: boolean; isDefault: boolean }
 interface Comp { monitorId: number; displayName: string | null; hideIncidents?: boolean }
 interface Full {
   id: number; slug: string; title: string; description: string | null; domain: string | null; isPublic: boolean; hasPassword: boolean; ssoRequired: boolean;
-  branding: { logoUrl?: string; primaryColor?: string; footer?: string }; customCss: string | null; showHistory: boolean; historyDays: number; isDefault: boolean; incidentDays: number; incidentPageSize: number; blocks: BlockCfg[]; language: 'en' | 'de' | null; serverInfo: number;
+  branding: { logoUrl?: string; primaryColor?: string; footer?: string }; theme?: ThemeId | null; customCss: string | null; showHistory: boolean; historyDays: number; isDefault: boolean; incidentDays: number; incidentPageSize: number; blocks: BlockCfg[]; language: 'en' | 'de' | null; serverInfo: number;
   sections: { name: string; components: Comp[] }[]; components: Comp[];
 }
 type BlockCfg = { type: 'summary' } | { type: 'streak' } | { type: 'heatmap'; days: 90 | 180 | 365 } | { type: 'text'; title: string; body: string };
@@ -24,16 +30,27 @@ const newBlock = (type: (typeof BLOCK_TYPES)[number]): BlockCfg => (type === 'he
 interface Grp { name: string | null; items: Comp[] }
 interface Form {
   slug: string; title: string; description: string; domain: string; isPublic: boolean; ssoRequired: boolean; showHistory: boolean; historyDays: number; isDefault: boolean; incidentDays: number; incidentPageSize: number; language: '' | 'en' | 'de'; serverInfo: number;
-  pwMode: 'keep' | 'set' | 'remove'; password: string; logoUrl: string; primaryColor: string; footer: string; customCss: string; groups: Grp[]; blocks: BlockCfg[];
+  pwMode: 'keep' | 'set' | 'remove'; password: string; logoUrl: string; primaryColor: string; footer: string; theme: '' | ThemeId; customCss: string; groups: Grp[]; blocks: BlockCfg[];
 }
 const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180];
 const INCIDENT_DAYS = [1, 3, 7, 14, 30, 60, 90, 180, 365];
 const INCIDENT_PAGE_SIZES = [5, 10, 20, 50];
 type Tab = 'general' | 'components' | 'blocks' | 'appearance' | 'announcements' | 'subscribers';
+/** Where each form field lives, so that a server message can open the right tab. */
+const FIELD_TAB: Record<string, Tab> = {
+  slug: 'general', title: 'general', description: 'general', domain: 'general', language: 'general', serverInfo: 'general', historyDays: 'general', incidentDays: 'general', incidentPageSize: 'general', password: 'general',
+  components: 'components', blocks: 'blocks', logoUrl: 'appearance', primaryColor: 'appearance', footer: 'appearance', theme: 'appearance', customCss: 'appearance',
+};
+const TAB_ORDER: Tab[] = ['general', 'components', 'blocks', 'appearance'];
+const ALIASES = {
+  slug: [], title: [], description: [], domain: [], language: [], serverInfo: [], historyDays: [], incidentDays: [], incidentPageSize: [], password: [],
+  components: ['monitor', 'monitors', 'section', 'sections', 'displayName'], blocks: ['block'], logoUrl: ['logo', 'branding/logoUrl'], primaryColor: ['color', 'branding/primaryColor'], footer: ['branding/footer'], theme: [], customCss: ['css'],
+};
+const NO_ERRORS: MappedErrors = { fieldErrors: {}, rest: [] };
 
 const toForm = (p?: Full): Form => ({
   slug: p?.slug ?? '', title: p?.title ?? '', description: p?.description ?? '', domain: p?.domain ?? '', isPublic: p?.isPublic ?? true, ssoRequired: p?.ssoRequired ?? false, showHistory: p?.showHistory ?? true, historyDays: p?.historyDays ?? 90, incidentDays: p?.incidentDays ?? 30, incidentPageSize: p?.incidentPageSize ?? 10, language: p?.language ?? '', serverInfo: p?.serverInfo ?? 1, isDefault: p?.isDefault ?? false,
-  pwMode: 'keep', password: '', logoUrl: p?.branding.logoUrl ?? '', primaryColor: p?.branding.primaryColor ?? '', footer: p?.branding.footer ?? '', customCss: p?.customCss ?? '',
+  pwMode: 'keep', password: '', logoUrl: p?.branding.logoUrl ?? '', primaryColor: p?.branding.primaryColor ?? '', footer: p?.branding.footer ?? '', theme: isThemeId(p?.theme) && p?.theme !== 'classic' ? p.theme : '', customCss: p?.customCss ?? '',
   blocks: p?.blocks ?? [],
   groups: [{ name: null, items: p?.components ?? [] }, ...(p?.sections ?? []).map((s) => ({ name: s.name, items: s.components }))],
 });
@@ -55,7 +72,9 @@ export default function StatusPagesAdmin() {
   const isAdmin = can('admin');
   const [editing, setEditing] = useState<number | 'new' | null>(null);
   const [posting, setPosting] = useState<PageRow | null>(null);
+  const [postDirty, setPostDirty] = useState(false);
   const pages = useQuery({ queryKey: ['status-pages'], queryFn: () => get<PageRow[]>('/api/status-pages') });
+  const { pageRows, pagerProps } = usePagedList(pages.data ?? [], { key: 'status-pages' });
 
   const setDefault = useMutation({
     mutationFn: (p: PageRow) => put(`/api/status-pages/${p.id}/default`, { isDefault: !p.isDefault }),
@@ -78,7 +97,7 @@ export default function StatusPagesAdmin() {
             <table className="tbl">
               <thead><tr><th>{t('statuspages.page')}</th><th>{t('statuspages.domain')}</th><th>{t('statuspages.access')}</th><th className="text-right">{t('common.actions')}</th></tr></thead>
               <tbody>
-                {pages.data.map((p) => (
+                {pageRows.map((p) => (
                   <tr key={p.id}>
                     <td><div className="flex flex-wrap items-center gap-2 font-medium">{p.title}{p.isDefault && <Badge tone="brand"><Home className="h-3 w-3" />{t('statuspages.homePage')}</Badge>}</div><Link to={`/status/${p.slug}`} target="_blank" className="inline-flex items-center gap-1 text-xs">/status/{p.slug}<ExternalLink className="h-3 w-3" aria-hidden /></Link></td>
                     <td className="text-sm text-slate-500">{p.domain ?? '—'}</td>
@@ -99,8 +118,9 @@ export default function StatusPagesAdmin() {
             </table>
           </div>
         )}
+        <Pager {...pagerProps} />
       </Card>
-      {posting && <Modal open onClose={() => setPosting(null)} title={`${t('statuspages.postUpdate')}: ${posting.title}`}><AnnouncementForm pageId={posting.id} onDone={() => setPosting(null)} /></Modal>}
+      {posting && <Modal open dirty={postDirty} onClose={() => setPosting(null)} title={`${t('statuspages.postUpdate')}: ${posting.title}`}><AnnouncementForm pageId={posting.id} onDone={() => setPosting(null)} onDirty={setPostDirty} /></Modal>}
       {editing !== null && <Editor id={editing} onClose={() => setEditing(null)} onSaved={() => { void qc.invalidateQueries({ queryKey: ['status-pages'] }); void qc.invalidateQueries({ queryKey: ['default-page'] }); }} />}
     </>
   );
@@ -119,10 +139,23 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
   const t = useT();
   const [f, setF] = useState<Form>(initial);
   const [tab, setTab] = useState<Tab>('general');
-  const [err, setErr] = useState<string | null>(null);
+  const [errs, setErrs] = useState<MappedErrors>(NO_ERRORS);
+  const [tick, setTick] = useState(0); // counts failed saves: the first invalid field gets focus once per attempt, not while typing
+  const [annDirty, setAnnDirty] = useState(false);
+  const dirty = useDirty(f) || annDirty;
+  const fe = errs.fieldErrors;
+  const clear = (...keys: string[]) => setErrs((e) => (keys.some((k) => k in e.fieldErrors) ? { ...e, fieldErrors: Object.fromEntries(Object.entries(e.fieldErrors).filter(([k]) => !keys.includes(k))) } : e));
+  /** Shows the errors and opens the tab of the first field that has one. */
+  const fail = (m: MappedErrors) => {
+    setErrs(m);
+    const first = TAB_ORDER.find((tb) => Object.keys(m.fieldErrors).some((k) => FIELD_TAB[k] === tb));
+    if (first) setTab(first);
+    setTick((n) => n + 1);
+  };
+  useEffect(() => { if (tick) focusFirstError(); }, [tick]);
   // a new page follows its title until the slug is typed by hand (emptying the field hands control back); an existing slug is a public URL and stays put
   const [slugOwn, setSlugOwn] = useState(id !== 'new');
-  const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((p) => ({ ...p, [k]: v }));
+  const set = <K extends keyof Form>(k: K, v: Form[K]) => { setF((p) => ({ ...p, [k]: v })); clear(k as string); };
   const monitors = useQuery({ queryKey: ['monitors'], queryFn: () => get<MonitorItem[]>('/api/monitors') });
 
   const save = useMutation({
@@ -135,6 +168,7 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
         ...(f.pwMode === 'set' ? { password: f.password } : f.pwMode === 'remove' ? { password: null } : {}),
         branding: { ...(f.logoUrl.trim() && { logoUrl: f.logoUrl.trim() }), ...(f.primaryColor && { primaryColor: f.primaryColor }), ...(f.footer.trim() && { footer: f.footer.trim() }) },
         customCss: f.customCss.trim() || null,
+        theme: f.theme || null,
         blocks: f.blocks,
         sections: f.groups.slice(1).map((g) => ({ name: (g.name ?? '').trim() || t('statuspages.sectionDefault'), components: g.items.map(comp) })),
         components: f.groups[0]!.items.map(comp),
@@ -142,62 +176,71 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
       return id === 'new' ? post('/api/status-pages', body) : put(`/api/status-pages/${id}`, body);
     },
     onSuccess: () => { onSaved(); onClose(); },
-    onError: (e) => setErr(errorMessage(e)),
+    onError: (e) => {
+      const m = mapApiError(e, ALIASES);
+      // slug and domain share one uniqueness message
+      if (m.fieldErrors.slug && /domain/i.test(m.fieldErrors.slug)) m.fieldErrors.domain = m.fieldErrors.slug;
+      fail(m);
+    },
   });
 
   const submit = () => {
-    setErr(null);
-    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(f.slug.trim().toLowerCase())) { setTab('general'); return setErr(t('statuspages.slugInvalid')); }
-    if (!f.title.trim()) { setTab('general'); return setErr(t('statuspages.titleRequired')); }
-    if (f.pwMode === 'set' && f.password.length < 4) { setTab('general'); return setErr(t('statuspages.passwordShort')); }
+    const local: Record<string, string> = {};
+    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(f.slug.trim().toLowerCase())) local.slug = t('statuspages.slugInvalid');
+    if (!f.title.trim()) local.title = t('statuspages.titleRequired');
+    if (f.pwMode === 'set' && f.password.length < 4) local.password = t('statuspages.passwordShort');
+    if (Object.keys(local).length) return fail({ fieldErrors: local, rest: [] });
+    setErrs(NO_ERRORS);
     save.mutate();
   };
 
   const meta = useMeta();
   const smtp = meta?.smtp;
   const single = meta?.languages === 'en' || meta?.languages === 'de' ? meta.languages : null; // one instance language fixes every page's language
+  // a tab that holds an invalid field shows a dot
+  const flag = (tb: Tab, label: string): ReactNode => (Object.keys(fe).some((k) => FIELD_TAB[k] === tb) ? <>{label}<span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-red-500 align-middle" aria-hidden /><span className="sr-only"> ({t('ux.statuspages.tabHasError')})</span></> : label);
   const tabs: { id: Tab; label: ReactNode }[] = [
-    { id: 'general', label: t('statuspages.tab.general') }, { id: 'components', label: t('statuspages.tab.components') }, { id: 'blocks', label: t('statuspages.tab.blocks') }, { id: 'appearance', label: t('statuspages.tab.appearance') },
+    { id: 'general', label: flag('general', t('statuspages.tab.general')) }, { id: 'components', label: flag('components', t('statuspages.tab.components')) }, { id: 'blocks', label: flag('blocks', t('statuspages.tab.blocks')) }, { id: 'appearance', label: flag('appearance', t('statuspages.tab.appearance')) },
     ...(id === 'new' ? [] : [{ id: 'announcements' as const, label: t('statuspages.tab.announcements') }, ...(smtp ? [{ id: 'subscribers' as const, label: t('statuspages.tab.subscribers') }] : [])]),
   ];
 
   return (
-    <Modal open wide onClose={onClose} title={title} footer={<><Button onClick={onClose}>{t('common.cancel')}</Button><Button variant="primary" loading={save.isPending} onClick={submit}>{t('common.save')}</Button></>}>
+    <Modal open wide dirty={dirty} onClose={onClose} title={title} footer={<><CancelButton /><Button variant="primary" loading={save.isPending} onClick={submit}>{t('common.save')}</Button></>}>
       <div className="space-y-4">
-        <div className="overflow-x-auto"><Tabs tabs={tabs} value={tab} onChange={setTab} /></div>
-        {err && <div role="alert" className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">{err}</div>}
-        {tab === 'general' && (
+        <Tabs idPrefix="spe" label={title} tabs={tabs} value={tab} onChange={setTab} className="mb-0" />
+        <FormAlert messages={errs.rest} />
+        <TabPanel idPrefix="spe" id="general" value={tab}>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label={t('statuspages.f.title')}>{(i) => <Input id={i} value={f.title} onChange={(e) => setF((p) => ({ ...p, title: e.target.value, ...(slugOwn ? {} : { slug: slugify(e.target.value) }) }))} maxLength={255} />}</Field>
-            <Field label={t('statuspages.f.slug')} hint={t('statuspages.f.slugHint')}>{(i) => <Input id={i} value={f.slug} onChange={(e) => { setSlugOwn(e.target.value !== ''); set('slug', e.target.value); }} maxLength={63} placeholder="status" />}</Field>
-            <Field label={t('statuspages.f.description')} className="sm:col-span-2">{(i) => <Textarea id={i} rows={2} value={f.description} onChange={(e) => set('description', e.target.value)} maxLength={5000} />}</Field>
-            <Field label={t('statuspages.f.domain')} hint={t('statuspages.f.domainHint')} className="sm:col-span-2">{(i) => <Input id={i} value={f.domain} onChange={(e) => set('domain', e.target.value)} placeholder="status.example.com" />}</Field>
-            <Field label={t('statuspages.f.language')} hint={single ? t('statuspages.f.languageFixed') : t('statuspages.f.languageHint')}>{(i) => <Select id={i} value={single ?? f.language} disabled={!!single} onChange={(e) => set('language', e.target.value as Form['language'])}><option value="">{t('statuspages.f.language.auto')}</option><option value="en">{t('statuspages.f.language.en')}</option><option value="de">{t('statuspages.f.language.de')}</option></Select>}</Field>
-            <Field label={t('statuspages.f.serverInfo')} hint={t('statuspages.f.serverInfoHint')}>{(i) => <Select id={i} value={f.serverInfo} onChange={(e) => set('serverInfo', Number(e.target.value))}>{[0, 1, 2].map((n) => <option key={n} value={n}>{t(`statuspages.f.serverInfo.${n}`)}</option>)}</Select>}</Field>
+            <Field label={t('statuspages.f.title')} error={fe.title}>{(i) => <Input id={i} value={f.title} onChange={(e) => { clear('title', ...(slugOwn ? [] : ['slug'])); setF((p) => ({ ...p, title: e.target.value, ...(slugOwn ? {} : { slug: slugify(e.target.value) }) })); }} maxLength={255} />}</Field>
+            <Field label={t('statuspages.f.slug')} hint={t('statuspages.f.slugHint')} error={fe.slug}>{(i) => <Input id={i} value={f.slug} onChange={(e) => { setSlugOwn(e.target.value !== ''); set('slug', e.target.value); }} maxLength={63} placeholder="status" />}</Field>
+            <Field label={t('statuspages.f.description')} error={fe.description} className="sm:col-span-2">{(i) => <Textarea id={i} rows={2} value={f.description} onChange={(e) => set('description', e.target.value)} maxLength={5000} />}</Field>
+            <Field label={t('statuspages.f.domain')} hint={t('statuspages.f.domainHint')} error={fe.domain} className="sm:col-span-2">{(i) => <Input id={i} value={f.domain} onChange={(e) => set('domain', e.target.value)} placeholder="status.example.com" />}</Field>
+            <Field label={t('statuspages.f.language')} hint={single ? t('statuspages.f.languageFixed') : t('statuspages.f.languageHint')} error={fe.language}>{(i) => <Select id={i} value={single ?? f.language} disabled={!!single} onChange={(e) => set('language', e.target.value as Form['language'])}><option value="">{t('statuspages.f.language.auto')}</option><option value="en">{t('statuspages.f.language.en')}</option><option value="de">{t('statuspages.f.language.de')}</option></Select>}</Field>
+            <Field label={t('statuspages.f.serverInfo')} hint={t('statuspages.f.serverInfoHint')} error={fe.serverInfo}>{(i) => <Select id={i} value={f.serverInfo} onChange={(e) => set('serverInfo', Number(e.target.value))}>{[0, 1, 2].map((n) => <option key={n} value={n}>{t(`statuspages.f.serverInfo.${n}`)}</option>)}</Select>}</Field>
             <div className="flex flex-col items-start gap-3 sm:col-span-2">
               <Toggle checked={f.isPublic} onChange={(v) => set('isPublic', v)} label={t('statuspages.f.isPublic')} />
               <div><Toggle checked={f.isDefault} onChange={(v) => set('isDefault', v)} label={t('statuspages.f.default')} /><p className="hint">{t('statuspages.f.defaultHint')}</p></div>
               <Toggle checked={f.ssoRequired} onChange={(v) => set('ssoRequired', v)} label={t('statuspages.f.sso')} />
               <Toggle checked={f.showHistory} onChange={(v) => set('showHistory', v)} label={t('statuspages.f.history')} />
               {f.showHistory && (
-                <Field label={t('statuspages.f.historyDays')} className="max-w-xs">
+                <Field label={t('statuspages.f.historyDays')} error={fe.historyDays} className="max-w-xs">
                   {(i) => <Select id={i} value={f.historyDays} onChange={(e) => set('historyDays', Number(e.target.value))}>{HISTORY_DAYS.map((d) => <option key={d} value={d}>{t('statuspages.f.historyDaysOpt', { n: d })}</option>)}</Select>}
                 </Field>
               )}
               <Toggle checked={f.incidentDays > 0} onChange={(v) => set('incidentDays', v ? 30 : 0)} label={t('statuspages.f.pastIncidents')} />
               {f.incidentDays > 0 && (
                 <div className="flex flex-wrap gap-3">
-                  <Field label={t('statuspages.f.incidentDays')}>
+                  <Field label={t('statuspages.f.incidentDays')} error={fe.incidentDays}>
                     {(i) => <Select id={i} value={f.incidentDays} onChange={(e) => set('incidentDays', Number(e.target.value))}>{INCIDENT_DAYS.map((d) => <option key={d} value={d}>{d === 1 ? t('statuspages.f.dayOne') : t('statuspages.f.historyDaysOpt', { n: d })}</option>)}</Select>}
                   </Field>
-                  <Field label={t('statuspages.f.incidentPageSize')}>
+                  <Field label={t('statuspages.f.incidentPageSize')} error={fe.incidentPageSize}>
                     {(i) => <Select id={i} value={f.incidentPageSize} onChange={(e) => set('incidentPageSize', Number(e.target.value))}>{INCIDENT_PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}</Select>}
                   </Field>
                 </div>
               )}
               <p className="hint">{t('statuspages.f.incidentHint')}</p>
             </div>
-            <Field label={t('statuspages.f.password')} hint={t('statuspages.f.passwordHint')} className="sm:col-span-2">
+            <Field label={t('statuspages.f.password')} hint={t('statuspages.f.passwordHint')} error={fe.password} className="sm:col-span-2">
               {(i) => (
                 <div className="flex flex-wrap gap-2">
                   <Select id={i} className="w-auto" value={f.pwMode} onChange={(e) => set('pwMode', e.target.value as Form['pwMode'])}>
@@ -205,18 +248,25 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
                     <option value="set">{t('statuspages.pw.set')}</option>
                     {hadPassword && <option value="remove">{t('statuspages.pw.remove')}</option>}
                   </Select>
-                  {f.pwMode === 'set' && <Input type="password" autoComplete="new-password" className="min-w-[12rem] flex-1" aria-label={t('statuspages.f.password')} value={f.password} onChange={(e) => set('password', e.target.value)} />}
+                  {f.pwMode === 'set' && <Input type="password" autoComplete="new-password" className="min-w-[12rem] flex-1" aria-label={t('statuspages.f.password')} aria-invalid={fe.password ? true : undefined} value={f.password} onChange={(e) => set('password', e.target.value)} />}
                 </div>
               )}
             </Field>
           </div>
-        )}
-        {tab === 'components' && <Components groups={f.groups} onChange={(g) => set('groups', g)} monitors={monitors.data} loading={monitors.isLoading} error={monitors.error} />}
-        {tab === 'blocks' && <Blocks blocks={f.blocks} onChange={(b) => set('blocks', b)} />}
-        {tab === 'appearance' && (
+        </TabPanel>
+        <TabPanel idPrefix="spe" id="components" value={tab}>
+          <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200" role="note">{t('ux.statuspages.descPublic')}</div>
+          {fe.components && <div className="mb-4"><FormAlert messages={[fe.components]} /></div>}
+          <Components groups={f.groups} onChange={(g) => set('groups', g)} monitors={monitors.data} loading={monitors.isLoading} error={monitors.error} />
+        </TabPanel>
+        <TabPanel idPrefix="spe" id="blocks" value={tab}>
+          {fe.blocks && <div className="mb-4"><FormAlert messages={[fe.blocks]} /></div>}
+          <Blocks blocks={f.blocks} onChange={(b) => set('blocks', b)} />
+        </TabPanel>
+        <TabPanel idPrefix="spe" id="appearance" value={tab}>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label={t('statuspages.f.logo')} hint={t('statuspages.f.logoHint')}>{(i) => <Input id={i} type="url" value={f.logoUrl} onChange={(e) => set('logoUrl', e.target.value)} placeholder="https://…" />}</Field>
-            <Field label={t('statuspages.f.color')}>
+            <Field label={t('statuspages.f.logo')} hint={t('statuspages.f.logoHint')} error={fe.logoUrl}>{(i) => <Input id={i} type="url" value={f.logoUrl} onChange={(e) => set('logoUrl', e.target.value)} placeholder="https://…" />}</Field>
+            <Field label={t('statuspages.f.color')} error={fe.primaryColor}>
               {(i) => (
                 <div className="flex items-center gap-2">
                   <input id={i} type="color" className="h-9 w-12 cursor-pointer rounded border border-slate-300 bg-transparent p-0.5 dark:border-slate-700" value={f.primaryColor || '#4f46e5'} onChange={(e) => set('primaryColor', e.target.value)} />
@@ -225,12 +275,15 @@ function EditorForm({ id, initial, hadPassword, title, onClose, onSaved }: { id:
                 </div>
               )}
             </Field>
-            <Field label={t('statuspages.f.footer')} className="sm:col-span-2">{(i) => <Input id={i} value={f.footer} onChange={(e) => set('footer', e.target.value)} maxLength={500} />}</Field>
-            <Field label={t('statuspages.f.css')} hint={t('statuspages.f.cssHint')} className="sm:col-span-2">{(i) => <Textarea id={i} rows={8} spellCheck={false} value={f.customCss} onChange={(e) => set('customCss', e.target.value)} />}</Field>
+            <Field label={t('ux.statuspages.theme')} hint={t('ux.statuspages.themeHint')} error={fe.theme}>
+              {(i) => <Select id={i} value={f.theme} onChange={(e) => set('theme', isThemeId(e.target.value) ? e.target.value : '')}><option value="">{t('ux.statuspages.theme.classic')}</option>{THEMES.filter((x) => x.id !== 'classic').map((x) => <option key={x.id} value={x.id}>{t(`themes.name.${x.id}`)}</option>)}</Select>}
+            </Field>
+            <Field label={t('statuspages.f.footer')} error={fe.footer} className="sm:col-span-2">{(i) => <Input id={i} value={f.footer} onChange={(e) => set('footer', e.target.value)} maxLength={500} />}</Field>
+            <Field label={t('statuspages.f.css')} hint={t('statuspages.f.cssHint')} error={fe.customCss} className="sm:col-span-2">{(i) => <Textarea id={i} rows={8} spellCheck={false} value={f.customCss} onChange={(e) => set('customCss', e.target.value)} />}</Field>
           </div>
-        )}
-        {tab === 'announcements' && id !== 'new' && <Announcements pageId={id} />}
-        {tab === 'subscribers' && smtp && id !== 'new' && <Subscribers pageId={id} />}
+        </TabPanel>
+        {id !== 'new' && <TabPanel idPrefix="spe" id="announcements" value={tab}><Announcements pageId={id} onDirty={setAnnDirty} /></TabPanel>}
+        {smtp && id !== 'new' && <TabPanel idPrefix="spe" id="subscribers" value={tab}><Subscribers pageId={id} /></TabPanel>}
       </div>
     </Modal>
   );
@@ -329,7 +382,7 @@ const KINDS = ['info', 'maintenance', 'incident'] as const;
 const KIND_STYLE = { info: 'border-sky-400 bg-sky-50 text-sky-800 dark:bg-sky-950/40 dark:text-sky-200', maintenance: 'border-amber-400 bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200', incident: 'border-red-400 bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-200' } as const;
 
 /** Compose and publish one announcement; used inline in the editor and as the quick "Post update" dialog. */
-function AnnouncementForm({ pageId, onDone }: { pageId: number; onDone?: () => void }) {
+function AnnouncementForm({ pageId, onDone, onDirty }: { pageId: number; onDone?: () => void; onDirty?: (dirty: boolean) => void }) {
   const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
@@ -342,6 +395,8 @@ function AnnouncementForm({ pageId, onDone }: { pageId: number; onDone?: () => v
   const [from, setFrom] = useState('');
   const [until, setUntil] = useState('');
   const [notify, setNotify] = useState(false);
+  const typed = !!(title.trim() || body.trim() || titleV.en || titleV.de || bodyV.en || bodyV.de || from || until);
+  useEffect(() => { onDirty?.(typed); return () => onDirty?.(false); }, [typed]); // eslint-disable-line react-hooks/exhaustive-deps
   const add = useMutation({
     mutationFn: () => post(`/api/status-pages/${pageId}/announcements`, {
       kind, title: title.trim(), titleEn: titleV.en, titleDe: titleV.de, body: body.trim() || undefined, bodyEn: bodyV.en, bodyDe: bodyV.de, notify: smtp ? notify : false,
@@ -373,27 +428,28 @@ function AnnouncementForm({ pageId, onDone }: { pageId: number; onDone?: () => v
   );
 }
 
-function Announcements({ pageId }: { pageId: number }) {
+function Announcements({ pageId, onDirty }: { pageId: number; onDirty?: (dirty: boolean) => void }) {
   const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const key = ['status-page-announcements', pageId];
   const list = useQuery({ queryKey: key, queryFn: () => get<Announcement[]>(`/api/status-pages/${pageId}/announcements`) });
+  const { pageRows, pagerProps } = usePagedList(list.data ?? [], { key: 'sp-announcements' });
   const remove = async (a: Announcement) => {
     try { await del(`/api/status-pages/${pageId}/announcements/${a.id}`); void qc.invalidateQueries({ queryKey: key }); } catch (e) { toast(errorMessage(e), 'error'); }
   };
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-800"><AnnouncementForm pageId={pageId} /></div>
+      <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-800"><AnnouncementForm pageId={pageId} onDirty={onDirty} /></div>
       {list.isLoading ? <Loading /> : list.error ? <ErrorBox error={list.error} /> : !list.data?.length ? <p className="text-sm text-slate-500">{t('statuspages.ann.empty')}</p> : (
-        <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
-          {list.data.map((a) => (
+        <><ul className="divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+          {pageRows.map((a) => (
             <li key={a.id} className="flex items-start justify-between gap-3 p-3">
               <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><Badge tone={KIND_TONE[a.kind]}>{t(`statuspages.ann.kind.${a.kind}`)}</Badge><span className="font-medium">{a.title}</span></div>{a.body && <p className="mt-1 whitespace-pre-wrap text-sm">{a.body}</p>}<p className="mt-1 text-xs text-slate-500">{fmtDateTime(a.startsAt)}{a.endsAt ? ` – ${fmtDateTime(a.endsAt)}` : ''}</p></div>
               <Button size="sm" variant="ghost" aria-label={t('common.delete')} onClick={() => remove(a)}><Trash2 className="h-4 w-4" /></Button>
             </li>
           ))}
-        </ul>
+        </ul><Pager {...pagerProps} /></>
       )}
     </div>
   );
@@ -409,6 +465,7 @@ function Subscribers({ pageId }: { pageId: number }) {
   const list = useQuery({ queryKey: key, queryFn: () => get<Sub[]>(`/api/status-pages/${pageId}/subscribers`) });
   const [kind, setKind] = useState<Sub['kind']>('email');
   const [target, setTarget] = useState('');
+  const { pageRows, pagerProps } = usePagedList(list.data ?? [], { key: 'sp-subscribers' });
   const add = useMutation({
     mutationFn: () => post(`/api/status-pages/${pageId}/subscribers`, { kind, target: target.trim() }),
     onSuccess: () => { setTarget(''); void qc.invalidateQueries({ queryKey: key }); },
@@ -429,7 +486,7 @@ function Subscribers({ pageId }: { pageId: number }) {
           <table className="tbl">
             <thead><tr><th>{t('statuspages.sub.kind')}</th><th>{t('statuspages.sub.target')}</th><th>{t('common.status')}</th><th>{t('statuspages.sub.since')}</th><th /></tr></thead>
             <tbody>
-              {list.data.map((s) => (
+              {pageRows.map((s) => (
                 <tr key={s.id}>
                   <td><Badge>{t(`statuspages.sub.${s.kind}`)}</Badge></td><td className="break-all font-mono text-xs">{s.target}</td>
                   <td>{s.verified ? <Badge tone="green">{t('statuspages.sub.verified')}</Badge> : <Badge tone="amber">{t('statuspages.sub.pending')}</Badge>}</td>
@@ -439,6 +496,7 @@ function Subscribers({ pageId }: { pageId: number }) {
               ))}
             </tbody>
           </table>
+          <Pager {...pagerProps} />
         </div>
       )}
     </div>

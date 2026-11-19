@@ -1,7 +1,9 @@
 # PulseWatch: app + MariaDB. Optional profiles: "split" (separate worker), "probe" (remote probe agent).
-#   docker compose up -d                       app + database
+#   docker compose up -d                       app + database (pulls the official images from ghcr.io)
 #   PW_ROLE=api docker compose --profile split up -d     api and worker as separate containers
 #   docker compose --profile probe up -d       probe agent (needs PW_PROBE_TOKEN)
+# Upgrade the official images: docker compose pull && docker compose up -d
+# To build from this checkout instead, add docker-compose.build.yml (see the header of that file).
 x-app-env: &app-env
   PW_DB_HOST: mariadb
   PW_DB_PORT: 3306
@@ -10,7 +12,10 @@ x-app-env: &app-env
   PW_DB_PASSWORD: ${PW_DB_PASSWORD:?Set PW_DB_PASSWORD in .env (see .env.example)}
   PW_SECRET_KEY: ${PW_SECRET_KEY:-}
   PW_BASE_URL: ${PW_BASE_URL:-http://localhost:3000}
-  PW_TRUST_PROXY: ${PW_TRUST_PROXY:-false}
+  PW_TRUST_PROXY: ${PW_TRUST_PROXY:-false} # false | true | number of proxy hops | proxy IPs/CIDRs
+  PW_SETUP_TOKEN: ${PW_SETUP_TOKEN:-} # empty: a one-time token is generated and logged on the first start
+  PW_TIMEZONE: ${PW_TIMEZONE:-UTC} # IANA zone for day boundaries (rollups, heatmap, reports); the same for all roles
+  PW_SHUTDOWN_GRACE_MS: ${PW_SHUTDOWN_GRACE_MS:-20000} # keep below stop_grace_period
   PW_LOG_LEVEL: ${PW_LOG_LEVEL:-info}
   PW_SSRF_MODE: ${PW_SSRF_MODE:-allow-private}
   PW_SSRF_ALLOW: ${PW_SSRF_ALLOW:-}
@@ -56,16 +61,17 @@ services:
     security_opt: ["no-new-privileges:true"]
 
   app:
-    build: .
-    image: ${PW_IMAGE:-pulsewatch/app:latest}
+    image: ${PW_IMAGE:-ghcr.io/pd-codes/pdc-pulsewatch:latest}
     restart: unless-stopped
+    stop_grace_period: 30s # running checks and notifications finish before the container is killed
     depends_on:
       mariadb: { condition: service_healthy }
     environment:
       <<: *app-env
       PW_ROLE: ${PW_ROLE:-all}
     ports:
-      - "${PW_PUBLIC_PORT:-3000}:3000"
+      # behind a reverse proxy on the same host set PW_BIND=127.0.0.1
+      - "${PW_BIND:-0.0.0.0}:${PW_PUBLIC_PORT:-3000}:3000"
     volumes:
       - data:/data
     read_only: true
@@ -77,8 +83,9 @@ services:
   # Only with --profile split and PW_ROLE=api: runs the scheduler, rollups and notifications.
   worker:
     profiles: ["split"]
-    image: ${PW_IMAGE:-pulsewatch/app:latest}
+    image: ${PW_IMAGE:-ghcr.io/pd-codes/pdc-pulsewatch:latest}
     restart: unless-stopped
+    stop_grace_period: 30s
     depends_on:
       mariadb: { condition: service_healthy }
       app: { condition: service_healthy }
@@ -97,11 +104,9 @@ services:
   # Remote probe: run it on another network (copy this service to a compose file on that host).
   probe:
     profiles: ["probe"]
-    build:
-      context: .
-      dockerfile: Dockerfile.probe
-    image: ${PW_PROBE_IMAGE:-pulsewatch/probe:latest}
+    image: ${PW_PROBE_IMAGE:-ghcr.io/pd-codes/pdc-pulsewatch-probe:latest}
     restart: unless-stopped
+    stop_grace_period: 30s
     environment:
       PW_SERVER_URL: ${PW_SERVER_URL:-http://app:3000}
       PW_PROBE_TOKEN: ${PW_PROBE_TOKEN:-} # create a probe in the UI first

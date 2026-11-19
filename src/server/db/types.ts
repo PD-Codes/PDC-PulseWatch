@@ -12,8 +12,9 @@ export interface UsersTable {
   role: Generated<'admin' | 'editor' | 'viewer'>; scope_restricted: Flag; auth_source: Generated<'local' | 'oidc' | 'ldap' | 'saml'>;
   external_id: string | null; locale: string | null; theme: Generated<'light' | 'dark' | 'system'>;
   totp_secret_enc: string | null; totp_enabled: Flag; totp_recovery: string | null; is_active: Flag;
-  failed_logins: Generated<number>; locked_until: NTs; created_at: Ts; last_login_at: NTs;
+  failed_logins: Generated<number>; locked_until: NTs; created_at: Ts; last_login_at: NTs; totp_last_step: Generated<number | null>; ui_theme: Generated<string | null>;
 }
+export interface AuthFailuresTable { scope: string; subject: string; client: string; failures: Generated<number>; first_at: Ts; last_at: Ts; locked_until: NTs }
 export interface SessionsTable {
   id: Id; user_id: number; token_hash: string; created_at: Ts; last_seen_at: Ts; expires_at: Date; ip: string | null; user_agent: string | null;
 }
@@ -42,6 +43,8 @@ export interface MonitorsTable {
   active: Flag; locations: string | null; quorum: Generated<number>; push_token: string | null; public_badge: Flag;
   next_run_at: NTs; lease_owner: string | null; lease_until: NTs; attempt: Generated<number>;
   created_by: number | null; created_at: Ts; updated_at: Ts;
+  /** DECIMAL(6,3): the driver returns a string. */
+  slo_target: ColumnType<string | number | null, number | null | undefined, number | null>;
 }
 export interface MonitorTagsTable { monitor_id: number; tag_id: number; value: Generated<string> }
 export interface MonitorDependenciesTable { monitor_id: number; depends_on_id: number }
@@ -50,6 +53,7 @@ export interface MonitorStateTable {
   status_since: NTs; consecutive_fail: Generated<number>; consecutive_ok: Generated<number>; fail_since: NTs; last_check_at: NTs; last_latency_ms: number | null;
   last_error_kind: string | null; last_message: string | null; flapping: Flag; outcomes: Generated<string>; recent: string | null;
   cert_expires_at: NTs; cert_info: string | null; anomaly: string | null; info: string | null; last_push_at: NTs; updated_at: Ts;
+  sched_interval_s: number | null; snoozed_until: Generated<Date | null>; slo_breached: Flag;
 }
 export interface MonitorLocationStateTable {
   monitor_id: number; location_id: number; ok: number; ts: Date; latency_ms: number | null; error_kind: string | null; message: string | null;
@@ -81,7 +85,7 @@ export interface MaintenanceWindowsTable {
 export interface MaintenanceTargetsTable { window_id: number; target_type: 'monitor' | 'group' | 'tag'; target_id: number }
 export interface StatusPagesTable {
   id: Id; slug: string; title: string; description: string | null; language: string | null; domain: string | null; is_public: Flag; password_hash: string | null; sso_required: Flag;
-  branding: string | null; custom_css: string | null; blocks: string | null; show_history: Flag; history_days: Generated<number>; is_default: Flag; incident_days: Generated<number>; incident_page_size: Generated<number>; server_info: Generated<number>; created_at: Ts;
+  branding: string | null; custom_css: string | null; blocks: string | null; show_history: Flag; history_days: Generated<number>; is_default: Flag; incident_days: Generated<number>; incident_page_size: Generated<number>; server_info: Generated<number>; theme: Generated<string | null>; created_at: Ts;
 }
 export interface StatusPageSectionsTable { id: Id; page_id: number; name: string; sort: Generated<number> }
 export interface StatusPageComponentsTable { id: Id; page_id: number; section_id: number | null; monitor_id: number; display_name: string | null; hide_incidents: Generated<number>; sort: Generated<number> }
@@ -107,8 +111,16 @@ export interface CaCertsTable {
   id: Id; name: string; pem: string; subject: string; issuer: string; fingerprint256: string; valid_from: Ts; valid_to: Ts; created_by: number | null; created_at: Ts;
 }
 
+export interface ProbeResultsSeenTable { probe_id: number; result_id: string; ts: Ts }
+
+export interface EngineOutboxTable {
+  id: Generated<number>; monitor_id: number; created_at: Ts; payload: string; status: Generated<'pending' | 'done' | 'failed'>; attempts: Generated<number>;
+  next_attempt_at: Ts; claimed_by: string | null; claimed_until: NTs; incident_done: Flag; incident_ids: string | null; done_at: NTs; last_error: string | null;
+}
+export interface MaintenanceMarksTable { monitor_id: number; since: Ts }
+
 export interface DB {
-  users: UsersTable; sessions: SessionsTable; api_tokens: ApiTokensTable; passkeys: PasskeysTable; auth_providers: AuthProvidersTable;
+  users: UsersTable; auth_failures: AuthFailuresTable; sessions: SessionsTable; api_tokens: ApiTokensTable; passkeys: PasskeysTable; auth_providers: AuthProvidersTable;
   settings: SettingsTable; audit_log: AuditLogTable; monitor_groups: MonitorGroupsTable; permission_grants: PermissionGrantsTable;
   probes: ProbesTable; tags: TagsTable; monitors: MonitorsTable; monitor_tags: MonitorTagsTable; monitor_dependencies: MonitorDependenciesTable;
   monitor_state: MonitorStateTable; monitor_location_state: MonitorLocationStateTable; heartbeats: HeartbeatsTable; rollups: RollupsTable;
@@ -118,7 +130,7 @@ export interface DB {
   status_page_announcements: StatusPageAnnouncementsTable; status_page_subscribers: StatusPageSubscribersTable;
   notification_templates: NotificationTemplatesTable; notification_channels: NotificationChannelsTable; escalation_policies: EscalationPoliciesTable;
   monitor_notifications: MonitorNotificationsTable; notification_deliveries: NotificationDeliveriesTable; escalation_runs: EscalationRunsTable;
-  report_schedules: ReportSchedulesTable; ca_certs: CaCertsTable;
+  report_schedules: ReportSchedulesTable; engine_outbox: EngineOutboxTable; maintenance_marks: MaintenanceMarksTable; ca_certs: CaCertsTable; probe_results_seen: ProbeResultsSeenTable;
 }
 
 export type { ColumnType };

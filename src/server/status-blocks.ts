@@ -1,5 +1,7 @@
 import { sql } from 'kysely';
+import { config } from './config';
 import type { Ctx } from './context';
+import { localDate, recentDays } from './tz';
 
 /** Optional content blocks of a status page, shown below its components in the order the admin chose. */
 export type BlockConfig =
@@ -64,12 +66,17 @@ async function summary(ctx: Ctx, ids: number[]) {
   return { h24: pct(r.u24, r.d24), d7: pct(r.u7, r.d7), d30: pct(r.u30, r.d30), d90: pct(r.u90, r.d90) };
 }
 
+/** One bar per local day of PW_TIMEZONE (a daily bucket starts at its local midnight). */
 async function heatmap(ctx: Ctx, ids: number[], days: number): Promise<Day[]> {
-  const since = new Date(Math.floor(Date.now() / DAY) * DAY - (days - 1) * DAY);
+  const { since, dates } = recentDays(config.timezone, days);
   const { rows } = await sql<any>`SELECT bucket, SUM(up_n) u, SUM(down_n) d FROM rollups WHERE res = 'day' AND bucket >= ${since} AND monitor_id IN (${sql.join(ids)}) GROUP BY bucket ORDER BY bucket`.execute(ctx.db);
-  const by = new Map<string, { u: number; d: number }>(rows.map((r: any) => [new Date(r.bucket).toISOString().slice(0, 10), { u: Number(r.u), d: Number(r.d) }]));
-  return Array.from({ length: days }, (_, i) => {
-    const date = new Date(since.getTime() + i * DAY).toISOString().slice(0, 10), v = by.get(date);
+  const by = new Map<string, { u: number; d: number }>();
+  for (const r of rows) {
+    const k = localDate(config.timezone, new Date(r.bucket)), v = by.get(k) ?? { u: 0, d: 0 };
+    by.set(k, { u: v.u + Number(r.u), d: v.d + Number(r.d) });
+  }
+  return dates.map((date) => {
+    const v = by.get(date);
     return { date, uptime: v ? pct(v.u, v.d) : null, down: v?.d ?? 0, total: v ? v.u + v.d : 0 };
   });
 }

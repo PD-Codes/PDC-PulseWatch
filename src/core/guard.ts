@@ -11,7 +11,8 @@ export interface GuardConfig {
   deny: string[];
 }
 
-export const DEFAULT_DENY = ['169.254.169.254/32', 'fd00:ec2::254/128'];
+/** Cloud metadata and host agent endpoints: AWS/GCP/Azure IMDS (+ AWS IPv6), Alibaba, AWS ECS task metadata, Azure WireServer. */
+export const DEFAULT_DENY = ['169.254.169.254/32', 'fd00:ec2::254/128', '100.100.100.200/32', '169.254.170.2/32', '168.63.129.16/32'];
 
 const PRIVATE: [string, number, 'ipv4' | 'ipv6'][] = [
   ['0.0.0.0', 8, 'ipv4'],

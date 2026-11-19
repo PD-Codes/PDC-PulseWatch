@@ -5,8 +5,15 @@ export const setFormatLocale = (l: string) => { locale = l; };
 export const slugify = (s: string) => s.toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss').normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
   .replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 63).replace(/-+$/, '');
 
-export const fmtMs = (v: number | null | undefined) => (v == null ? '–' : v >= 10_000 ? `${(v / 1000).toFixed(1)} s` : v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${Math.round(v)} ms`);
-export const fmtPct = (v: number | null | undefined, digits = 2) => (v == null ? '–' : `${v.toFixed(digits).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '')}%`);
+/** Decimal comma for German, point otherwise. */
+const dec = (s: string) => (locale.startsWith('de') ? s.replace('.', ',') : s);
+
+export const fmtMs = (v: number | null | undefined) => (v == null ? '–' : v >= 10_000 ? `${dec((v / 1000).toFixed(1))} s` : v >= 1000 ? `${dec((v / 1000).toFixed(2))} s` : `${Math.round(v)} ms`);
+export const fmtPct = (v: number | null | undefined, digits = 2) => {
+  if (v == null) return '–';
+  const s = v.toFixed(digits).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+  return locale.startsWith('de') ? `${dec(s)}\u00a0%` : `${s}%`; // German: 99,5 % (no-break space)
+};
 
 export function fmtDuration(seconds: number | null | undefined): string {
   if (seconds == null) return '–';

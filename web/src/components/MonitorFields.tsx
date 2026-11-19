@@ -45,7 +45,8 @@ export function toConfig(fields: FieldDef[], v: FieldValues): Record<string, unk
   return out;
 }
 
-export function MonitorFields({ fields, values, onChange, idPrefix }: { fields: FieldDef[]; values: FieldValues; onChange: (key: string, v: FieldValue) => void; idPrefix: string }) {
+/** `errors`: server or client messages per field key, shown at the field. */
+export function MonitorFields({ fields, values, onChange, idPrefix, errors }: { fields: FieldDef[]; values: FieldValues; onChange: (key: string, v: FieldValue) => void; idPrefix: string; errors?: Record<string, string> }) {
   const t = useT();
   return (
     <div className="grid gap-4 sm:grid-cols-2">
@@ -53,7 +54,9 @@ export function MonitorFields({ fields, values, onChange, idPrefix }: { fields: 
         const label = f.required ? `${f.label} *` : f.label;
         const wide = f.kind === 'textarea' || f.kind === 'kv' || f.kind === 'json' ? 'sm:col-span-2' : undefined;
         const val = values[f.key] ?? (f.kind === 'kv' ? [] : ''); // defaults are seeded in an effect, so the first render can be empty
-        if (f.kind === 'bool') return <div key={f.key} className={wide}><Toggle checked={!!val} onChange={(c) => onChange(f.key, c)} label={f.label} />{f.help && <p className="hint">{f.help}</p>}</div>;
+        const err = errors?.[f.key];
+        const errLine = err ? <p className="mt-1 text-xs text-red-600 dark:text-red-400" role="alert">{err}</p> : null;
+        if (f.kind === 'bool') return <div key={f.key} className={wide}><Toggle checked={!!val} onChange={(c) => onChange(f.key, c)} label={f.label} />{errLine ?? (f.help && <p className="hint">{f.help}</p>)}</div>;
         if (f.kind === 'kv') {
           const rows = val as [string, string][];
           const set = (i: number, j: 0 | 1, s: string) => onChange(f.key, rows.map((r, n) => (n === i ? (j === 0 ? [s, r[1]] : [r[0], s]) : r)) as [string, string][]);
@@ -70,12 +73,12 @@ export function MonitorFields({ fields, values, onChange, idPrefix }: { fields: 
                 ))}
                 <Button size="sm" onClick={() => onChange(f.key, [...rows, ['', '']])}><Plus className="h-4 w-4" />{t('monitors.form.addRow')}</Button>
               </div>
-              {f.help && <p className="hint">{f.help}</p>}
+              {errLine ?? (f.help && <p className="hint">{f.help}</p>)}
             </fieldset>
           );
         }
         return (
-          <Field key={f.key} label={label} hint={f.help} className={wide}>
+          <Field key={f.key} label={label} hint={f.help} error={err} className={wide}>
             {(id) => {
               const dom = `${idPrefix}-${f.key}-${id}`;
               if (f.kind === 'select') return <Select id={id} value={String(val)} onChange={(e) => onChange(f.key, e.target.value)}>{!f.required && !f.options?.some((o) => o.value === '') && <option value="" />}{f.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</Select>;

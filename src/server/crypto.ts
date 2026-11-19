@@ -88,7 +88,16 @@ export function totpCode(secret: string, atMs = Date.now(), step = 30): string {
   return String(code % 1_000_000).padStart(6, '0');
 }
 
+/** The time step (30 s counter) the code belongs to, within one step of clock drift, or null. Callers store it to refuse a replay (see acceptTotp). */
+export function totpStep(secret: string, code: string, atMs = Date.now()): number | null {
+  const c = String(code ?? '').replace(/\s/g, '');
+  for (const w of [-1, 0, 1]) {
+    const t = atMs + w * 30_000;
+    if (safeEqual(totpCode(secret, t), c)) return Math.floor(t / 30_000);
+  }
+  return null;
+}
+
 export function verifyTotp(secret: string, code: string): boolean {
-  const c = code.replace(/\s/g, '');
-  return [-1, 0, 1].some((w) => safeEqual(totpCode(secret, Date.now() + w * 30_000), c));
+  return totpStep(secret, code) !== null;
 }

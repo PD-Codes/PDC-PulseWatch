@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import { accessibleMonitorIds, writeAudit } from '../auth/access';
 import { bool } from '../db';
+import { setSnooze, snoozeEnd } from '../alerts';
 import { textOrNull } from '../incidents';
 import type { IncidentStatus } from '../db/types';
 
@@ -105,13 +106,17 @@ export async function incidentRoutes(app: FastifyInstance) {
     return { ...inc, postmortem: row.postmortem, updates: updates.map((u) => ({ id: u.id, ts: u.ts, kind: u.kind, status: u.status, body: u.body, bodyEn: u.body_en, bodyDe: u.body_de, author: u.display_name, public: !!u.public, editedAt: u.edited_at, editable: u.user_id != null && EDITABLE.includes(u.kind) })) };
   });
 
-  /** A scope-restricted editor may only touch incidents that involve a monitor they manage; unrestricted users may touch all. */
-  async function mayChange(req: any, reply: any, id: number): Promise<boolean> {
+  /**
+   * Scope check for scope-restricted editors; unrestricted users may touch all incidents.
+   * 'any': one managed monitor is enough (own internal notes). 'all': changes to the incident as a whole (title, visibility, status, public or foreign entries)
+   * need every monitor of the incident, like maintenance windows; an incident without monitors is out of scope.
+   */
+  async function mayChange(req: any, reply: any, id: number, need: 'any' | 'all' = 'all'): Promise<boolean> {
     const mine = await accessibleMonitorIds(ctx, req.user, 'manage');
     if (mine === null) return true;
     const ids = (await db.selectFrom('incident_monitors').select('monitor_id').where('incident_id', '=', id).execute()).map((r) => r.monitor_id);
-    if (ids.some((m) => mine.includes(m))) return true;
-    reply.code(403).send({ error: 'forbidden', message: 'No access to this incident' });
+    if (need === 'any' ? ids.some((m) => mine.includes(m)) : ids.length > 0 && ids.every((m) => mine.includes(m))) return true;
+    reply.code(403).send({ error: 'forbidden', message: need === 'any' ? 'No access to this incident' : 'This incident involves monitors outside your scope; you can only add internal notes' });
     return false;
   }
 
@@ -180,6 +185,22 @@ export async function incidentRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  /** Snooze the alerts of every monitor of the incident that the user may manage (the others are left alone). */
+  app.post('/api/incidents/:id/snooze', { ...writer, schema: { tags: ['incidents'], summary: 'Snooze the alerts of the incident\'s monitors', params: Id, body: Type.Object({ minutes: Type.Optional(Type.Integer()), until: Type.Optional(Type.String({ maxLength: 40 })) }) } }, async (req, reply) => {
+    const id = (req.params as any).id;
+    if (!(await db.selectFrom('incidents').select('id').where('id', '=', id).executeTakeFirst())) return reply.code(404).send({ error: 'not_found' });
+    const vis = await visibleFilter(req);
+    if (vis && !vis.includes(id)) return reply.code(404).send({ error: 'not_found' });
+    const until = snoozeEnd(req.body as { minutes?: number; until?: string });
+    if (typeof until === 'string') return reply.code(400).send({ error: 'validation', message: until });
+    const mine = await accessibleMonitorIds(ctx, req.user!, 'manage');
+    const ids = (await db.selectFrom('incident_monitors').select('monitor_id').where('incident_id', '=', id).orderBy('monitor_id').execute()).map((r) => r.monitor_id).filter((m) => mine === null || mine.includes(m));
+    await setSnooze(ctx, ids, until);
+    await writeAudit(ctx, req.user, 'incident.snoozed', { type: 'incident', id }, { monitors: ids, until }, req.ip);
+    if (ids.length) ctx.bus.publish({ type: 'config', entity: 'monitor' });
+    return { snoozed: ids, snoozedUntil: until.toISOString() };
+  });
+
   app.post('/api/incidents/:id/ack', { ...writer, schema: { tags: ['incidents'], params: Id } }, async (req, reply) => {
     const id = (req.params as any).id;
     const row = await db.selectFrom('incidents').select('status').where('id', '=', id).executeTakeFirst();
@@ -214,7 +235,7 @@ export async function incidentRoutes(app: FastifyInstance) {
     const id = (req.params as any).id; const b = req.body as { body: string; bodyEn?: string; bodyDe?: string; status?: IncidentStatus; public?: boolean };
     const row = await db.selectFrom('incidents').select('status').where('id', '=', id).executeTakeFirst();
     if (!row) return reply.code(404).send({ error: 'not_found' });
-    if (!(await mayChange(req, reply, id))) return;
+    if (!(await mayChange(req, reply, id, b.public || (b.status && b.status !== row.status) ? 'all' : 'any'))) return;
     // a note with a new status is one timeline entry that does both
     if (b.status && b.status !== row.status && (await changeStatus(req, id, b.status, b.body, { en: b.bodyEn, de: b.bodyDe })) === 'ok') return { ok: true };
     // a plain note is internal unless the author marks it for the status page
@@ -228,7 +249,8 @@ export async function incidentRoutes(app: FastifyInstance) {
     const { id, uid } = req.params as { id: number; uid: number }; const b = req.body as { body?: string; bodyEn?: string | null; bodyDe?: string | null; public?: boolean };
     const row = await db.selectFrom('incident_updates').select(['kind', 'user_id', 'body', 'body_en', 'body_de', 'public']).where('id', '=', uid).where('incident_id', '=', id).executeTakeFirst();
     if (!row) return reply.code(404).send({ error: 'not_found' });
-    if (!(await mayChange(req, reply, id))) return;
+    // own internal entries stay editable with partial scope; public or foreign entries change what the incident says as a whole
+    if (!(await mayChange(req, reply, id, row.user_id === req.user!.id && !bool(row.public) && !b.public ? 'any' : 'all'))) return;
     if (row.user_id == null || !EDITABLE.includes(row.kind)) return reply.code(409).send({ error: 'conflict', message: 'Entries written by the system cannot be edited' });
     const set: Record<string, unknown> = {};
     if (b.body !== undefined && b.body.trim() !== row.body) set.body = b.body.trim();

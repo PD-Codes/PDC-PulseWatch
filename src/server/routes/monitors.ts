@@ -1,7 +1,7 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
-import { getRunner, restoreSecrets, runners, SECRET_MASK, validateConfig } from '../../core';
+import { getRunner, restoreSecrets, runners, SECRET_MASK, SecretTargetError, validateConfig } from '../../core';
 import { httpRequest } from '../../core/http';
 import { authHeaders } from '../../core/runners/http';
 import { timeoutSignal } from '../../core/util';
@@ -10,7 +10,10 @@ import { config } from '../config';
 import { parseJson } from '../db';
 import { BUILT_IN_DEFAULTS, DEFAULT_LIMITS, maxTimeoutS, monitorDefaults, resetMonitorDefaults, saveMonitorDefaults, type MonitorDefaults } from '../monitors/defaults';
 import { parseMonitor } from '../monitors/model';
-import { listMonitors, loadMonitor, monitorDetail, saveMonitor, ValidationError } from '../monitors/service';
+import { listMonitors, loadMonitor, monitorDetail, saveMonitor, spreadOver, ValidationError } from '../monitors/service';
+import { setSnooze, snoozeEnd, validSloTarget } from '../alerts';
+import { CSV_EXPORT, exportCsv, exportRowCount, fileStamp, type CsvKind } from '../csv-export';
+import { langMode, LANGS, userLang, type Lang } from '../notify/texts';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
 type Src = 'raw' | 'minute' | 'hour' | 'day';
@@ -47,14 +50,18 @@ function windowOf(q: { range?: string; from?: string; to?: string }, defRange: s
 }
 const pct = (s: number[], p: number) => (s.length ? s[Math.min(s.length - 1, Math.max(0, Math.ceil((p / 100) * s.length) - 1))] : null);
 
-/** Config as a read-only viewer gets it: free-form fields are masked and credentials inside URLs are removed. */
-function viewerConfig(type: string, config: Record<string, any>): Record<string, any> {
+/** Config as a read-only viewer gets it: free-form fields (and commands that may carry credentials, like Redis AUTH) are masked, credentials and query values inside URLs are removed. */
+export function viewerConfig(type: string, config: Record<string, any>): Record<string, any> {
   const out = { ...config };
   for (const f of getRunner(type)?.fields ?? []) {
     const v = out[f.key];
     if (v === undefined || v === null || v === '') continue;
-    if (f.kind === 'json' || f.kind === 'textarea') out[f.key] = SECRET_MASK;
-    else if (f.kind === 'text' && typeof v === 'string') out[f.key] = v.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/\s@]*@/i, '$1');
+    if (f.kind === 'json' || f.kind === 'textarea' || f.key === 'command') out[f.key] = SECRET_MASK;
+    else if (f.kind === 'text' && typeof v === 'string') {
+      const noUser = v.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/\s@]*@/i, '$1');
+      // ?apikey=...&token=... keeps the parameter names so the viewer still sees what is checked
+      out[f.key] = /^[a-z][a-z0-9+.-]*:\/\//i.test(noUser) ? noUser.replace(/([?&;][^=&#;\s]*=)[^&#;\s]*/g, '$1***').replace(/#.+$/, '#***') : noUser;
+    }
   }
   return out;
 }
@@ -80,7 +87,7 @@ export async function monitorRoutes(app: FastifyInstance) {
   };
   const wrapValidation = async <T>(reply: any, fn: () => Promise<T>) => {
     try { return await fn(); } catch (e) {
-      if (e instanceof ValidationError) { reply.code(400).send({ error: 'validation', message: e.message, errors: e.errors }); return undefined; }
+      if (e instanceof ValidationError || e instanceof SecretTargetError) { reply.code(400).send({ error: 'validation', message: e.message, errors: e.errors }); return undefined; }
       throw e;
     }
   };
@@ -175,16 +182,45 @@ export async function monitorRoutes(app: FastifyInstance) {
 
   /** A resumed push monitor gets a fresh grace period; otherwise its old last heartbeat makes it fail as "missed" the moment it resumes. */
   const startPushGrace = (ids: number[]) => db.updateTable('monitor_state').set({ last_push_at: new Date() }).where('monitor_id', 'in', db.selectFrom('monitors').select('id').where('type', '=', 'push').where('id', 'in', ids)).execute();
+  /** Resumed monitors start at a random point within their interval, so resuming many at once does not check them all in the same second. */
+  const resumeSpread = async (ids: number[]) => {
+    const rows = await db.selectFrom('monitors').select(['id', 'interval_s']).where('id', 'in', ids).execute();
+    for (let i = 0; i < rows.length; i += 500) {
+      const chunk = rows.slice(i, i + 500);
+      const next = sql<Date>`CASE id ${sql.join(chunk.map((r) => sql`WHEN ${r.id} THEN ${spreadOver(r.interval_s)}`), sql` `)} END`;
+      await db.updateTable('monitors').set({ active: 1, next_run_at: next, attempt: 0, lease_until: null, lease_owner: null }).where('id', 'in', chunk.map((r) => r.id)).execute();
+    }
+    await startPushGrace(ids);
+  };
   const setActive = (active: boolean) => async (req: any, reply: any) => {
     const id = await guardMonitor(req, reply, 'manage'); if (!id) return;
-    await db.updateTable('monitors').set(active ? { active: 1, next_run_at: new Date(), attempt: 0, lease_until: null, lease_owner: null } : { active: 0 }).where('id', '=', id).execute();
-    if (active) await startPushGrace([id]);
+    if (active) await resumeSpread([id]);
+    else await db.updateTable('monitors').set({ active: 0 }).where('id', '=', id).execute();
     await writeAudit(ctx, req.user, active ? 'monitor.resumed' : 'monitor.paused', { type: 'monitor', id }, undefined, req.ip);
     ctx.bus.publish({ type: 'config', entity: 'monitor', id });
     return { ok: true };
   };
   app.post('/api/monitors/:id/pause', { ...writer, schema: { tags: ['monitors'], params: Id } }, setActive(false));
   app.post('/api/monitors/:id/resume', { ...writer, schema: { tags: ['monitors'], params: Id } }, setActive(true));
+
+  /* --------------------------------- snooze --------------------------------- */
+  const snoozeBody = Type.Object({ minutes: Type.Optional(Type.Integer()), until: Type.Optional(Type.String({ maxLength: 40 })) });
+  app.post('/api/monitors/:id/snooze', { ...writer, schema: { tags: ['monitors'], summary: 'Hold back notifications for a while (checks go on)', params: Id, body: snoozeBody } }, async (req, reply) => {
+    const id = await guardMonitor(req, reply, 'manage'); if (!id) return;
+    const until = snoozeEnd(req.body as { minutes?: number; until?: string });
+    if (typeof until === 'string') return reply.code(400).send({ error: 'validation', message: until });
+    await setSnooze(ctx, [id], until);
+    await writeAudit(ctx, req.user, 'monitor.snoozed', { type: 'monitor', id }, { until }, req.ip);
+    ctx.bus.publish({ type: 'config', entity: 'monitor', id });
+    return { snoozedUntil: until.toISOString() };
+  });
+  app.delete('/api/monitors/:id/snooze', { ...writer, schema: { tags: ['monitors'], summary: 'End a snooze now', params: Id } }, async (req, reply) => {
+    const id = await guardMonitor(req, reply, 'manage'); if (!id) return;
+    await setSnooze(ctx, [id], null);
+    await writeAudit(ctx, req.user, 'monitor.unsnoozed', { type: 'monitor', id }, undefined, req.ip);
+    ctx.bus.publish({ type: 'config', entity: 'monitor', id });
+    return { snoozedUntil: null };
+  });
 
   app.post('/api/monitors/:id/clone', { ...writer, schema: { tags: ['monitors'], params: Id } }, async (req, reply) => {
     const id = await guardMonitor(req, reply, 'manage'); if (!id) return;
@@ -195,7 +231,7 @@ export async function monitorRoutes(app: FastifyInstance) {
     const newId = await wrapValidation(reply, () => saveMonitor(ctx, {
       name: `${src.name} (copy)`, type: src.type, groupId: src.groupId, description: src.description, config: src.config, intervalS: src.intervalS, timeoutS: src.timeoutS,
       retries: src.retries, retryIntervalS: src.retryIntervalS, upThreshold: src.upThreshold, flapWindow: src.flapWindow, flapThreshold: src.flapThreshold, downAfterS: src.downAfterS,
-      active: false, locations: src.locations, quorum: src.quorum, publicBadge: false, tagIds: tags.filter((t) => !t.value).map((t) => t.tag_id), tagValues: tags.filter((t) => t.value).map((t) => ({ tagId: t.tag_id, value: t.value })), dependsOn: deps.map((d) => d.depends_on_id),
+      active: false, locations: src.locations, quorum: src.quorum, publicBadge: false, sloTarget: src.sloTarget, tagIds: tags.filter((t) => !t.value).map((t) => t.tag_id), tagValues: tags.filter((t) => t.value).map((t) => ({ tagId: t.tag_id, value: t.value })), dependsOn: deps.map((d) => d.depends_on_id),
       notifications: notes.map((n) => ({ channelId: n.channel_id, policyId: n.policy_id, events: n.events.split(',') })),
     }, req.user!.id));
     if (newId === undefined) return;
@@ -222,7 +258,13 @@ export async function monitorRoutes(app: FastifyInstance) {
     if (b.monitorId) {
       if (!(await canManageMonitor(ctx, req.user!, b.monitorId, 'manage'))) return reply.code(404).send({ error: 'not_found', message: 'Monitor not found' });
       const stored = await loadMonitor(ctx, b.monitorId);
-      if (stored) cfg = restoreSecrets(runner, cfg, stored.config);
+      // the stored secrets only go back to the stored target: a changed URL with masked credentials is refused (400)
+      if (stored) {
+        try { cfg = restoreSecrets(runner, cfg, stored.config); } catch (e) {
+          if (e instanceof SecretTargetError) return reply.code(400).send({ error: 'validation', message: e.message, errors: e.errors });
+          throw e;
+        }
+      }
     }
     const v = validateConfig(runner, cfg);
     if (v.errors.length) return reply.code(400).send({ error: 'validation', message: v.errors.join('; ') });
@@ -244,11 +286,14 @@ export async function monitorRoutes(app: FastifyInstance) {
       tags: ['monitors'], summary: 'Bulk actions',
       body: Type.Object({
         ids: Type.Array(Type.Integer(), { minItems: 1, maxItems: 1000 }),
-        action: Type.Union([Type.Literal('pause'), Type.Literal('resume'), Type.Literal('delete'), Type.Literal('patch')]),
+        action: Type.Union([Type.Literal('pause'), Type.Literal('resume'), Type.Literal('delete'), Type.Literal('patch'), Type.Literal('snooze'), Type.Literal('unsnooze')]),
+        // action "snooze": either minutes or until, as in POST /api/monitors/:id/snooze
+        minutes: Type.Optional(Type.Integer()), until: Type.Optional(Type.String({ maxLength: 40 })),
         patch: Type.Optional(Type.Object({
           intervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 86400 })), timeoutS: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })), retries: Type.Optional(Type.Integer({ minimum: 0, maximum: 100 })),
           retryIntervalS: Type.Optional(Type.Integer({ minimum: 5, maximum: 3600 })), upThreshold: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
           flapWindow: Type.Optional(Type.Integer({ minimum: 4, maximum: 60 })), flapThreshold: Type.Optional(Type.Integer({ minimum: 0, maximum: 60 })), downAfterS: Type.Optional(Type.Union([Type.Null(), Type.Integer({ minimum: 0, maximum: 86400 })])), publicBadge: Type.Optional(Type.Boolean()),
+          sloTarget: Type.Optional(Type.Union([Type.Null(), Type.Number()])),
           groupId: Type.Optional(Type.Union([Type.Null(), Type.Integer()])), addTagIds: Type.Optional(Type.Array(Type.Integer())), removeTagIds: Type.Optional(Type.Array(Type.Integer())),
           notifications: Type.Optional(Type.Object({ mode: Type.Union([Type.Literal('add'), Type.Literal('replace')]), rules: Type.Array(ruleBody, { maxItems: 20 }) })),
         })),
@@ -261,9 +306,14 @@ export async function monitorRoutes(app: FastifyInstance) {
     if (!ids.length) return { ok: true, affected: 0 };
     const denied = b.action === 'patch' ? await scopeProblem(req, b.patch ?? {}, false) : null;
     if (denied) return reply.code(403).send({ error: 'forbidden', message: denied });
+    const until = b.action === 'snooze' ? snoozeEnd(b) : null;
+    if (typeof until === 'string') return reply.code(400).send({ error: 'validation', message: until });
+    if (b.action === 'patch' && b.patch?.sloTarget != null && !validSloTarget(b.patch.sloTarget)) return reply.code(400).send({ error: 'validation', message: 'SLO target must be a percentage of at least 50 and below 100 with at most three decimals' });
     if (b.action === 'patch' && b.patch?.groupId != null && !(await db.selectFrom('monitor_groups').select('id').where('id', '=', b.patch.groupId).executeTakeFirst())) return reply.code(400).send({ error: 'validation', message: 'Group not found' });
     if (b.action === 'pause') await db.updateTable('monitors').set({ active: 0 }).where('id', 'in', ids).execute();
-    else if (b.action === 'resume') { await db.updateTable('monitors').set({ active: 1, next_run_at: new Date(), attempt: 0 }).where('id', 'in', ids).execute(); await startPushGrace(ids); }
+    else if (b.action === 'resume') await resumeSpread(ids);
+    else if (b.action === 'snooze') await setSnooze(ctx, ids, until as Date);
+    else if (b.action === 'unsnooze') await setSnooze(ctx, ids, null);
     else if (b.action === 'delete') { await db.deleteFrom('monitors').where('id', 'in', ids).execute(); await closeIncidentsOf(ids); for (const t of ['heartbeats', 'rollups', 'events'] as const) await db.deleteFrom(t).where('monitor_id', 'in', ids).execute(); }
     else {
       const p = b.patch ?? {};
@@ -271,6 +321,7 @@ export async function monitorRoutes(app: FastifyInstance) {
       const set: Record<string, unknown> = {};
       for (const [k, col] of Object.entries(cols)) if (p[k] !== undefined) set[col] = p[k];
       if (p.publicBadge !== undefined) set.public_badge = p.publicBadge ? 1 : 0;
+      if (p.sloTarget !== undefined) set.slo_target = p.sloTarget;
       if (Object.keys(set).length) await db.updateTable('monitors').set(set).where('id', 'in', ids).execute();
       if (p.removeTagIds?.length) await db.deleteFrom('monitor_tags').where('monitor_id', 'in', ids).where('tag_id', 'in', p.removeTagIds).execute();
       if (p.addTagIds?.length) await db.insertInto('monitor_tags').values(ids.flatMap((m: number) => p.addTagIds.map((t: number) => ({ monitor_id: m, tag_id: t })))).ignore().execute();
@@ -280,9 +331,9 @@ export async function monitorRoutes(app: FastifyInstance) {
         if (rules.length) await db.insertInto('monitor_notifications').values(ids.flatMap((m: number) => rules.map((r: any) => ({ monitor_id: m, channel_id: r.channelId ?? null, policy_id: r.policyId ?? null, events: (r.events?.length ? r.events : ['down', 'up', 'flap']).join(',') })))).execute();
       }
     }
-    await writeAudit(ctx, req.user, `monitor.bulk_${b.action}`, { type: 'monitor' }, { ids, patch: b.patch }, req.ip);
+    await writeAudit(ctx, req.user, `monitor.bulk_${b.action}`, { type: 'monitor' }, { ids, patch: b.patch, ...(until ? { until } : {}) }, req.ip);
     ctx.bus.publish({ type: 'config', entity: 'monitor' });
-    return { ok: true, affected: ids.length };
+    return { ok: true, affected: ids.length, ...(b.action === 'snooze' ? { snoozedUntil: (until as Date).toISOString() } : b.action === 'unsnooze' ? { snoozedUntil: null } : {}) };
   });
 
   /** Create many monitors that share every setting except name and address. */
@@ -410,6 +461,30 @@ export async function monitorRoutes(app: FastifyInstance) {
     s = s.limit(q.limit ?? 100);
     if (q.before) s = s.where('id', '<', q.before);
     return (await s.execute()).map(map);
+  });
+
+  /** Raw heartbeats or events of a window as CSV, streamed page by page and capped (X-PulseWatch-Truncated says whether rows were left out). */
+  app.get('/api/monitors/:id/export.csv', {
+    ...auth, config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
+    schema: {
+      tags: ['monitors'], summary: 'Export heartbeats or events as CSV', params: Id,
+      querystring: Type.Object({ kind: Type.Optional(Type.Union([Type.Literal('heartbeats'), Type.Literal('events')])), from: Type.Optional(Type.String({ maxLength: 40 })), to: Type.Optional(Type.String({ maxLength: 40 })), lang: Type.Optional(Type.Union(LANGS.map((l) => Type.Literal(l)))) }),
+    },
+  }, async (req, reply) => {
+    const id = await guardMonitor(req, reply, 'view'); if (!id) return;
+    const q = req.query as { kind?: CsvKind; from?: string; to?: string; lang?: Lang };
+    const kind = q.kind ?? 'heartbeats';
+    const to = q.to ? new Date(q.to) : new Date();
+    const from = q.from ? new Date(q.from) : new Date(to.getTime() - DAY);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) return reply.code(400).send({ error: 'validation', message: '"from" and "to" must be ISO dates with "from" before "to"' });
+    const lang = (await langMode(ctx)) !== 'both' ? await userLang(ctx, req.user) : q.lang ?? (await userLang(ctx, req.user));
+    const truncated = (await exportRowCount(db, kind, id, from, to)) > CSV_EXPORT.maxRows;
+    const probeNames = kind === 'heartbeats' ? new Map((await db.selectFrom('probes').select(['id', 'name']).execute()).map((p) => [p.id, p.name])) : new Map<number, string>();
+    return reply.type('text/csv; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="pulsewatch-${id}-${kind}-${fileStamp(from)}-${fileStamp(to)}.csv"`)
+      .header('X-PulseWatch-Truncated', String(truncated))
+      .header('Cache-Control', 'no-store')
+      .send(exportCsv(db, { kind, monitorId: id, from, to, lang, probeNames }));
   });
 
   /** Up/down periods derived from status-change events; the state that began before the window is carried in so short windows still show an ongoing outage. */

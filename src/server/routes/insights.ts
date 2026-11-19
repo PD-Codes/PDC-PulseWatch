@@ -2,9 +2,10 @@ import { Type } from '@sinclair/typebox';
 import { sql } from 'kysely';
 import type { FastifyInstance } from 'fastify';
 import { accessibleMonitorIds } from '../auth/access';
+import { config } from '../config';
 import { parseJson } from '../db';
+import { localDate, recentDays } from '../tz';
 
-const DAY = 86_400_000;
 const hostOf = (cfg: Record<string, any>): string | null => {
   try { return cfg.host ? String(cfg.host).toLowerCase() : cfg.url ? new URL(cfg.url).hostname.toLowerCase() : null; } catch { return null; }
 };
@@ -22,12 +23,16 @@ export async function insightRoutes(app: FastifyInstance) {
     if (q.monitorId && allowed && !allowed.includes(q.monitorId)) return reply.code(404).send({ error: 'not_found' });
     const ids = q.monitorId ? [q.monitorId] : allowed;
     if (ids && !ids.length) return { days: [] };
-    const since = new Date(Math.floor(Date.now() / DAY) * DAY - (days - 1) * DAY);
+    // days are local days of PW_TIMEZONE; a daily bucket starts at its local midnight
+    const { since, dates } = recentDays(config.timezone, days);
     const rows = await sql<any>`SELECT bucket, SUM(up_n) u, SUM(down_n) d, SUM(maint_n) m FROM rollups WHERE res = 'day' AND bucket >= ${since} ${ids ? sql`AND monitor_id IN (${sql.join(ids)})` : sql``} GROUP BY bucket ORDER BY bucket`.execute(db);
-    const by = new Map<string, { u: number; d: number; m: number }>(rows.rows.map((r: any) => [new Date(r.bucket).toISOString().slice(0, 10), { u: Number(r.u), d: Number(r.d), m: Number(r.m) }]));
+    const by = new Map<string, { u: number; d: number; m: number }>();
+    for (const r of rows.rows) {
+      const k = localDate(config.timezone, new Date(r.bucket)), v = by.get(k) ?? { u: 0, d: 0, m: 0 };
+      by.set(k, { u: v.u + Number(r.u), d: v.d + Number(r.d), m: v.m + Number(r.m) });
+    }
     const out = [];
-    for (let i = 0; i < days; i++) {
-      const date = new Date(since.getTime() + i * DAY).toISOString().slice(0, 10);
+    for (const date of dates) {
       const v = by.get(date);
       out.push({ date, uptime: v && v.u + v.d ? Math.round((v.u / (v.u + v.d)) * 10000) / 100 : null, down: v?.d ?? 0, total: v ? v.u + v.d : 0, maintenance: v?.m ?? 0 });
     }

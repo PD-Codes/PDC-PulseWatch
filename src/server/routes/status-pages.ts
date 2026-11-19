@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { httpRequest } from '../../core/http';
 import { timeoutSignal } from '../../core/util';
 import { writeAudit } from '../auth/access';
+import { clearFailures, failureWait, recordFailure, waitMessage } from '../auth/reauth';
 import { config } from '../config';
 import type { Ctx } from '../context';
 import { decrypt, encrypt, hashPassword, hmac, randomToken, safeEqual, sha256, verifyPassword } from '../crypto';
@@ -12,6 +13,8 @@ import { mailConfigured, sendSystemMail } from '../mail';
 import { publicInfo, type ServerInfo } from '../monitors/info';
 import { langMode, type Lang } from '../notify/texts';
 import { cached, MAX_BLOCKS, normalizeBlocks, renderBlocks } from '../status-blocks';
+import { isThemeId, ThemeSchema } from '../themes';
+import { localDate, recentDays } from '../tz';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
 const Slug = Type.Object({ slug: Type.String({ minLength: 1, maxLength: 64 }) });
@@ -42,7 +45,7 @@ export const PAGE_LANGUAGES = ['en', 'de'] as const;
 const LangQ = Type.Optional(Type.Union(PAGE_LANGUAGES.map((l) => Type.Literal(l))));
 export const HISTORY_DAYS = [14, 30, 60, 90, 120, 150, 180] as const;
 
-type Page = { id: number; slug: string; title: string; description: string | null; language: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; blocks: string | null; show_history: number; history_days: number; is_default: number; incident_days: number; incident_page_size: number; server_info: number };
+type Page = { id: number; slug: string; title: string; description: string | null; language: string | null; domain: string | null; is_public: number; password_hash: string | null; sso_required: number; branding: string | null; custom_css: string | null; blocks: string | null; show_history: number; history_days: number; is_default: number; incident_days: number; incident_page_size: number; server_info: number; theme: string | null };
 const unlockCookie = (p: Page) => `pw_sp_${p.id}`;
 const unlockValue = (p: Page) => hmac(`status-unlock:${p.id}:${p.password_hash}`);
 
@@ -70,6 +73,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     customCss: Type.Optional(Type.Union([Type.String({ maxLength: 50_000 }), Type.Null()])), showHistory: Type.Optional(Type.Boolean()), historyDays: Type.Optional(Type.Union(HISTORY_DAYS.map((d) => Type.Literal(d)))), isDefault: Type.Optional(Type.Boolean()),
     incidentDays: Type.Optional(Type.Integer({ minimum: 0, maximum: 365 })), incidentPageSize: Type.Optional(Type.Integer({ minimum: 5, maximum: 50 })),
     language: Type.Optional(Type.Union([Type.Literal('en'), Type.Literal('de'), Type.Null()])), serverInfo: Type.Optional(Type.Integer({ minimum: 0, maximum: 2 })),
+    theme: Type.Optional(Type.Union([ThemeSchema, Type.Null()])),
     sections: Type.Array(Type.Object({ name: Type.String({ minLength: 1, maxLength: 255 }), components: Type.Array(compBody) }), { maxItems: 50 }),
     components: Type.Optional(Type.Array(compBody)),
   });
@@ -82,7 +86,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     const map = (c: typeof comps[number]) => ({ monitorId: c.monitor_id, displayName: c.display_name, hideIncidents: bool(c.hide_incidents) });
     return {
       id: p.id, slug: p.slug, title: p.title, description: p.description, domain: p.domain, isPublic: bool(p.is_public), hasPassword: !!p.password_hash, ssoRequired: bool(p.sso_required),
-      branding: parseJson(p.branding, {}), customCss: p.custom_css, blocks: normalizeBlocks(parseJson(p.blocks, [])), showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size, language: p.language, serverInfo: p.server_info,
+      branding: parseJson(p.branding, {}), customCss: p.custom_css, blocks: normalizeBlocks(parseJson(p.blocks, [])), showHistory: bool(p.show_history), historyDays: p.history_days, isDefault: bool(p.is_default), incidentDays: p.incident_days, incidentPageSize: p.incident_page_size, language: p.language, serverInfo: p.server_info, theme: isThemeId(p.theme) ? p.theme : null,
       sections: sections.map((s) => ({ id: s.id, name: s.name, components: comps.filter((c) => c.section_id === s.id).map(map) })), components: comps.filter((c) => !c.section_id).map(map),
     };
   };
@@ -120,6 +124,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     if (b.incidentPageSize !== undefined) values.incident_page_size = b.incidentPageSize;
     if (b.language !== undefined) values.language = b.language;
     if (b.serverInfo !== undefined) values.server_info = b.serverInfo;
+    if (b.theme !== undefined) values.theme = b.theme;
     if (b.isDefault !== undefined) values.is_default = b.isDefault ? 1 : 0;
     if (b.password === null) values.password_hash = null; else if (typeof b.password === 'string') values.password_hash = await hashPassword(b.password);
     try {
@@ -247,25 +252,35 @@ export async function statusPageRoutes(app: FastifyInstance) {
 
   app.post('/api/public/status/:slug/unlock', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, schema: { tags: ['public'], params: Slug, body: Type.Object({ password: Type.String({ maxLength: 200 }) }) } }, async (req, reply) => {
     const p = await findPage((req.params as any).slug, req.headers.host);
-    if (!p?.password_hash || !(await verifyPassword((req.body as any).password, p.password_hash))) return reply.code(401).send({ error: 'invalid_password', message: 'Wrong password' });
+    if (!p?.password_hash) return reply.code(401).send({ error: 'invalid_password', message: 'Wrong password' });
+    // page passwords may be short: guesses are limited per (page, address) with growing delays, plus a page-wide brake of short delays against
+    // address rotation (no long page-wide lock, that would shut out every reader)
+    const subject = `p:${p.id}`;
+    const wait = await failureWait(ctx, 'status', subject, req.ip);
+    if (wait) return reply.code(429).header('Retry-After', String(Math.ceil(wait / 1000))).send({ error: 'locked', message: waitMessage(wait), retryAfter: Math.ceil(wait / 1000) });
+    if (!(await verifyPassword((req.body as any).password, p.password_hash))) {
+      await recordFailure(ctx, 'status', subject, req.ip, { subjectWide: 'brake' });
+      return reply.code(401).send({ error: 'invalid_password', message: 'Wrong password' });
+    }
+    await clearFailures(ctx, 'status', subject, req.ip);
     reply.setCookie(unlockCookie(p), unlockValue(p), { httpOnly: true, sameSite: 'lax', secure: config.session.cookieSecure, path: '/', maxAge: 7 * 86400 });
     return { ok: true };
   });
 
-  /** Daily uptime for the last N days from day rollups (today from hourly). */
+  /** Daily uptime for the last N local days of PW_TIMEZONE from hourly rollups (an hour counts for the day its start falls in, as in the daily rollups). */
   // every open browser polls the page, and the history reads up to 180 days of hourly rows per monitor, so it is shared for a minute
   const dailyUptime = (monitorIds: number[], days: number) => cached(`daily:${days}:${monitorIds.join(',')}`, () => loadDailyUptime(monitorIds, days));
   async function loadDailyUptime(monitorIds: number[], days: number) {
-    const since = new Date(Math.floor(Date.now() / DAY) * DAY - (days - 1) * DAY);
+    const { since, dates } = recentDays(config.timezone, days);
     const rows = monitorIds.length ? await db.selectFrom('rollups').select(['monitor_id', 'bucket', 'up_n', 'down_n']).where('monitor_id', 'in', monitorIds).where('res', '=', 'hour').where('bucket', '>=', since).execute() : [];
     const by = new Map<number, Map<string, { up: number; down: number }>>();
     for (const r of rows) {
       const m = by.get(r.monitor_id) ?? by.set(r.monitor_id, new Map()).get(r.monitor_id)!;
-      const k = r.bucket.toISOString().slice(0, 10);
+      const k = localDate(config.timezone, r.bucket);
       const d = m.get(k) ?? { up: 0, down: 0 };
       d.up += r.up_n; d.down += r.down_n; m.set(k, d);
     }
-    return { since, by };
+    return { dates, by };
   }
 
   async function buildPage(p: Page, lang: string | null) {
@@ -274,13 +289,13 @@ export async function statusPageRoutes(app: FastifyInstance) {
       .select(['c.section_id', 'c.display_name', 'c.hide_incidents', 'c.monitor_id', 'm.name', 'm.description', 'm.active', 's.status', 's.overlay', 's.status_since', 's.info']).where('c.page_id', '=', p.id).orderBy('c.sort').execute();
     const ids = comps.map((c) => c.monitor_id);
     const history = bool(p.show_history);
-    const { since, by } = history ? await dailyUptime(ids, p.history_days) : { since: new Date(), by: new Map() };
+    const { dates, by } = history ? await dailyUptime(ids, p.history_days) : { dates: [] as string[], by: new Map() };
     const shape = (c: typeof comps[number]) => {
       const days = by.get(c.monitor_id) ?? new Map();
       let up = 0, down = 0;
       const daily: { date: string; uptime: number | null }[] = [];
-      if (history) for (let i = 0; i < p.history_days; i++) {
-        const k = new Date(since.getTime() + i * DAY).toISOString().slice(0, 10); const d = days.get(k);
+      if (history) for (const k of dates) {
+        const d = days.get(k);
         if (d) { up += d.up; down += d.down; }
         daily.push({ date: k, uptime: d && d.up + d.down ? Math.round((d.up / (d.up + d.down)) * 10000) / 100 : null });
       }
@@ -295,7 +310,7 @@ export async function statusPageRoutes(app: FastifyInstance) {
     // components without a result yet: the page still says operational, with a hint that not everything is known
     const unknownCount = all.filter((s) => s === 'unknown').length;
     return {
-      slug: p.slug, title: p.title, description: p.description, branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: history, historyDays: p.history_days, incidentDays: p.incident_days, incidentPageSize: p.incident_page_size, language: p.language, overall, unknownCount, generatedAt: now,
+      slug: p.slug, title: p.title, description: p.description, branding: parseJson(p.branding, {}), customCss: p.custom_css, showHistory: history, historyDays: p.history_days, incidentDays: p.incident_days, incidentPageSize: p.incident_page_size, language: p.language, theme: isThemeId(p.theme) ? p.theme : null, overall, unknownCount, generatedAt: now,
       sections: sections.map((s) => ({ name: s.name, components: comps.filter((c) => c.section_id === s.id).map(shape) })), components: comps.filter((c) => !c.section_id).map(shape),
       announcements: announcements.map((a) => ({ id: a.id, kind: a.kind, title: pickText(lang, a.title, a.title_en, a.title_de)!, body: pickText(lang, a.body, a.body_en, a.body_de), startsAt: a.starts_at, endsAt: a.ends_at })), maintenance: maint,
       incidents: incidents.filter((i) => !i.resolvedAt), recentIncidents: incidents.filter((i) => i.resolvedAt),

@@ -1,11 +1,13 @@
 import { Type } from '@sinclair/typebox';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import YAML from 'yaml';
 import { writeAudit } from '../auth/access';
+import { reauthError } from '../auth/reauth';
+import { reauthClient, reauthFields } from './auth';
 import { config } from '../config';
 import { KumaLoginError, kumaFromApi, kumaFromSqlite } from '../kuma-source';
 import { convertKuma, describeImport, exportConfig, filterConfigDoc, importConfig, noteWarnings, type ConfigDoc, type ImportReport, type ImportSelection } from '../portability';
@@ -14,13 +16,27 @@ export async function configRoutes(app: FastifyInstance) {
   const ctx = app.ctx;
   const admin = { preHandler: app.requireRole('admin') };
 
-  app.get('/api/config/export', { ...admin, schema: { tags: ['config'], summary: 'Export the configuration as YAML or JSON', querystring: Type.Object({ format: Type.Optional(Type.Union([Type.Literal('json'), Type.Literal('yaml')])), secrets: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
-    const q = req.query as { format?: 'json' | 'yaml'; secrets?: boolean };
+  const sendExport = async (req: FastifyRequest, reply: FastifyReply, q: { format?: 'json' | 'yaml'; secrets?: boolean }) => {
     const doc = await exportConfig(ctx, !!q.secrets);
     await writeAudit(ctx, req.user, q.secrets ? 'config.exported_with_secrets' : 'config.exported', { type: 'config' }, undefined, req.ip);
     const stamp = new Date().toISOString().slice(0, 10);
     if (q.format === 'yaml') return reply.type('application/yaml').header('Content-Disposition', `attachment; filename="pulsewatch-config-${stamp}.yaml"`).send(YAML.stringify(doc));
     return reply.type('application/json').header('Content-Disposition', `attachment; filename="pulsewatch-config-${stamp}.json"`).send(JSON.stringify(doc, null, 2));
+  };
+  const Format = Type.Optional(Type.Union([Type.Literal('json'), Type.Literal('yaml')]));
+  app.get('/api/config/export', { ...admin, schema: { tags: ['config'], summary: 'Export the configuration as YAML or JSON (secrets masked; with secrets use POST)', querystring: Type.Object({ format: Format, secrets: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {
+    const q = req.query as { format?: 'json' | 'yaml'; secrets?: boolean };
+    // decrypted credentials of every monitor and channel: only after the password (and code) again, which a download link cannot carry
+    if (q.secrets) return reply.code(400).send({ error: 'reauth_required', message: 'Exporting with secrets needs your password: use POST /api/config/export with password (and code when two-factor authentication is on)' });
+    return sendExport(req, reply, q);
+  });
+  app.post('/api/config/export', { ...admin, config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, schema: { tags: ['config'], summary: 'Export the configuration, optionally with secrets (needs the password again)', body: Type.Object({ format: Format, secrets: Type.Optional(Type.Boolean()), ...reauthFields }) } }, async (req, reply) => {
+    const b = req.body as { format?: 'json' | 'yaml'; secrets?: boolean; password?: string; code?: string };
+    if (b.secrets) {
+      const bad = await reauthError(ctx, req.user!.id, b.password, b.code, reauthClient(req));
+      if (bad) return reply.code(400).send({ error: 'invalid_credentials', message: bad });
+    }
+    return sendExport(req, reply, b);
   });
 
   app.post('/api/config/import', { ...admin, bodyLimit: 20 * 1024 * 1024, schema: { tags: ['config'], summary: 'Import (merge by name) a YAML or JSON configuration document', body: Type.Object({ content: Type.String({ maxLength: 20_000_000 }), dryRun: Type.Optional(Type.Boolean()) }) } }, async (req, reply) => {

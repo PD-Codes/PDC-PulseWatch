@@ -2,11 +2,34 @@ import crypto from 'node:crypto';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance } from 'fastify';
 import { writeAudit } from '../auth/access';
+import { config } from '../config';
 import { randomToken, sha256 } from '../crypto';
 import { parseJson } from '../db';
 import { parseMonitor } from '../monitors/model';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
+
+/** Clock differences below this are request transit time rather than a wrong probe clock and are not corrected. */
+const CLOCK_TOLERANCE_MS = 2_000;
+/** Results more than this far in the future (after correction) are dropped. */
+const MAX_FUTURE_MS = 60_000;
+
+/** Per-probe observations of this process, shown in the probe list. shortcut: in memory, reset on restart. */
+const probeStats = new Map<number, { clockOffsetMs: number; skippedRuns: number; lastSkippedAt: Date | null; warnedAt: number }>();
+const statsOf = (id: number) => { let s = probeStats.get(id); if (!s) probeStats.set(id, (s = { clockOffsetMs: 0, skippedRuns: 0, lastSkippedAt: null, warnedAt: 0 })); return s; };
+
+export interface ProbeResultIn { id?: string; monitorId: number; ts?: string; ok: boolean; latencyMs?: number | null; errorKind?: string | null; message?: string | null }
+
+/**
+ * Offset (ms) to add to the timestamps of one result batch. New probes send their clock (`sentAt`); for older probes only a
+ * clock that runs ahead can be told apart from a backlog, so their newest result is pulled back to the server's now.
+ */
+export function clockOffset(now: number, sentAt: string | undefined, results: ProbeResultIn[]): number {
+  const sent = sentAt ? Date.parse(sentAt) : NaN;
+  if (Number.isFinite(sent)) { const d = now - sent; return Math.abs(d) > CLOCK_TOLERANCE_MS ? d : 0; }
+  const newest = Math.max(...results.map((r) => (r.ts ? Date.parse(r.ts) : NaN)).filter(Number.isFinite));
+  return Number.isFinite(newest) && newest > now + MAX_FUTURE_MS ? now - newest : 0;
+}
 
 export async function probeRoutes(app: FastifyInstance) {
   const ctx = app.ctx;
@@ -20,7 +43,7 @@ export async function probeRoutes(app: FastifyInstance) {
     const used = new Map<number, number>();
     for (const m of await db.selectFrom('monitors').select('locations').where('locations', 'is not', null).execute()) for (const l of parseJson<(number | 'local')[]>(m.locations, [])) if (typeof l === 'number') used.set(l, (used.get(l) ?? 0) + 1);
     return (await db.selectFrom('probes').select(['id', 'name', 'location', 'version', 'last_seen_at', 'last_ip', 'enabled', 'created_at']).orderBy('name').execute())
-      .map((p) => ({ id: p.id, name: p.name, location: p.location, version: p.version, lastSeenAt: p.last_seen_at, lastIp: req.user!.role === 'admin' ? p.last_ip : null, enabled: !!p.enabled, createdAt: p.created_at, online: !!p.last_seen_at && Date.now() - p.last_seen_at.getTime() < 120_000, monitorCount: used.get(p.id) ?? 0 }));
+      .map((p) => ({ id: p.id, name: p.name, location: p.location, version: p.version, lastSeenAt: p.last_seen_at, lastIp: req.user!.role === 'admin' ? p.last_ip : null, enabled: !!p.enabled, createdAt: p.created_at, online: !!p.last_seen_at && Date.now() - p.last_seen_at.getTime() < 120_000, monitorCount: used.get(p.id) ?? 0, clockOffsetMs: probeStats.get(p.id)?.clockOffsetMs ?? null, skippedRuns: probeStats.get(p.id)?.skippedRuns ?? 0 }));
   });
 
   app.post('/api/probes', { ...admin, schema: { tags: ['probes'], body: Type.Object({ name: Type.String({ minLength: 1, maxLength: 128 }), location: Type.Optional(Type.String({ maxLength: 128 })) }) } }, async (req, reply) => {
@@ -81,15 +104,53 @@ export async function probeRoutes(app: FastifyInstance) {
     return reply.header('ETag', version).send({ version, jobs, ca });
   });
 
-  app.post('/api/probe/v1/results', { ...popts, bodyLimit: 2 * 1024 * 1024, schema: { tags: ['probes'], hide: true, body: Type.Object({ results: Type.Array(Type.Object({ monitorId: Type.Integer(), ts: Type.Optional(Type.String()), ok: Type.Boolean(), latencyMs: Type.Optional(Type.Union([Type.Number(), Type.Null()])), errorKind: Type.Optional(Type.Union([Type.String(), Type.Null()])), message: Type.Optional(Type.Union([Type.String(), Type.Null()])) }), { maxItems: 1000 }) }) } }, async (req: any) => {
-    const assigned = new Set((await db.selectFrom('monitors').select(['id', 'locations']).where('locations', 'is not', null).execute()).filter((m) => parseJson<(number | 'local')[]>(m.locations, []).includes(req.probe.id)).map((m) => m.id));
-    let accepted = 0;
-    for (const r of req.body.results) {
+  /**
+   * Results of a probe. Timestamps are corrected by the probe's clock offset; results older than the location's latest state
+   * (a backlog after a network outage, or out of order) are kept as heartbeats with their real time but do not count as fresh.
+   * Results carrying an id are stored once even when a batch is sent again.
+   */
+  const ResultIn = Type.Object({ id: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })), monitorId: Type.Integer(), ts: Type.Optional(Type.String()), ok: Type.Boolean(), latencyMs: Type.Optional(Type.Union([Type.Number(), Type.Null()])), errorKind: Type.Optional(Type.Union([Type.String(), Type.Null()])), message: Type.Optional(Type.Union([Type.String(), Type.Null()])) });
+  app.post('/api/probe/v1/results', { ...popts, bodyLimit: 2 * 1024 * 1024, schema: { tags: ['probes'], hide: true, body: Type.Object({ results: Type.Array(ResultIn, { maxItems: 1000 }), sentAt: Type.Optional(Type.String({ maxLength: 40 })), skipped: Type.Optional(Type.Integer({ minimum: 0 })) }) } }, async (req: any) => {
+    const probeId: number = req.probe.id;
+    const body = req.body as { results: ProbeResultIn[]; sentAt?: string; skipped?: number };
+    const now = Date.now();
+    const st = statsOf(probeId);
+    const offset = clockOffset(now, body.sentAt, body.results);
+    st.clockOffsetMs = offset;
+    if (Math.abs(offset) > 30_000 && now - st.warnedAt > 600_000) { st.warnedAt = now; ctx.log.warn({ probe: req.probe.name, offsetMs: offset }, 'probe clock is off; its timestamps are corrected (check NTP on the probe host)'); }
+    if (body.skipped) { st.skippedRuns += body.skipped; st.lastSkippedAt = new Date(now); ctx.log.warn({ probe: req.probe.name, skipped: body.skipped }, 'probe skipped checks because it was overloaded (raise PW_PROBE_CONCURRENCY or add a probe)'); }
+
+    const assigned = new Set((await db.selectFrom('monitors').select(['id', 'locations']).where('locations', 'is not', null).execute()).filter((m) => parseJson<(number | 'local')[]>(m.locations, []).includes(probeId)).map((m) => m.id));
+    // older probe versions could store a state up to an hour in the future; such a state must not block newer results
+    const latest = new Map((await db.selectFrom('monitor_location_state').select(['monitor_id', 'ts']).where('location_id', '=', probeId).execute()).filter((r) => r.ts.getTime() <= now + MAX_FUTURE_MS).map((r) => [r.monitor_id, r.ts.getTime()]));
+    const oldest = now - config.retention.rawDays * 86_400_000;
+    let accepted = 0, stale = 0, rejected = 0, duplicates = 0;
+    for (const r of body.results) {
       if (!assigned.has(r.monitorId)) continue;
-      const ts = r.ts ? new Date(r.ts) : new Date();
-      await ctx.engine.storeLocation(r.monitorId, req.probe.id, { ok: r.ok, latencyMs: r.latencyMs ?? undefined, errorKind: (r.errorKind ?? undefined) as any, message: r.message ?? undefined }, Number.isNaN(ts.getTime()) || Math.abs(ts.getTime() - Date.now()) > 3_600_000 ? new Date() : ts);
+      const parsed = r.ts ? Date.parse(r.ts) : NaN;
+      const at = Number.isFinite(parsed) ? parsed + offset : now;
+      if (at > now + MAX_FUTURE_MS || at < oldest) { rejected++; continue; }
+      const ts = new Date(Math.min(at, now));
+      if (r.id) {
+        const claim = await db.insertInto('probe_results_seen').ignore().values({ probe_id: probeId, result_id: r.id }).executeTakeFirst();
+        if (!Number(claim.numInsertedOrUpdatedRows)) { duplicates++; continue; }
+      }
+      const result = { ok: r.ok, latencyMs: r.latencyMs ?? undefined, errorKind: (r.errorKind ?? undefined) as any, message: r.message ?? undefined };
+      try {
+        if (ts.getTime() > (latest.get(r.monitorId) ?? -Infinity)) {
+          await ctx.engine.storeLocation(r.monitorId, probeId, result, ts);
+          latest.set(r.monitorId, ts.getTime());
+        } else {
+          await db.insertInto('heartbeats').values({ monitor_id: r.monitorId, location_id: probeId, ts, status: r.ok ? 1 : 0, latency_ms: r.latencyMs ?? null, error_kind: r.errorKind ?? null, message: r.message?.slice(0, 500) ?? null }).execute();
+          stale++;
+        }
+      } catch (e) {
+        // the probe sends the batch again; the id must not block that
+        if (r.id) await db.deleteFrom('probe_results_seen').where('probe_id', '=', probeId).where('result_id', '=', r.id).execute().catch(() => {});
+        throw e;
+      }
       accepted++;
     }
-    return { accepted };
+    return { accepted, stale, duplicates, rejected, clockOffsetMs: offset };
   });
 }

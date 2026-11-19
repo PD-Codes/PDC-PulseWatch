@@ -1,24 +1,36 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bookmark, CheckSquare, ChevronDown, ChevronRight, Clock, LayoutGrid, List, Pause, Play, Plus, Rocket, Search, Trash2, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { ArrowDown, Bookmark, CheckSquare, ChevronDown, ChevronRight, Clock, LayoutGrid, List, Pause, Play, Plus, Rocket, Search, Trash2, X } from 'lucide-react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Badge, Button, Card, CardHeader, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Skeleton, cx, useConfirm, useToast } from '../components/ui';
-import { displayStatus, HeartbeatBar, Sparkline, StatusBadge, StatusDot, uptimeTone, type DisplayStatus } from '../components/status';
+import { HeartbeatBar, Sparkline, StatusBadge, StatusDot, uptimeTone, type DisplayStatus } from '../components/status';
 import { PlayersLine } from '../components/ServerInfo';
+import { Pager } from '../components/Pager';
+import { SloBadge } from '../components/Slo';
+import { SnoozeBadge } from '../components/Snooze';
 import { ApiError, del, errorMessage, get, post, type Group, type MonitorItem, type Tag } from '../lib/api';
 import { BulkEditModal } from '../components/BulkEdit';
 import { tagText } from '../components/TagEditor';
 import { useAuth } from '../lib/auth';
+import { EMPTY_FILTERS, filtersActive, filtersToParams, initialMode, isProblem, matchQuery, matchStatus, parseFilters, sortMonitors, statusOf, type DashFilters, type SortKey, type StatusFilter } from '../lib/dashboardView';
+import { snoozeActive, sloViolated, type MonitorX } from '../lib/monitorExtras';
+import { usePagedList } from '../lib/usePagedList';
+import { useNow } from '../lib/useNow';
 import { fmtMs, fmtPct, relTime } from '../lib/format';
 import { useT } from '../lib/i18n';
 
-interface Filters { q: string; status: '' | DisplayStatus; tag: string; group: string }
-interface View { id: number; name: string; filters: Partial<Filters> & { tag?: string }; shared: boolean; own: boolean }
+interface View { id: number; name: string; filters: Partial<DashFilters>; shared: boolean; own: boolean }
 interface TimelineItem { id: number; ts: string; type: string; from: string | null; to: string | null; errorKind: string | null; message: string | null; monitorId: number; monitorName: string }
 
-const EMPTY: Filters = { q: '', status: '', tag: '', group: '' };
-const lsGet = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const VIEW_KEY = 'pw.dash.view';
+const COLLAPSED_KEY = 'pw.dash.collapsed';
+const lsGet = (k: string): string | null => { try { return localStorage.getItem(k); } catch { return null; } };
 const lsSet = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } };
+const readCollapsed = (): Set<number> => { try { const v = JSON.parse(lsGet(COLLAPSED_KEY) ?? '[]'); return new Set(Array.isArray(v) ? v.filter(Number.isInteger) : []); } catch { return new Set(); } };
+
+/** Status chips in the order of urgency; the cross-cutting sets come last. */
+const CHIP_ORDER: Exclude<StatusFilter, ''>[] = ['down', 'pending', 'maintenance', 'suppressed', 'unknown', 'up', 'paused', 'slo', 'snoozed'];
+const CHIP_TONE: Partial<Record<StatusFilter, string>> = { down: 'text-red-700 dark:text-red-400', pending: 'text-amber-700 dark:text-amber-400', slo: 'text-red-700 dark:text-red-400' };
 
 export default function Dashboard() {
   const t = useT();
@@ -26,14 +38,19 @@ export default function Dashboard() {
   const qc = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
-  const [mode, setMode] = useState<'grid' | 'list'>(() => (lsGet('pw.dash.view', 'grid') === 'list' ? 'list' : 'grid'));
-  const [f, setF] = useState<Filters>(EMPTY);
+  const [params, setParams] = useSearchParams();
+  const f = useMemo(() => parseFilters(params), [params]);
+  // filters live in the address: back/forward and shared links keep them; typing replaces the entry instead of piling up history
+  const setF = useCallback((next: DashFilters) => setParams((p) => filtersToParams(next, p), { replace: true }), [setParams]);
+  const patchF = (p: Partial<DashFilters>) => setF({ ...f, ...p });
+  const [stored, setStored] = useState<string | null>(() => lsGet(VIEW_KEY));
   const [selecting, setSelecting] = useState(false);
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [bulkEdit, setBulkEdit] = useState(false);
   const [saveView, setSaveView] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<number>>(readCollapsed);
   const search = useRef<HTMLInputElement>(null);
+  const now = useNow(); // snoozes run out and "since" times move on without new data
 
   const monitors = useQuery({ queryKey: ['monitors'], queryFn: () => get<MonitorItem[]>('/api/monitors') });
   const groups = useQuery({ queryKey: ['groups'], queryFn: () => get<Group[]>('/api/groups') });
@@ -41,10 +58,18 @@ export default function Dashboard() {
   const views = useQuery({ queryKey: ['views'], queryFn: () => get<View[]>('/api/views') });
 
   useEffect(() => { const h = () => search.current?.focus(); window.addEventListener('pw:focus-search', h); return () => window.removeEventListener('pw:focus-search', h); }, []);
-  const setView = (m: 'grid' | 'list') => { setMode(m); lsSet('pw.dash.view', m); };
 
-  const list = monitors.data ?? [];
+  const list = (monitors.data ?? []) as MonitorX[];
   const groupList = groups.data ?? [];
+  // the dense list once there are many monitors, unless the person picked a layout
+  const mode = initialMode(stored, list.length);
+  const setView = (m: 'grid' | 'list') => { setStored(m); lsSet(VIEW_KEY, m); };
+  const toggleCollapsed = useCallback((id: number) => setCollapsed((c) => {
+    const n = new Set(c);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    lsSet(COLLAPSED_KEY, JSON.stringify([...n]));
+    return n;
+  }), []);
 
   /** Group id plus all descendants. */
   const descendants = useMemo(() => {
@@ -56,29 +81,36 @@ export default function Dashboard() {
     }
     return out;
   }, [groupList]);
+  const groupName = useMemo(() => new Map(groupList.map((g) => [g.id, g.name])), [groupList]);
 
   const filtered = useMemo(() => {
-    const q = f.q.trim().toLowerCase();
     const gset = f.group ? descendants.get(Number(f.group)) : null;
-    return list.filter((m) => {
-      if (f.status && displayStatus(m) !== f.status) return false;
+    return sortMonitors(list.filter((m) => {
+      if (!matchStatus(m, f.status, now)) return false;
       if (f.tag && !m.tags.some((x) => String(x.id) === f.tag || x.name === f.tag)) return false;
       if (gset && (m.groupId == null || !gset.has(m.groupId))) return false;
-      return !q || `${m.name} ${m.type} ${m.description ?? ''} ${m.tags.map(tagText).join(' ')}`.toLowerCase().includes(q);
-    });
-  }, [list, f, descendants]);
+      return matchQuery(m, f.q, tagText);
+    }), f.sort);
+  }, [list, f, descendants, now]);
 
   const counts = useMemo(() => {
-    const c: Record<DisplayStatus, number> = { up: 0, down: 0, pending: 0, unknown: 0, maintenance: 0, suppressed: 0, paused: 0 };
-    for (const m of list) c[displayStatus(m)]++;
+    const c: Record<Exclude<StatusFilter, ''>, number> = { up: 0, down: 0, pending: 0, unknown: 0, maintenance: 0, suppressed: 0, paused: 0, problems: 0, slo: 0, snoozed: 0 };
+    for (const m of list) {
+      const s = statusOf(m);
+      c[s]++;
+      if (isProblem(s)) c.problems++;
+      if (sloViolated(m)) c.slo++;
+      if (snoozeActive(m, now)) c.snoozed++;
+    }
     return c;
-  }, [list]);
+  }, [list, now]);
+  const problems = useMemo(() => sortMonitors(list.filter((m) => isProblem(statusOf(m))), 'status'), [list]);
 
   /** Ordered group sections (tree order) holding their direct monitors; ungrouped monitors come first. */
   const sections = useMemo(() => {
-    const byGroup = new Map<number | null, MonitorItem[]>();
-    for (const m of filtered) { const k = m.groupId != null && groupList.some((g) => g.id === m.groupId) ? m.groupId : null; byGroup.set(k, [...(byGroup.get(k) ?? []), m]); }
-    const out: { group: Group | null; depth: number; items: MonitorItem[]; total: number }[] = [];
+    const byGroup = new Map<number | null, MonitorX[]>();
+    for (const m of filtered) { const k = m.groupId != null && groupName.has(m.groupId) ? m.groupId : null; byGroup.set(k, [...(byGroup.get(k) ?? []), m]); }
+    const out: { group: Group | null; depth: number; items: MonitorX[]; total: number }[] = [];
     if (byGroup.get(null)?.length) out.push({ group: null, depth: 0, items: byGroup.get(null)!, total: byGroup.get(null)!.length });
     const walk = (parent: number | null, depth: number) => {
       for (const g of groupList.filter((x) => x.parentId === parent)) {
@@ -89,7 +121,7 @@ export default function Dashboard() {
     };
     walk(null, 0);
     return out;
-  }, [filtered, groupList, descendants]);
+  }, [filtered, groupList, groupName, descendants]);
 
   const hidden = useMemo(() => { // groups collapsed along the path
     const s = new Set<number>();
@@ -97,6 +129,7 @@ export default function Dashboard() {
     return s;
   }, [collapsed, descendants]);
 
+  const chosen = filtered.filter((m) => sel.has(m.id)).map((m) => m.id);
   const bulk = useMutation({
     mutationFn: (b: { action: string; patch?: object }) => post('/api/monitors/bulk', { ids: chosen, ...b }),
     onSuccess: (r: { affected: number }) => { toast(t('dashboard.bulkDone', { n: r.affected })); setSel(new Set()); void qc.invalidateQueries({ queryKey: ['monitors'] }); },
@@ -116,54 +149,78 @@ export default function Dashboard() {
   });
   const delView = useMutation({ mutationFn: (id: number) => del(`/api/views/${id}`), onSuccess: () => void qc.invalidateQueries({ queryKey: ['views'] }) });
 
-  const chosen = filtered.filter((m) => sel.has(m.id)).map((m) => m.id);
-  const toggle = (id: number) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
-  const filtersActive = f.q || f.status || f.tag || f.group;
+  // stable callbacks, so memoized cards and rows re-render only when their own monitor changes (live updates patch one entry at a time)
+  const toggle = useCallback((id: number) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; }), []);
+  const quickMutate = quick.mutate;
+  const onQuick = useCallback((id: number, pause: boolean) => quickMutate({ id, pause }), [quickMutate]);
   const editor = can('editor');
+  const quickFn = editor ? onQuick : undefined;
+  const resetKey = `${f.q}|${f.status}|${f.tag}|${f.group}|${f.sort}`;
 
-  if (monitors.isLoading) return <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-32" />)}</div>;
+  if (monitors.isLoading) return <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-28" />)}</div>;
   if (monitors.error) return <ErrorBox error={monitors.error} />;
   if (!list.length) return (<><PageHeader title={t('nav.dashboard')} /><Onboarding editor={editor} /></>);
 
-  const status = (s: DisplayStatus, key: string, tone: string) => (
-    <button type="button" key={s} onClick={() => setF({ ...f, status: f.status === s ? '' : s })} aria-pressed={f.status === s}
-      className={cx('card flex min-w-[7rem] flex-1 items-center gap-3 px-4 py-3 text-left transition hover:border-brand-400', f.status === s && 'border-brand-500 ring-1 ring-brand-500')}>
-      <StatusDot status={s} pulse={counts[s] > 0} /><div><div className={cx('text-2xl font-semibold leading-none', tone)}>{counts[key as DisplayStatus]}</div><div className="mt-1 text-xs text-slate-500">{t(`status.${s}`)}</div></div>
-    </button>
-  );
+  const applyView = (v: View) => setF({ ...EMPTY_FILTERS, ...parseFilters(filtersToParams({ ...EMPTY_FILTERS, ...v.filters })), tag: tagToId(v.filters.tag, tags.data) });
+  const chip = (s: Exclude<StatusFilter, ''>) => {
+    if (!counts[s]) return null;
+    const on = f.status === s;
+    const label = s === 'slo' ? t('mux.dash.sloMissed') : s === 'snoozed' ? t('mux.dash.snoozed') : t(`status.${s}`);
+    return (
+      <button key={s} type="button" aria-pressed={on} onClick={() => patchF({ status: on ? '' : s })} title={t('mux.dash.chipTip', { label })}
+        className={cx('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition', on ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500 dark:bg-brand-700/20' : 'border-slate-200 bg-white hover:border-brand-400 dark:border-slate-700 dark:bg-slate-900')}>
+        {s === 'slo' || s === 'snoozed' ? <span className={cx('h-2 w-2 rounded-full', s === 'slo' ? 'bg-red-500' : 'bg-slate-400')} aria-hidden /> : <StatusDot status={s as DisplayStatus} className="!h-2 !w-2" />}
+        <span className={cx('tabular-nums', CHIP_TONE[s])}>{counts[s]}</span><span className="text-slate-600 dark:text-slate-300">{label}</span>
+      </button>
+    );
+  };
+  // the problem line repeats what the list already shows on top when it is sorted by status and unfiltered
+  const showProblems = problems.length > 0 && !['problems', 'down', 'pending'].includes(f.status) && !(mode === 'list' && f.sort === 'status' && !filtersActive(f));
 
   return (
     <>
-      <PageHeader title={t('nav.dashboard')} subtitle={t('dashboard.subtitle', { n: list.length })}
+      <PageHeader title={t('nav.dashboard')} subtitle={filtersActive(f) ? t('mux.dash.shown', { n: filtered.length, total: list.length }) : t('dashboard.subtitle', { n: list.length })}
         actions={editor ? <><Button size="sm" variant={selecting ? 'primary' : 'default'} onClick={() => { setSelecting(!selecting); setSel(new Set()); }}><CheckSquare className="h-4 w-4" />{t('dashboard.select')}</Button><Link to="/monitors/new" className="btn btn-primary btn-sm no-underline"><Plus className="h-4 w-4" />{t('palette.newMonitor')}</Link></> : undefined} />
-      {!editor && <p className="mb-4 rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600 dark:bg-slate-800 dark:text-slate-300">{t('dashboard.readOnly')}</p>}
+      {!editor && <p className="mb-3 rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600 dark:bg-slate-800 dark:text-slate-300">{t('dashboard.readOnly')}</p>}
 
-      <div className="mb-4 flex flex-wrap gap-3">
-        {status('up', 'up', 'text-emerald-600')}{status('down', 'down', counts.down ? 'text-red-600' : '')}{status('maintenance', 'maintenance', 'text-sky-600')}{status('paused', 'paused', 'text-slate-500')}
-        {counts.suppressed + counts.pending + counts.unknown > 0 && <div className="card flex min-w-[7rem] flex-1 items-center gap-3 px-4 py-3"><StatusDot status="pending" /><div><div className="text-2xl font-semibold leading-none">{counts.suppressed + counts.pending + counts.unknown}</div><div className="mt-1 text-xs text-slate-500">{t('dashboard.other')}</div></div></div>}
-      </div>
-
-      <div className="mb-4 flex flex-wrap items-center gap-2" role="search">
+      <div className="mb-2 flex flex-wrap items-center gap-2" role="search">
         <div className="relative min-w-[12rem] flex-1">
           <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" aria-hidden />
-          <input ref={search} value={f.q} onChange={(e) => setF({ ...f, q: e.target.value })} placeholder={t('dashboard.search')} aria-label={t('dashboard.search')} className="input pl-9" />
+          <input ref={search} value={f.q} onChange={(e) => patchF({ q: e.target.value })} placeholder={t('dashboard.search')} aria-label={t('dashboard.search')} className="input pl-9" />
         </div>
-        <Select aria-label={t('common.status')} value={f.status} onChange={(e) => setF({ ...f, status: e.target.value as Filters['status'] })} className="w-auto">
-          <option value="">{t('dashboard.anyStatus')}</option>{(['up', 'down', 'pending', 'maintenance', 'suppressed', 'paused', 'unknown'] as const).map((s) => <option key={s} value={s}>{t(`status.${s}`)}</option>)}
+        {!!tags.data?.length && <Select aria-label={t('dashboard.tag')} value={f.tag} onChange={(e) => patchF({ tag: e.target.value })} className="w-auto"><option value="">{t('dashboard.anyTag')}</option>{tags.data.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>}
+        {groupList.length > 0 && <Select aria-label={t('dashboard.group')} value={f.group} onChange={(e) => patchF({ group: e.target.value })} className="w-auto"><option value="">{t('dashboard.anyGroup')}</option>{groupList.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</Select>}
+        <Select aria-label={t('mux.dash.sort')} value={f.sort} onChange={(e) => patchF({ sort: e.target.value as SortKey })} className="w-auto">
+          {(['status', 'name', 'latency', 'uptime'] as const).map((k) => <option key={k} value={k}>{t(`mux.dash.sort.${k}`)}</option>)}
         </Select>
-        {!!tags.data?.length && <Select aria-label={t('dashboard.tag')} value={f.tag} onChange={(e) => setF({ ...f, tag: e.target.value })} className="w-auto"><option value="">{t('dashboard.anyTag')}</option>{tags.data.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>}
-        {groupList.length > 0 && <Select aria-label={t('dashboard.group')} value={f.group} onChange={(e) => setF({ ...f, group: e.target.value })} className="w-auto"><option value="">{t('dashboard.anyGroup')}</option>{groupList.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</Select>}
         {!!views.data?.length && (
-          <Select aria-label={t('dashboard.savedViews')} value="" onChange={(e) => { const v = views.data!.find((x) => String(x.id) === e.target.value); if (v) setF({ ...EMPTY, ...v.filters, tag: tagToId(v.filters.tag, tags.data) }); }} className="w-auto">
+          <Select aria-label={t('dashboard.savedViews')} value="" onChange={(e) => { const v = views.data!.find((x) => String(x.id) === e.target.value); if (v) applyView(v); }} className="w-auto">
             <option value="">{t('dashboard.savedViews')}</option>{views.data.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
           </Select>
         )}
-        {filtersActive ? <><Button size="sm" onClick={() => setSaveView(true)}><Bookmark className="h-4 w-4" />{t('dashboard.saveView')}</Button><Button size="sm" variant="ghost" onClick={() => setF(EMPTY)}><X className="h-4 w-4" />{t('common.reset')}</Button></> : null}
+        {filtersActive(f) ? <><Button size="sm" onClick={() => setSaveView(true)}><Bookmark className="h-4 w-4" />{t('dashboard.saveView')}</Button><Button size="sm" variant="ghost" onClick={() => setF({ ...EMPTY_FILTERS, sort: f.sort })}><X className="h-4 w-4" />{t('common.reset')}</Button></> : null}
         <div className="ml-auto flex overflow-hidden rounded-lg border border-slate-300 dark:border-slate-700" role="group" aria-label={t('dashboard.layout')}>
           {(['grid', 'list'] as const).map((m) => <button key={m} type="button" aria-pressed={mode === m} aria-label={t(`dashboard.${m}`)} title={t(`dashboard.${m}`)} onClick={() => setView(m)} className={cx('px-2.5 py-2', mode === m ? 'bg-brand-600 text-white' : 'bg-white hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800')}>{m === 'grid' ? <LayoutGrid className="h-4 w-4" /> : <List className="h-4 w-4" />}</button>)}
         </div>
       </div>
-      {views.data?.some((v) => v.own) && <div className="mb-3 flex flex-wrap gap-2 text-xs text-slate-500">{views.data.filter((v) => v.own).map((v) => <span key={v.id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 dark:bg-slate-800"><button type="button" onClick={() => setF({ ...EMPTY, ...v.filters, tag: tagToId(v.filters.tag, tags.data) })} className="hover:underline">{v.name}</button><button type="button" aria-label={t('common.delete')} onClick={() => delView.mutate(v.id)}><X className="h-3 w-3" /></button></span>)}</div>}
+
+      <div className="mb-3 flex flex-wrap items-center gap-1.5" role="group" aria-label={t('mux.dash.statusFilter')}>
+        {CHIP_ORDER.map(chip)}
+        {views.data?.some((v) => v.own) && <span className="ml-auto flex flex-wrap gap-1.5 text-xs text-slate-500">{views.data.filter((v) => v.own).map((v) => <span key={v.id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 dark:bg-slate-800"><Bookmark className="h-3 w-3" aria-hidden /><button type="button" onClick={() => applyView(v)} className="hover:underline">{v.name}</button><button type="button" aria-label={`${t('common.delete')}: ${v.name}`} onClick={() => delView.mutate(v.id)}><X className="h-3 w-3" /></button></span>)}</span>}
+      </div>
+
+      {showProblems && (
+        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-red-200 bg-red-50/70 px-3 py-2 text-sm dark:border-red-900 dark:bg-red-950/30" role="region" aria-label={t('mux.dash.problems', { n: problems.length })}>
+          <button type="button" onClick={() => patchF({ status: 'problems' })} className="font-semibold text-red-700 hover:underline dark:text-red-400">{t('mux.dash.problems', { n: problems.length })}</button>
+          {problems.slice(0, 8).map((m) => (
+            <Link key={m.id} to={`/monitors/${m.id}`} title={m.message ?? undefined} className="inline-flex min-w-0 max-w-[18rem] items-center gap-1.5 text-slate-800 no-underline hover:underline dark:text-slate-100">
+              <StatusDot status={statusOf(m)} pulse /><span className="truncate">{m.name}</span>{m.statusSince && <span className="shrink-0 text-xs text-slate-500">{relTime(m.statusSince)}</span>}
+              {snoozeActive(m) && <SnoozeBadge until={m.snoozedUntil} short />}
+            </Link>
+          ))}
+          {problems.length > 8 && <button type="button" onClick={() => patchF({ status: 'problems' })} className="text-xs text-red-700 underline dark:text-red-400">{t('mux.dash.more', { n: problems.length - 8 })}</button>}
+        </div>
+      )}
 
       {(chosen.length > 0 || selecting) && (
         <div className="sticky top-14 z-20 mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-brand-300 bg-brand-50 px-3 py-2 text-sm dark:border-brand-700 dark:bg-brand-700/20" role="toolbar" aria-label={t('dashboard.bulk')}>
@@ -177,27 +234,16 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="grid gap-6 xl:grid-cols-[1fr_20rem]">
-        <div className="min-w-0 space-y-5">
-          {filtered.length === 0 && <Card><EmptyState title={t('common.noResults')} body={t('dashboard.noMatch')} action={<Button onClick={() => setF(EMPTY)}>{t('common.reset')}</Button>} /></Card>}
-          {sections.map((s) => {
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_19rem]">
+        <div className="min-w-0 space-y-4">
+          {filtered.length === 0 && <Card><EmptyState title={t('common.noResults')} body={t('dashboard.noMatch')} action={<Button onClick={() => setF({ ...EMPTY_FILTERS, sort: f.sort })}>{t('common.reset')}</Button>} /></Card>}
+          {filtered.length > 0 && mode === 'list' && <FlatList rows={filtered} sort={f.sort} onSort={(s) => patchF({ sort: s })} resetKey={resetKey} groupName={groupName} selecting={selecting} sel={sel} onToggle={toggle} onQuick={quickFn} />}
+          {mode === 'grid' && sections.map((s) => {
             if (s.group && hidden.has(s.group.id)) return null;
-            const isCollapsed = !!s.group && collapsed.has(s.group.id);
-            return (
-              <section key={s.group?.id ?? 'none'} style={{ marginLeft: s.depth * 12 }}>
-                {s.group && (
-                  <button type="button" aria-expanded={!isCollapsed} onClick={() => setCollapsed((c) => { const n = new Set(c); if (n.has(s.group!.id)) n.delete(s.group!.id); else n.add(s.group!.id); return n; })} className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-slate-600 dark:text-slate-300">
-                    {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}{s.group.name}<Badge>{s.total}</Badge>
-                  </button>
-                )}
-                {!isCollapsed && s.items.length > 0 && (mode === 'grid'
-                  ? <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">{s.items.map((m) => <MonitorCard key={m.id} m={m} selecting={selecting} selected={sel.has(m.id)} onToggle={() => toggle(m.id)} onQuick={editor ? (pause) => quick.mutate({ id: m.id, pause }) : undefined} />)}</div>
-                  : <Card className="divide-y divide-slate-100 dark:divide-slate-800">{s.items.map((m) => <MonitorRow key={m.id} m={m} selecting={selecting} selected={sel.has(m.id)} onToggle={() => toggle(m.id)} onQuick={editor ? (pause) => quick.mutate({ id: m.id, pause }) : undefined} />)}</Card>)}
-              </section>
-            );
+            return <GroupSection key={s.group?.id ?? 'none'} group={s.group} depth={s.depth} items={s.items} total={s.total} collapsed={!!s.group && collapsed.has(s.group.id)} onCollapse={toggleCollapsed} resetKey={resetKey} selecting={selecting} sel={sel} onToggle={toggle} onQuick={quickFn} />;
           })}
         </div>
-        <Timeline />
+        <div className="min-w-0 xl:sticky xl:top-16 xl:self-start"><Timeline /></div>
       </div>
 
       <SaveViewModal open={saveView} onClose={() => setSaveView(false)} filters={f} tags={tags.data} canShare={editor} />
@@ -209,72 +255,141 @@ export default function Dashboard() {
 /** Saved views store the tag by name so they survive tag re-creation; the filter state uses ids. */
 const tagToId = (tag: string | undefined, tags?: Tag[]) => (tag ? String(tags?.find((x) => x.name === tag || String(x.id) === tag)?.id ?? tag) : '');
 
-function Uptimes({ m }: { m: MonitorItem }) {
-  const t = useT();
+interface ListProps { selecting: boolean; sel: Set<number>; onToggle: (id: number) => void; onQuick?: (id: number, pause: boolean) => void }
+
+/** One group of cards; pages appear only when the group holds more than one page of monitors. */
+function GroupSection({ group, depth, items, total, collapsed, onCollapse, resetKey, ...rest }: ListProps & { group: Group | null; depth: number; items: MonitorX[]; total: number; collapsed: boolean; onCollapse: (id: number) => void; resetKey: string }) {
+  const { pageRows, pagerProps, pageSize } = usePagedList(items, { key: 'dash.group', resetKey });
   return (
-    <dl className="grid grid-cols-4 gap-2 text-center text-xs">
-      {([['24h', m.uptime.h24], ['7d', m.uptime.d7], ['30d', m.uptime.d30], ['90d', m.uptime.d90]] as const).map(([k, v]) => (
-        <div key={k}><dt className="text-slate-400">{k}</dt><dd className={cx('font-semibold', uptimeTone(v))} aria-label={`${t('monitors.uptime')} ${k}`}>{fmtPct(v, 2)}</dd></div>
-      ))}
-    </dl>
+    <section style={{ marginLeft: depth * 12 }} aria-label={group?.name}>
+      {group && (
+        <button type="button" aria-expanded={!collapsed} onClick={() => onCollapse(group.id)} className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-slate-600 dark:text-slate-300">
+          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}{group.name}<Badge>{total}</Badge>
+        </button>
+      )}
+      {!collapsed && items.length > 0 && (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{pageRows.map((m) => <MonitorCard key={m.id} m={m} selecting={rest.selecting} selected={rest.sel.has(m.id)} onToggle={rest.onToggle} onQuick={rest.onQuick} />)}</div>
+          {items.length > pageSize && <div className="card mt-2 overflow-hidden [&>nav]:border-t-0"><Pager {...pagerProps} /></div>}
+        </>
+      )}
+    </section>
   );
 }
 
-interface RowProps { m: MonitorItem; selecting: boolean; selected: boolean; onToggle: () => void; onQuick?: (pause: boolean) => void }
-
-/** Pause/resume icon button; sits above the stretched card link. */
-function QuickToggle({ m, onQuick }: { m: MonitorItem; onQuick?: (pause: boolean) => void }) {
+/** Dense, flat list with sortable column heads; 20 rows per page by default. */
+function FlatList({ rows, sort, onSort, resetKey, groupName, ...rest }: ListProps & { rows: MonitorX[]; sort: SortKey; onSort: (s: SortKey) => void; resetKey: string; groupName: Map<number, string> }) {
   const t = useT();
-  if (!onQuick) return null;
-  const label = m.active ? t('monitors.pause') : t('monitors.resume');
-  return <button type="button" title={label} aria-label={`${label}: ${m.name}`} onClick={() => onQuick(m.active)} className="relative z-10 rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-slate-100">{m.active ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</button>;
-}
-
-/** Name link whose ::after covers the whole (relative) card; while selecting, a click toggles the selection instead of navigating. */
-function CardLink({ m, selecting, onToggle, className }: Pick<RowProps, 'm' | 'selecting' | 'onToggle'> & { className: string }) {
-  return <Link to={`/monitors/${m.id}`} onClick={(e) => { if (selecting) { e.preventDefault(); onToggle(); } }} className={cx(className, 'after:absolute after:inset-0')}>{m.name}</Link>;
-}
-
-function Check({ m, selected, onToggle }: Pick<RowProps, 'm' | 'selected' | 'onToggle'>) {
-  return <input type="checkbox" checked={selected} onChange={onToggle} aria-label={m.name} className="relative z-10 h-4 w-4 rounded border-slate-300 text-brand-600" />;
-}
-
-function MonitorCard({ m, selecting, selected, onToggle, onQuick }: RowProps) {
-  const t = useT();
-  const s = displayStatus(m);
+  const { pageRows, pagerProps } = usePagedList(rows, { key: 'dash.list', resetKey });
+  const head = (k: SortKey, label: string, cls: string) => (
+    <button type="button" onClick={() => onSort(k)} aria-pressed={sort === k} className={cx('inline-flex items-center gap-0.5 hover:text-slate-900 dark:hover:text-slate-100', sort === k && 'font-semibold text-slate-800 dark:text-slate-100', cls)}>
+      {label}{sort === k && <ArrowDown className="h-3 w-3" aria-hidden />}
+    </button>
+  );
   return (
-    <Card className={cx('relative cursor-pointer p-4 transition hover:border-brand-400', selected && 'border-brand-500 ring-1 ring-brand-500', s === 'down' && 'border-red-300 dark:border-red-900')}>
-      <div className="flex items-start gap-2">
-        {selecting && <Check m={m} selected={selected} onToggle={onToggle} />}
-        <div className="min-w-0 flex-1">
-          <CardLink m={m} selecting={selecting} onToggle={onToggle} className="block truncate font-medium text-slate-900 no-underline hover:underline dark:text-slate-100" />
-          <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-slate-500"><span className="font-mono">{m.type}</span>{m.flapping && <Badge tone="amber">{t('monitors.flapping')}</Badge>}{m.anomaly && <Badge tone="violet">{t('monitors.slowdown')}</Badge>}{m.tags.map((x) => <span key={`${x.id}:${x.value}`} className="rounded px-1.5 py-0.5 text-[11px] text-white" style={{ background: x.color }}>{tagText(x)}</span>)}</div>
-        </div>
-        <StatusBadge status={s} /><QuickToggle m={m} onQuick={onQuick} />
+    <Card className="overflow-hidden">
+      <div className="hidden items-center gap-x-3 border-b border-slate-200 px-3 py-1.5 text-xs text-slate-500 dark:border-slate-800 sm:flex" role="group" aria-label={t('mux.dash.sort')}>
+        {rest.selecting && <span className="w-4" />}
+        <button type="button" onClick={() => onSort('status')} aria-pressed={sort === 'status'} title={t('mux.dash.sort.status')} aria-label={t('mux.dash.sort.status')} className={cx('h-2.5 w-2.5 rounded-full border', sort === 'status' ? 'border-slate-700 bg-slate-700 dark:border-slate-200 dark:bg-slate-200' : 'border-slate-400')} />
+        <span className="w-64 shrink-0">{head('name', t('common.name'), '')}</span>
+        <span className="hidden flex-1 md:block" aria-hidden>{t('mux.dash.history')}</span>
+        <span className="ml-auto w-16 text-right md:ml-0">{head('latency', t('mux.dash.col.latency'), 'justify-end w-full')}</span>
+        <span className="w-14 text-right">{head('uptime', '24 h', 'justify-end w-full')}</span>
+        <span className="w-14 text-right" aria-hidden>30 d</span>
+        <span className="hidden w-24 text-right lg:block" aria-hidden>{t('monitors.lastCheck')}</span>
+        {rest.onQuick && <span className="w-7" />}
       </div>
-      <div className="mt-3 flex items-center gap-3"><HeartbeatBar beats={m.recent} count={32} className="flex-1" /><Sparkline beats={m.recent} width={72} /></div>
-      <div className="mt-2 flex items-center justify-between text-xs text-slate-500"><span className="inline-flex items-center gap-3">{fmtMs(m.latencyMs)}{m.info && <PlayersLine info={m.info} short />}</span><span title={m.message ?? ''}>{m.lastCheckAt ? relTime(m.lastCheckAt) : t('monitors.noChecks')}</span></div>
-      {s === 'down' && m.message && <p className="mt-2 truncate text-xs text-red-600 dark:text-red-400" title={m.message}>{m.errorKind ? `${m.errorKind}: ` : ''}{m.message}</p>}
-      <div className="mt-3 border-t border-slate-100 pt-3 dark:border-slate-800"><Uptimes m={m} /></div>
+      <div className="divide-y divide-slate-100 dark:divide-slate-800">
+        {pageRows.map((m) => <MonitorRow key={m.id} m={m} group={m.groupId != null ? groupName.get(m.groupId) : undefined} selecting={rest.selecting} selected={rest.sel.has(m.id)} onToggle={rest.onToggle} onQuick={rest.onQuick} />)}
+      </div>
+      <Pager {...pagerProps} />
     </Card>
   );
 }
 
-function MonitorRow({ m, selecting, selected, onToggle, onQuick }: RowProps) {
-  const s = displayStatus(m);
+interface RowProps { m: MonitorX; selecting: boolean; selected: boolean; onToggle: (id: number) => void; onQuick?: (id: number, pause: boolean) => void; group?: string }
+
+/** Pause/resume icon button; sits above the stretched card link. */
+function QuickToggle({ m, onQuick }: Pick<RowProps, 'm' | 'onQuick'>) {
+  const t = useT();
+  if (!onQuick) return null;
+  const label = m.active ? t('monitors.pause') : t('monitors.resume');
+  return <button type="button" title={label} aria-label={`${label}: ${m.name}`} onClick={() => onQuick(m.id, m.active)} className="relative z-10 rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-slate-100">{m.active ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}</button>;
+}
+
+/** Name link whose ::after covers the whole (relative) card; while selecting, a click toggles the selection instead of navigating. */
+function CardLink({ m, selecting, onToggle, className, title }: Pick<RowProps, 'm' | 'selecting' | 'onToggle'> & { className: string; title?: string }) {
+  return <Link to={`/monitors/${m.id}`} title={title} onClick={(e) => { if (selecting) { e.preventDefault(); onToggle(m.id); } }} className={cx(className, 'after:absolute after:inset-0')}>{m.name}</Link>;
+}
+
+function Check({ m, selected, onToggle }: Pick<RowProps, 'm' | 'selected' | 'onToggle'>) {
+  return <input type="checkbox" checked={selected} onChange={() => onToggle(m.id)} aria-label={m.name} className="relative z-10 h-4 w-4 rounded border-slate-300 text-brand-600" />;
+}
+
+/** Tags as small color dots; the names are in the tooltip (and on the detail page). */
+function TagDots({ m }: { m: MonitorX }) {
+  if (!m.tags.length) return null;
+  const all = m.tags.map(tagText).join(', ');
+  return <span className="inline-flex items-center gap-0.5" title={all}><span className="sr-only">{all}</span>{m.tags.slice(0, 5).map((x) => <span key={`${x.id}:${x.value}`} aria-hidden className="h-2 w-2 rounded-full" style={{ background: x.color }} />)}</span>;
+}
+
+const Pct = ({ v, label }: { v: number | null; label: string }) => <span className={cx('font-semibold tabular-nums', uptimeTone(v))} aria-label={label}>{fmtPct(v, 2)}</span>;
+
+const MonitorCard = memo(function MonitorCard({ m, selecting, selected, onToggle, onQuick }: RowProps) {
+  const t = useT();
+  const now = useNow(); // relative times and "overdue" move on although the props stay the same
+  const s = statusOf(m) as DisplayStatus;
+  // the last check is only worth space when it is overdue (three intervals and a minute)
+  const stale = m.active && (!m.lastCheckAt || now - Date.parse(m.lastCheckAt) > (m.intervalS * 3 + 60) * 1000);
   return (
-    <div className={cx('relative flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/40 sm:flex-nowrap', selected && 'bg-brand-50 dark:bg-brand-700/10')}>
+    <Card className={cx('relative cursor-pointer p-3 transition hover:border-brand-400', selected && 'border-brand-500 ring-1 ring-brand-500', s === 'down' && 'border-red-300 dark:border-red-900')}>
+      <div className="flex items-start gap-2">
+        {selecting && <Check m={m} selected={selected} onToggle={onToggle} />}
+        <div className="min-w-0 flex-1">
+          <CardLink m={m} selecting={selecting} onToggle={onToggle} className="block truncate font-medium text-slate-900 no-underline hover:underline dark:text-slate-100" />
+          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-slate-500"><span className="font-mono">{m.type}</span><TagDots m={m} />{m.flapping && <Badge tone="amber">{t('monitors.flapping')}</Badge>}{m.anomaly && <Badge tone="violet">{t('monitors.slowdown')}</Badge>}<SloBadge slo={m.slo} /><SnoozeBadge until={m.snoozedUntil} /></div>
+        </div>
+        <StatusBadge status={s} /><QuickToggle m={m} onQuick={onQuick} />
+      </div>
+      <div className="mt-2 flex items-center gap-3"><HeartbeatBar beats={m.recent} count={32} className="flex-1" height="h-5" interactive={false} /><Sparkline beats={m.recent} width={64} height={22} /></div>
+      {s === 'down' && m.message && <p className="mt-1.5 truncate text-xs text-red-600 dark:text-red-400" title={m.message}>{m.errorKind ? `${m.errorKind}: ` : ''}{m.message}</p>}
+      <div className="mt-1.5 flex items-center gap-3 whitespace-nowrap text-xs text-slate-500">
+        <span className="tabular-nums" title={m.lastCheckAt ? `${t('monitors.lastCheck')}: ${relTime(m.lastCheckAt)}` : undefined}>{fmtMs(m.latencyMs)}</span>
+        {m.info && <PlayersLine info={m.info} short />}
+        <span className="ml-auto inline-flex items-center gap-1">24 h <Pct v={m.uptime.h24} label={`${t('monitors.uptime')} 24h`} /></span>
+        <span className="inline-flex items-center gap-1">30 d <Pct v={m.uptime.d30} label={`${t('monitors.uptime')} 30d`} /></span>
+      </div>
+      {stale && <p className="mt-1 truncate text-xs text-amber-700 dark:text-amber-400">{m.lastCheckAt ? t('mux.dash.stale', { when: relTime(m.lastCheckAt) }) : t('monitors.noChecks')}</p>}
+    </Card>
+  );
+});
+
+const MonitorRow = memo(function MonitorRow({ m, selecting, selected, onToggle, onQuick, group }: RowProps) {
+  const t = useT();
+  useNow(); // re-render every 30 s: last check time and snooze state
+  const s = statusOf(m) as DisplayStatus;
+  return (
+    <div className={cx('relative flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/40 sm:flex-nowrap', selected && 'bg-brand-50 dark:bg-brand-700/10')}>
       {selecting && <Check m={m} selected={selected} onToggle={onToggle} />}
       <StatusDot status={s} pulse />
-      <CardLink m={m} selecting={selecting} onToggle={onToggle} className="min-w-0 flex-1 truncate font-medium text-slate-900 no-underline hover:underline dark:text-slate-100 sm:w-48 sm:flex-none" />
-      <HeartbeatBar beats={m.recent} count={30} className="hidden flex-1 md:flex" height="h-5" />
+      <div className="min-w-0 flex-1 sm:w-64 sm:flex-none">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <CardLink m={m} selecting={selecting} onToggle={onToggle} title={[t(`status.${s}`), m.tags.map(tagText).join(', ')].filter(Boolean).join(' · ')} className="min-w-0 truncate text-sm font-medium text-slate-900 no-underline hover:underline dark:text-slate-100" />
+          <SnoozeBadge until={m.snoozedUntil} short /><SloBadge slo={m.slo} className="shrink-0 !px-1 !py-0 text-[10px]" />
+        </div>
+        {s === 'down' && m.message ? <div className="truncate text-xs text-red-600 dark:text-red-400" title={m.message}>{m.errorKind ? `${m.errorKind}: ` : ''}{m.message}</div>
+          : group ? <div className="truncate text-xs text-slate-400">{group}</div> : null}
+      </div>
+      <HeartbeatBar beats={m.recent} count={40} className="hidden flex-1 md:flex" height="h-4" interactive={false} />
       {m.info?.players !== undefined && <PlayersLine info={m.info} short className="text-xs text-slate-500" />}
-      <span className="w-16 text-right text-xs text-slate-500">{fmtMs(m.latencyMs)}</span>
-      <div className="hidden w-52 shrink-0 sm:block"><Uptimes m={m} /></div>
+      <span className="w-16 text-right text-xs tabular-nums text-slate-500">{fmtMs(m.latencyMs)}</span>
+      <span className="w-14 text-right text-xs"><Pct v={m.uptime.h24} label={`${t('monitors.uptime')} 24h`} /></span>
+      <span className="w-14 text-right text-xs"><Pct v={m.uptime.d30} label={`${t('monitors.uptime')} 30d`} /></span>
+      <span className="hidden w-24 truncate text-right text-xs text-slate-500 lg:block">{m.lastCheckAt ? relTime(m.lastCheckAt) : '–'}</span>
       <QuickToggle m={m} onQuick={onQuick} />
     </div>
   );
-}
+});
 
 function Timeline() {
   const t = useT();
@@ -305,7 +420,7 @@ function Timeline() {
   );
 }
 
-function SaveViewModal({ open, onClose, filters, tags, canShare }: { open: boolean; onClose: () => void; filters: Filters; tags?: Tag[]; canShare: boolean }) {
+function SaveViewModal({ open, onClose, filters, tags, canShare }: { open: boolean; onClose: () => void; filters: DashFilters; tags?: Tag[]; canShare: boolean }) {
   const t = useT();
   const qc = useQueryClient();
   const toast = useToast();

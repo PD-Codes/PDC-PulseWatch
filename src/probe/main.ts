@@ -3,6 +3,7 @@ import { DEFAULT_DENY, getRunner, NetGuard, setExtraCa } from '../core';
 import type { CheckResult } from '../core';
 import { installCrashBackstop } from '../core/survive';
 import { toCheckError } from '../core/util';
+import { Outbox, type ResultBatch } from './outbox';
 import pkg from '../../package.json';
 
 /** Probe agent: pulls its assigned jobs from the server, runs them from this network and pushes the raw results back. */
@@ -26,18 +27,26 @@ if (!server.startsWith('https://') && !/^http:\/\/(localhost|127\.|\[::1\])/.tes
 }
 
 interface Job { id: number; name: string; type: string; config: Record<string, any>; intervalS: number; timeoutS: number }
-interface Result { monitorId: number; ts: string; ok: boolean; latencyMs: number | null; errorKind: string | null; message: string | null }
 
 const headers = { Authorization: `Bearer ${token}`, 'X-Probe-Version': pkg.version, 'Content-Type': 'application/json' };
 const jobs = new Map<number, { job: Job; sig: string; timer: NodeJS.Timeout; first: NodeJS.Timeout }>();
 const stopJob = (e: { timer: NodeJS.Timeout; first: NodeJS.Timeout }) => { clearInterval(e.timer); clearTimeout(e.first); };
-let queue: Result[] = [];
+const outbox = new Outbox(async (batch: ResultBatch, timeoutMs: number) => {
+  const res = await fetch(`${server}/api/probe/v1/results`, { method: 'POST', headers, body: JSON.stringify(batch), signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+}, log);
+let skippedLoggedAt = 0;
 let etag = '';
 let running = 0;
 let stopping = false;
 
 async function runJob(job: Job): Promise<void> {
-  if (stopping || running >= maxConcurrency) return; // overloaded: skip this round instead of piling up
+  if (stopping) return;
+  if (running >= maxConcurrency) { // overloaded: skip this round instead of piling up, and say so (the server is told with the next delivery)
+    outbox.noteSkipped();
+    if (Date.now() - skippedLoggedAt > 60_000) { skippedLoggedAt = Date.now(); log('warn', 'overloaded: skipping checks', { monitorId: job.id, running, maxConcurrency, skippedUnreported: outbox.skipped }); }
+    return;
+  }
   running++;
   const started = Date.now();
   let r: CheckResult;
@@ -54,8 +63,7 @@ async function runJob(job: Job): Promise<void> {
     const ce = toCheckError(e);
     r = { ok: false, errorKind: ce.kind, message: ce.message };
   } finally { running--; }
-  queue.push({ monitorId: job.id, ts: new Date(started).toISOString(), ok: r.ok, latencyMs: r.latencyMs ?? null, errorKind: r.errorKind ?? null, message: r.message?.slice(0, 500) ?? null });
-  if (queue.length > 5000) queue = queue.slice(-5000); // server unreachable for long: keep the newest
+  outbox.push({ monitorId: job.id, ts: new Date(started).toISOString(), ok: r.ok, latencyMs: r.latencyMs ?? null, errorKind: r.errorKind ?? null, message: r.message?.slice(0, 500) ?? null });
 }
 
 function schedule(job: Job, sig: string) {
@@ -84,17 +92,7 @@ async function sync(): Promise<void> {
   log('info', 'jobs synced', { jobs: jobs.size });
 }
 
-async function flush(): Promise<void> {
-  if (!queue.length) return;
-  const batch = queue.splice(0, 500);
-  try {
-    const res = await fetch(`${server}/api/probe/v1/results`, { method: 'POST', headers, body: JSON.stringify({ results: batch }), signal: AbortSignal.timeout(15_000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  } catch (e) {
-    queue = [...batch, ...queue].slice(-5000); // retry with the next flush
-    log('warn', 'could not deliver results', { error: (e as Error).message, queued: queue.length });
-  }
-}
+async function flush(): Promise<void> { await outbox.flush(); }
 
 const safe = (fn: () => Promise<void>, what: string) => () => void fn().catch((e) => log('warn', `${what} failed`, { error: (e as Error).message }));
 installCrashBackstop((kind, e) => log('error', kind, { error: (e as Error)?.message ?? String(e) }));
@@ -110,7 +108,9 @@ async function shutdown() {
   for (const e of jobs.values()) stopJob(e);
   const deadline = Date.now() + 10_000;
   while (running && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
-  await flush().catch(() => {});
+  // deliver the whole backlog, not just one batch, within a bounded time
+  const left = await outbox.drain(Date.now() + 15_000).catch(() => ({ sent: 0, left: outbox.queue.length }));
+  if (left.left) log('warn', 'shutting down with undelivered results', left);
   process.exit(0);
 }
 process.on('SIGTERM', () => void shutdown());

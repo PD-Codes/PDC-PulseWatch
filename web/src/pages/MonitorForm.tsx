@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FolderPlus, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Button, Card, CardHeader, ErrorBox, Field, Input, Loading, PageHeader, Select, Textarea, Toggle, useToast } from '../components/ui';
+import { Button, Card, CardHeader, ErrorBox, Field, Input, Loading, PageHeader, Select, Textarea, Toggle, cx, useToast } from '../components/ui';
+import { CheckList } from '../components/ops-shared';
 import { TagValueEditor, toTagValues, type TagValueRow } from '../components/TagEditor';
 import { JsonPicker } from '../components/JsonPicker';
 import { DownDelayField } from '../components/DownDelay';
@@ -12,6 +13,8 @@ import { useAuth } from '../lib/auth';
 import { parseBulk } from '../lib/bulkParse';
 import { fmtDuration } from '../lib/format';
 import { useT } from '../lib/i18n';
+import { focusFirstError, mapApiError, type FieldAliases } from '../lib/formErrors';
+import { useUnsavedChangesGuard } from '../lib/useUnsavedGuard';
 
 interface Probe { id: number; name: string; location: string | null; online: boolean; enabled: boolean }
 interface Channel { id: number; name: string }
@@ -19,15 +22,19 @@ interface Policy { id: number; name: string }
 interface Rule { channelId: number | null; policyId: number | null; events: string[] }
 interface Detail extends MonitorItem {
   config: Record<string, unknown>; timeoutS: number; retries: number; retryIntervalS: number; upThreshold: number;
-  flapWindow: number; flapThreshold: number; downAfterS: number | null; quorum: number; notifications: Rule[];
+  flapWindow: number; flapThreshold: number; downAfterS: number | null; quorum: number; notifications: Rule[]; sloTarget?: number | null;
 }
-const EVENTS = ['down', 'up', 'flap', 'cert'] as const;
+const EVENTS = ['down', 'up', 'flap', 'cert', 'slo'] as const;
+/** SLO target from the form: empty means no target. */
+const sloValue = (v: string): number | null => (v.trim() === '' ? null : Number(v.replace(',', '.')));
+/** Client check of the SLO target (the server repeats it): 50 ≤ x < 100, at most three decimals. */
+const sloInvalid = (v: string): boolean => { if (v.trim() === '') return false; const n = sloValue(v)!; return !Number.isFinite(n) || n < 50 || n >= 100 || !/^\d+([.,]\d{1,3})?$/.test(v.trim()); };
 
 interface Common {
   name: string; description: string; groupId: string; intervalS: string; timeoutS: string; retries: string; retryIntervalS: string;
-  upThreshold: string; flapWindow: string; flapThreshold: string; downAfterS: string; active: boolean; publicBadge: boolean; quorum: string;
+  upThreshold: string; flapWindow: string; flapThreshold: string; downAfterS: string; active: boolean; publicBadge: boolean; quorum: string; sloTarget: string;
 }
-const COMMON: Common = { name: '', description: '', groupId: '', intervalS: '60', timeoutS: '48', retries: '0', retryIntervalS: '60', upThreshold: '1', flapWindow: '10', flapThreshold: '0', downAfterS: '', active: true, publicBadge: false, quorum: '1' };
+const COMMON: Common = { name: '', description: '', groupId: '', intervalS: '60', timeoutS: '48', retries: '0', retryIntervalS: '60', upThreshold: '1', flapWindow: '10', flapThreshold: '0', downAfterS: '', active: true, publicBadge: false, quorum: '1', sloTarget: '' };
 
 export default function MonitorForm() {
   const t = useT();
@@ -58,8 +65,23 @@ export default function MonitorForm() {
   const [locations, setLocations] = useState<(number | 'local')[]>([]);
   const [rules, setRules] = useState<Rule[]>([]);
   const [newTag, setNewTag] = useState('');
-  const [errors, setErrors] = useState<string[]>([]);
+  const [errors, setErrors] = useState<string[]>([]); // messages that belong to no field
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [loaded, setLoaded] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const summaryRef = useRef<HTMLDivElement>(null);
+
+  // Unsaved changes: the state before the first edit is the baseline (defaults and the loaded monitor arrive asynchronously,
+  // so a fixed baseline from the first render would count them as edits).
+  const [bulkText, setBulkText] = useState('');
+  const [bulk, setBulk] = useState(false);
+  const snap = JSON.stringify([type, c, vals, tagIds, tagVals, deps, locations, rules, bulk, bulkText]);
+  const snapNow = useRef(snap);
+  snapNow.current = snap;
+  const [base, setBase] = useState<string | null>(null);
+  const touch = () => { if (base == null) setBase(snapNow.current); };
+  const dirty = base != null && base !== snap;
+  const release = useUnsavedChangesGuard(dirty);
 
   const runner = types.data?.find((x) => x.type === type);
 
@@ -82,8 +104,6 @@ export default function MonitorForm() {
   });
 
   // Bulk add: one name/address per line, everything else shared.
-  const [bulk, setBulk] = useState(false);
-  const [bulkText, setBulkText] = useState('');
   const [skipExisting, setSkipExisting] = useState(true);
   const addressField = runner?.fields.find((f) => f.kind === 'text' && f.required);
   const bulkLines = useMemo(() => parseBulk(bulkText), [bulkText]);
@@ -107,7 +127,7 @@ export default function MonitorForm() {
     if (!d || !rt || loaded) return;
     const r = rt.find((x) => x.type === d.type);
     setType(d.type);
-    setC({ name: d.name, description: d.description ?? '', groupId: d.groupId ? String(d.groupId) : '', intervalS: String(d.intervalS), timeoutS: String(d.timeoutS), retries: String(d.retries), retryIntervalS: String(d.retryIntervalS), upThreshold: String(d.upThreshold), flapWindow: String(d.flapWindow), flapThreshold: String(d.flapThreshold), downAfterS: d.downAfterS == null ? '' : String(d.downAfterS), active: d.active, publicBadge: d.publicBadge, quorum: String(d.quorum) });
+    setC({ name: d.name, description: d.description ?? '', groupId: d.groupId ? String(d.groupId) : '', intervalS: String(d.intervalS), timeoutS: String(d.timeoutS), retries: String(d.retries), retryIntervalS: String(d.retryIntervalS), upThreshold: String(d.upThreshold), flapWindow: String(d.flapWindow), flapThreshold: String(d.flapThreshold), downAfterS: d.downAfterS == null ? '' : String(d.downAfterS), active: d.active, publicBadge: d.publicBadge, quorum: String(d.quorum), sloTarget: d.sloTarget == null ? '' : String(d.sloTarget) });
     setVals(initValues(r?.fields ?? [], d.config));
     setTagIds(d.tags.filter((x) => !x.value).map((x) => x.id)); setTagVals(d.tags.filter((x) => x.value).map((x) => ({ tagId: x.id, value: x.value }))); setDeps(d.dependsOn); setLocations((d.locations ?? []) as (number | 'local')[]); setRules(d.notifications ?? []);
     setLoaded(true);
@@ -125,15 +145,17 @@ export default function MonitorForm() {
         intervalS: n(c.intervalS), timeoutS: n(c.timeoutS), retries: n(c.retries), retryIntervalS: n(c.retryIntervalS), upThreshold: n(c.upThreshold),
         flapWindow: n(c.flapWindow), flapThreshold: n(c.flapThreshold), downAfterS: c.downAfterS === '' ? null : n(c.downAfterS), active: c.active, publicBadge: c.publicBadge, quorum: n(c.quorum),
         locations: locations.length ? locations : null, tagIds, tagValues: toTagValues(tagVals), dependsOn: deps, notifications: rules.filter((r) => r.channelId || r.policyId),
+        sloTarget: sloValue(c.sloTarget),
       };
       return id ? put<{ id: number }>(`/api/monitors/${id}`, body) : post<{ id: number }>('/api/monitors', body);
     },
     onSuccess: (m) => {
       toast(t('common.saved'));
       void qc.invalidateQueries({ queryKey: ['monitors'] }); void qc.invalidateQueries({ queryKey: ['monitor'] });
+      release();
       nav(`/monitors/${m.id ?? id}`);
     },
-    onError: (e) => setErrors(e instanceof ApiError && Array.isArray(e.body?.errors) && e.body.errors.length ? e.body.errors : [errorMessage(e)]),
+    onError: (e) => showErrors(e),
   });
 
   const saveBulk = useMutation({
@@ -144,6 +166,7 @@ export default function MonitorForm() {
         intervalS: n(c.intervalS), timeoutS: n(c.timeoutS), retries: n(c.retries), retryIntervalS: n(c.retryIntervalS), upThreshold: n(c.upThreshold),
         flapWindow: n(c.flapWindow), flapThreshold: n(c.flapThreshold), downAfterS: c.downAfterS === '' ? null : n(c.downAfterS), active: c.active, publicBadge: c.publicBadge, quorum: n(c.quorum),
         locations: locations.length ? locations : null, tagIds, tagValues: toTagValues(tagVals), dependsOn: deps, notifications: rules.filter((r) => r.channelId || r.policyId),
+        sloTarget: sloValue(c.sloTarget),
       };
       return post<{ created: { index: number }[]; skipped: { index: number }[]; failed: { index: number; errors: string[] }[] }>('/api/monitors/bulk-create', {
         type, addressKey: addressField!.key, skipExisting, template, items: bulkLines.map((l) => ({ name: l.name, address: l.address })),
@@ -152,13 +175,40 @@ export default function MonitorForm() {
     onSuccess: (r) => {
       void qc.invalidateQueries({ queryKey: ['monitors'] });
       toast(t('monitors.bulk.done', { created: r.created.length, skipped: r.skipped.length, failed: r.failed.length }));
-      if (!r.failed.length) return nav('/dashboard');
+      if (!r.failed.length) { release(); return nav('/dashboard'); }
       // keep only the failed lines so the user can fix and resend them
       setBulkText(r.failed.map((f) => bulkLines[f.index]!).map((l) => `${l.name} | ${l.address}`).join('\n'));
       setErrors(r.failed.map((f) => `${bulkLines[f.index]!.name}: ${f.errors.join('; ')}`));
     },
     onError: (e) => setErrors(e instanceof ApiError && Array.isArray(e.body?.errors) && e.body.errors.length ? e.body.errors : [errorMessage(e)]),
   });
+
+  // Server messages go to their field where one is named; the rest is listed above the form. Config fields come first: their
+  // labels are more specific than the common words ("name", "interval").
+  const fieldSpec = useMemo((): FieldAliases => ({
+    ...Object.fromEntries((runner?.fields ?? []).map((f) => [`cfg:${f.key}`, [f.key, f.label, `config.${f.key}`, `config/${f.key}`]])),
+    name: [], description: [], groupId: ['group'], intervalS: ['interval'], timeoutS: ['timeout'], retryIntervalS: ['retry interval', 'retryInterval'], retries: [],
+    upThreshold: ['up threshold'], flapWindow: ['flap window'], flapThreshold: ['flap threshold'], downAfterS: ['down after', 'downAfter'], quorum: [],
+    sloTarget: ['SLO', 'SLO target'], dependsOn: ['dependency', 'dependencies', 'depends'], locations: ['location', 'locations'],
+  }), [runner]);
+  function showErrors(e: unknown) {
+    const mapped = mapApiError(e, fieldSpec);
+    const fe = { ...mapped.fieldErrors };
+    // "the secret must be entered again" (address changed while a stored secret was kept): point at the masked secret fields
+    const secretMsg = mapped.rest.find((x) => /secret|re-?enter|erneut/i.test(x));
+    const masked = (runner?.fields ?? []).filter((f) => f.kind === 'secret' && String(vals[f.key] ?? '').startsWith('••'));
+    const rest = secretMsg && masked.length ? mapped.rest.filter((x) => x !== secretMsg) : mapped.rest;
+    if (secretMsg) for (const f of masked) fe[`cfg:${f.key}`] = secretMsg;
+    setFieldErrors(fe); setErrors(rest);
+    focusPending.current = true;
+  }
+  // after the errors have rendered (aria-invalid on the fields): focus the first invalid field, else the summary
+  const focusPending = useRef(false);
+  useEffect(() => {
+    if (!focusPending.current) return;
+    focusPending.current = false;
+    if (!focusFirstError(formRef.current)) summaryRef.current?.focus();
+  }, [fieldErrors, errors]);
 
   const addTag = useMutation({
     mutationFn: () => post<Tag>('/api/tags', { name: newTag.trim() }),
@@ -184,63 +234,114 @@ export default function MonitorForm() {
   const changeInterval = (v: string) => setC((o) => ({ ...o, intervalS: v, retryIntervalS: o.retryIntervalS === o.intervalS ? v : o.retryIntervalS }));
   const clampTimeout = () => setC((o) => { const cap = Math.max(1, Math.floor((Number(o.intervalS) || 0) * 0.8)); return Number(o.timeoutS) > cap ? { ...o, timeoutS: String(cap) } : o; });
   const num = (k: keyof Common, label: string, min: number, max: number, hint?: string, on?: { onChange?: (v: string) => void; onBlur?: () => void }) => (
-    <Field label={label} hint={hint}>{(fid) => <Input id={fid} type="number" min={min} max={max} value={c[k] as string} onChange={(e) => (on?.onChange ?? ((v: string) => set(k, v as never)))(e.target.value)} onBlur={on?.onBlur} required />}</Field>
+    <Field label={label} hint={hint} error={fieldErrors[k]}>{(fid) => <Input id={fid} type="number" min={min} max={max} value={c[k] as string} onChange={(e) => (on?.onChange ?? ((v: string) => set(k, v as never)))(e.target.value)} onBlur={on?.onBlur} required />}</Field>
   );
   const toggleIn = <T,>(list: T[], x: T) => (list.includes(x) ? list.filter((y) => y !== x) : [...list, x]);
-  const onSubmit = (e: FormEvent) => { e.preventDefault(); setErrors([]); try { if (bulk) { if (bulkLines.length) saveBulk.mutate(); else setErrors([t('monitors.bulk.empty')]); } else save.mutate(); } catch (err) { setErrors([errorMessage(err)]); } };
+  const onSubmit = (e: FormEvent) => {
+    e.preventDefault(); setErrors([]); setFieldErrors({});
+    if (!bulk && sloInvalid(c.sloTarget)) { setFieldErrors({ sloTarget: t('mux.form.sloInvalid') }); focusPending.current = true; return; }
+    try { if (bulk) { if (bulkLines.length) saveBulk.mutate(); else setErrors([t('monitors.bulk.empty')]); } else save.mutate(); } catch (err) { showErrors(err); }
+  };
   // Worst case until the monitor is reported as down: every attempt may run into the timeout, and each retry waits for the retry interval.
   const retries = Number(c.retries) || 0;
   const retrySummary = retries === 0 ? t('monitors.retryNow') : t('monitors.retrySummary', { time: fmtDuration(retries * Math.max(Number(c.retryIntervalS) || 0, Number(c.timeoutS) || 0) + (Number(c.timeoutS) || 0)) });
   const probeList = probes.data ?? [];
   const isPush = type === 'push';
   const locCount = locations.length;
+  const showLocations = !isPush && probeList.length > 0;
+  const cfgErrors = Object.fromEntries(Object.entries(fieldErrors).filter(([k]) => k.startsWith('cfg:')).map(([k, v]) => [k.slice(4), v]));
+  const errorCount = errors.length + Object.keys(fieldErrors).length;
+  const cancelTo = id ? `/monitors/${id}` : '/dashboard';
+  const busy = save.isPending || saveBulk.isPending;
+
+  const locationsCard = showLocations && (
+    <Card>
+      <CardHeader title={t('monitors.locations')} subtitle={t('monitors.form.locationsHint')} />
+      <div className="space-y-3 p-4">
+        <div className="flex flex-wrap gap-3">
+          {([{ id: 'local' as const, name: t('monitors.form.local'), online: true }, ...probeList.filter((p) => p.enabled)]).map((p) => (
+            <label key={p.id} className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={locations.includes(p.id)} onChange={() => setLocations(toggleIn(locations, p.id))} />{p.name}{p.id !== 'local' && !p.online && <span className="text-xs text-amber-600 dark:text-amber-400">({t('monitors.form.offline')})</span>}</label>
+          ))}
+        </div>
+        {fieldErrors.locations && <p className="text-xs text-red-600 dark:text-red-400" role="alert">{fieldErrors.locations}</p>}
+        {locCount > 1 && <div className="max-w-xs">{num('quorum', t('monitors.form.quorum'), 1, locCount, t('monitors.form.quorumHint', { n: c.quorum || 1, total: locCount }))}</div>}
+      </div>
+    </Card>
+  );
+  const notificationsCard = (
+    <Card>
+      <CardHeader title={t('monitors.form.notifications')} subtitle={t('monitors.form.notificationsHint')} actions={<Button size="sm" onClick={() => setRules([...rules, { channelId: null, policyId: null, events: ['down', 'up', 'flap'] }])}><Plus className="h-4 w-4" />{t('monitors.form.addRule')}</Button>} />
+      <div className="space-y-3 p-4">
+        {rules.length === 0 && <p className="text-sm text-slate-500">{t('monitors.form.noRules')}</p>}
+        {rules.map((r, i) => {
+          const patch = (p: Partial<Rule>) => setRules(rules.map((x, n) => (n === i ? { ...x, ...p } : x)));
+          return (
+            <div key={i} className="grid gap-x-3 gap-y-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800 sm:grid-cols-[1fr_1fr_auto]">
+              <Field label={t('monitors.form.channel')}>{(fid) => <Select id={fid} value={r.channelId ?? ''} onChange={(e) => patch({ channelId: e.target.value ? Number(e.target.value) : null })}><option value="">–</option>{channels.data?.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>}</Field>
+              <Field label={t('monitors.form.policy')}>{(fid) => <Select id={fid} value={r.policyId ?? ''} onChange={(e) => patch({ policyId: e.target.value ? Number(e.target.value) : null })}><option value="">–</option>{policies.data?.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>}</Field>
+              <div className="flex items-end"><Button size="sm" variant="ghost" aria-label={t('common.delete')} onClick={() => setRules(rules.filter((_, n) => n !== i))}><Trash2 className="h-4 w-4" /></Button></div>
+              <div className="flex flex-wrap gap-3 sm:col-span-3">{EVENTS.map((ev) => <label key={ev} className="inline-flex items-center gap-1.5 text-sm"><input type="checkbox" checked={r.events.includes(ev)} onChange={() => patch({ events: toggleIn(r.events, ev) })} />{t(`monitors.form.event.${ev}`)}</label>)}</div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
 
   return (
-    <form onSubmit={onSubmit} className="mx-auto max-w-4xl space-y-4">
-      <PageHeader title={id ? t('monitors.form.editTitle') : t('monitors.form.newTitle')} actions={<><Button onClick={() => nav(-1)}>{t('common.cancel')}</Button><Button type="submit" variant="primary" loading={save.isPending || saveBulk.isPending}>{bulk ? t('monitors.bulk.create', { n: bulkLines.length }) : t('common.save')}</Button></>} />
-      {errors.length > 0 && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200"><ul className="list-disc pl-5">{errors.map((x, i) => <li key={i}>{x}</li>)}</ul></div>}
+    // capture phase: runs before the edit is applied, so the state before the first change becomes the baseline
+    <form ref={formRef} onSubmit={onSubmit} onInputCapture={touch} onClickCapture={touch} onChangeCapture={touch} className="mx-auto max-w-6xl space-y-4">
+      <PageHeader title={id ? t('monitors.form.editTitle') : t('monitors.form.newTitle')} subtitle={id ? detail.data?.name : undefined} />
+      {errors.length > 0 && (
+        <div ref={summaryRef} tabIndex={-1} role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+          {errors.length === 1 ? errors[0] : <ul className="list-disc pl-5">{errors.map((x, i) => <li key={i}>{x}</li>)}</ul>}
+        </div>
+      )}
 
       <Card>
         <CardHeader title={t('monitors.form.general')} />
-        <div className="grid gap-4 p-4 sm:grid-cols-2">
+        <div className="grid gap-x-4 gap-y-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
           <Field label={`${t('monitors.form.type')} *`}>{(fid) => (
             <Select id={fid} value={type} disabled={id != null} onChange={(e) => setType(e.target.value)}>
               {byCategory.map(([cat, list]) => <optgroup key={cat} label={cat}>{list.map((x) => <option key={x.type} value={x.type}>{x.label}</option>)}</optgroup>)}
             </Select>)}</Field>
-          {id == null && addressField && (
-            <div className="sm:col-span-2"><Toggle checked={bulk} onChange={setBulk} label={t('monitors.bulk.toggle')} /><p className="hint">{t('monitors.bulk.hint', { field: addressField.label })}</p></div>
-          )}
-          {bulk && addressField && (
-            <div className="space-y-2 sm:col-span-2">
-              <Field label={t('monitors.bulk.targets')} hint={t('monitors.bulk.format')}>{(fid) => <Textarea id={fid} rows={6} spellCheck={false} className="font-mono text-xs" placeholder={'Website | https://example.com\nShop | https://shop.example.com\nmail.example.com'} value={bulkText} onChange={(e) => setBulkText(e.target.value)} />}</Field>
-              {bulkLines.length > 0 && (
-                <div className="max-h-56 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
-                  <table className="tbl text-xs">
-                    <thead><tr><th>#</th><th>{t('common.name')}</th><th>{addressField.label}</th><th /></tr></thead>
-                    <tbody>{bulkLines.map((l, i) => { const st = lineState(i); return (
-                      <tr key={l.line}><td className="text-slate-400">{l.line}</td><td>{l.name}</td><td className="break-all font-mono">{l.address}</td>
-                        <td className={st === 'ok' ? 'text-emerald-600' : 'text-amber-600'}>{t(`monitors.bulk.state.${st}`)}</td></tr>); })}</tbody>
-                  </table>
-                </div>
-              )}
-              <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={skipExisting} onChange={(e) => setSkipExisting(e.target.checked)} />{t('monitors.bulk.skip')}</label>
-            </div>
-          )}
-          {!bulk && <Field label={`${t('common.name')} *`}>{(fid) => <Input id={fid} value={c.name} maxLength={255} required onChange={(e) => set('name', e.target.value)} />}</Field>}
-          <Field label={t('monitors.group')} className={bulk ? 'sm:col-span-2' : undefined}>{(fid) => (
+          {!bulk && <Field label={`${t('common.name')} *`} error={fieldErrors.name}>{(fid) => <Input id={fid} value={c.name} maxLength={255} required onChange={(e) => set('name', e.target.value)} />}</Field>}
+          <Field label={t('monitors.group')} error={fieldErrors.groupId} className={bulk ? 'sm:col-span-2' : undefined}>{(fid) => (
             <div className="flex gap-2">
               <Select id={fid} value={c.groupId} onChange={(e) => set('groupId', e.target.value)}><option value="">{t('monitors.noGroup')}</option>{groups.data?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</Select>
               <Button type="button" className="shrink-0" title={t('monitors.form.newGroup')} aria-label={t('monitors.form.newGroup')} onClick={() => setNewGroup(newGroup ? null : { name: '', parent: '' })}><FolderPlus className="h-4 w-4" /></Button>
             </div>)}</Field>
+          <Field label={t('mux.form.slo')} hint={t('mux.form.sloHint')} error={fieldErrors.sloTarget}>{(fid) => <Input id={fid} type="text" inputMode="decimal" placeholder="99.9" value={c.sloTarget} onChange={(e) => set('sloTarget', e.target.value)} />}</Field>
           {newGroup && (
-            <div className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800 sm:col-span-2 sm:grid-cols-[1fr_1fr_auto]">
+            <div className="grid gap-2 rounded-lg border border-slate-200 p-3 dark:border-slate-800 sm:col-span-2 sm:grid-cols-[1fr_1fr_auto] lg:col-span-4">
               <Input aria-label={t('monitors.form.newGroupName')} placeholder={t('monitors.form.newGroupName')} maxLength={255} autoFocus value={newGroup.name} onChange={(e) => setNewGroup({ ...newGroup, name: e.target.value })}
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (newGroup.name.trim()) addGroup.mutate(); } }} />
               <Select aria-label={t('monitors.form.newGroupParent')} value={newGroup.parent} onChange={(e) => setNewGroup({ ...newGroup, parent: e.target.value })}><option value="">{t('monitors.form.newGroupTop')}</option>{groups.data?.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}</Select>
               <Button type="button" variant="primary" loading={addGroup.isPending} disabled={!newGroup.name.trim()} onClick={() => addGroup.mutate()}>{t('monitors.form.createGroup')}</Button>
             </div>
           )}
-          <Field label={t('common.description')} className="sm:col-span-2">{(fid) => <Textarea id={fid} rows={2} value={c.description} onChange={(e) => set('description', e.target.value)} />}</Field>
+          <Field label={t('common.description')} hint={t('mux.form.descPublic')} error={fieldErrors.description} className="sm:col-span-2 lg:col-span-4">{(fid) => <Textarea id={fid} rows={2} className="font-sans" value={c.description} onChange={(e) => set('description', e.target.value)} />}</Field>
+          {id == null && addressField && (
+            <div className="sm:col-span-2 lg:col-span-4"><Toggle checked={bulk} onChange={setBulk} label={t('monitors.bulk.toggle')} /><p className="hint">{t('monitors.bulk.hint', { field: addressField.label })}</p></div>
+          )}
+          {bulk && addressField && (
+            <div className="grid gap-3 sm:col-span-2 lg:col-span-4 lg:grid-cols-2">
+              <Field label={t('monitors.bulk.targets')} hint={t('monitors.bulk.format')}>{(fid) => <Textarea id={fid} rows={8} spellCheck={false} className="font-mono text-xs" placeholder={'Website | https://example.com\nShop | https://shop.example.com\nmail.example.com'} value={bulkText} onChange={(e) => setBulkText(e.target.value)} />}</Field>
+              <div className="space-y-2">
+                {bulkLines.length > 0 && (
+                  <div className="max-h-52 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                    <table className="tbl text-xs">
+                      <thead><tr><th>#</th><th>{t('common.name')}</th><th>{addressField.label}</th><th /></tr></thead>
+                      <tbody>{bulkLines.map((l, i) => { const st = lineState(i); return (
+                        <tr key={l.line}><td className="text-slate-400">{l.line}</td><td>{l.name}</td><td className="break-all font-mono">{l.address}</td>
+                          <td className={st === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>{t(`monitors.bulk.state.${st}`)}</td></tr>); })}</tbody>
+                    </table>
+                  </div>
+                )}
+                <label className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={skipExisting} onChange={(e) => setSkipExisting(e.target.checked)} />{t('monitors.bulk.skip')}</label>
+              </div>
+            </div>
+          )}
         </div>
       </Card>
 
@@ -248,83 +349,67 @@ export default function MonitorForm() {
         <Card>
           <CardHeader title={runner.label} />
           <div className="p-4">
-            <MonitorFields idPrefix="mf" fields={bulk && addressField ? runner.fields.filter((f) => f.key !== addressField.key) : runner.fields} values={vals} onChange={(k: string, v: FieldValue) => setVals((o) => ({ ...o, [k]: v }))} />
+            <MonitorFields idPrefix="mf" errors={cfgErrors} fields={bulk && addressField ? runner.fields.filter((f) => f.key !== addressField.key) : runner.fields} values={vals} onChange={(k: string, v: FieldValue) => setVals((o) => ({ ...o, [k]: v }))} />
             {type === 'json' && !bulk && <JsonPicker fields={runner.fields} values={vals} monitorId={id} onPick={(p) => setVals((o) => ({ ...o, ...p }))} />}
           </div>
         </Card>
       )}
 
-      <Card>
-        <CardHeader title={t('monitors.form.timing')} />
-        <div className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
-          {num('intervalS', t('monitors.interval'), 5, 86400, t('monitors.form.checkEvery', { n: c.intervalS }), { onChange: changeInterval, onBlur: clampTimeout })}
-          {num('timeoutS', t('monitors.timeout'), 1, 300, t('monitors.form.timeoutAfter', { n: c.timeoutS }), { onBlur: clampTimeout })}
-          {num('retries', t('monitors.retries'), 0, 100, t('monitors.form.retriesHint'))}
-          {num('retryIntervalS', t('monitors.retryInterval'), 5, 3600, t('monitors.form.retryEvery', { n: c.retryIntervalS }))}
-          {num('upThreshold', t('monitors.upThreshold'), 1, 20, t('monitors.form.upHint'))}
-          {num('flapWindow', t('monitors.flapWindow'), 4, 60, t('monitors.form.flapWindowHint'))}
-          {num('flapThreshold', t('monitors.flapThreshold'), 0, 60, t('monitors.form.flapThresholdHint'))}
-          <div className="sm:col-span-2"><DownDelayField inherit value={c.downAfterS} onChange={(v) => set('downAfterS', v)} hint={t('delay.hintMonitor', { value: globalDelay })} /></div>
-          <p className="hint sm:col-span-2 lg:col-span-4" data-testid="retry-summary">{retrySummary}</p>
-        </div>
-      </Card>
+      <div className="grid items-start gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader title={t('monitors.form.timing')} />
+          <div className="grid gap-x-4 gap-y-3 p-4 sm:grid-cols-2">
+            {num('intervalS', t('monitors.interval'), 5, 86400, t('monitors.form.checkEvery', { n: c.intervalS }), { onChange: changeInterval, onBlur: clampTimeout })}
+            {num('timeoutS', t('monitors.timeout'), 1, 300, t('monitors.form.timeoutAfter', { n: c.timeoutS }), { onBlur: clampTimeout })}
+            {num('retries', t('monitors.retries'), 0, 100, t('monitors.form.retriesHint'))}
+            {num('retryIntervalS', t('monitors.retryInterval'), 5, 3600, t('monitors.form.retryEvery', { n: c.retryIntervalS }))}
+            {num('upThreshold', t('monitors.upThreshold'), 1, 20, t('monitors.form.upHint'))}
+            <div><DownDelayField inherit value={c.downAfterS} onChange={(v) => set('downAfterS', v)} hint={t('delay.hintMonitor', { value: globalDelay })} />{fieldErrors.downAfterS && <p className="mt-1 text-xs text-red-600 dark:text-red-400" role="alert">{fieldErrors.downAfterS}</p>}</div>
+            {num('flapWindow', t('monitors.flapWindow'), 4, 60, t('monitors.form.flapWindowHint'))}
+            {num('flapThreshold', t('monitors.flapThreshold'), 0, 60, t('monitors.form.flapThresholdHint'))}
+            <p className="hint sm:col-span-2" data-testid="retry-summary">{retrySummary}</p>
+          </div>
+        </Card>
 
-      <Card>
-        <CardHeader title={t('monitors.form.organize')} />
-        <div className="space-y-4 p-4">
-          <fieldset>
-            <legend className="label">{t('monitors.form.tags')}</legend>
-            <div className="flex flex-wrap items-center gap-2">
-              {tags.data?.map((x) => <button key={x.id} type="button" aria-pressed={tagIds.includes(x.id)} onClick={() => setTagIds(toggleIn(tagIds, x.id))} className="rounded-full border px-2.5 py-1 text-xs transition" style={tagIds.includes(x.id) ? { background: x.color, borderColor: x.color, color: '#fff' } : { borderColor: x.color }}>{x.name}</button>)}
-              <span className="inline-flex gap-1"><input className="input w-36 py-1 text-xs" aria-label={t('monitors.form.newTag')} placeholder={t('monitors.form.newTag')} value={newTag} onChange={(e) => setNewTag(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (newTag.trim()) addTag.mutate(); } }} /><Button size="sm" disabled={!newTag.trim()} loading={addTag.isPending} onClick={() => addTag.mutate()} aria-label={t('common.add')}><Plus className="h-4 w-4" /></Button></span>
+        <Card>
+          <CardHeader title={t('monitors.form.organize')} />
+          <div className="space-y-3 p-4">
+            <fieldset>
+              <legend className="label">{t('monitors.form.tags')}</legend>
+              <div className="flex flex-wrap items-center gap-2">
+                {tags.data?.map((x) => <button key={x.id} type="button" aria-pressed={tagIds.includes(x.id)} onClick={() => setTagIds(toggleIn(tagIds, x.id))} className="rounded-full border px-2.5 py-1 text-xs transition" style={tagIds.includes(x.id) ? { background: x.color, borderColor: x.color, color: '#fff' } : { borderColor: x.color }}>{x.name}</button>)}
+                <span className="inline-flex gap-1"><input className="input w-36 py-1 text-xs" aria-label={t('monitors.form.newTag')} placeholder={t('monitors.form.newTag')} value={newTag} onChange={(e) => setNewTag(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); if (newTag.trim()) addTag.mutate(); } }} /><Button size="sm" disabled={!newTag.trim()} loading={addTag.isPending} onClick={() => addTag.mutate()} aria-label={t('common.add')}><Plus className="h-4 w-4" /></Button></span>
+              </div>
+            </fieldset>
+            <TagValueEditor tags={tags.data ?? []} rows={tagVals} onChange={setTagVals} />
+            <div>
+              <div className="label flex items-baseline justify-between gap-2"><span>{t('monitors.form.deps')}</span>{deps.length > 0 && <span className="text-xs font-normal text-slate-500">{t('mux.form.depsPicked', { n: deps.length })}</span>}</div>
+              <CheckList searchable items={(monitors.data ?? []).filter((x) => x.id !== id).map((x) => ({ id: x.id, label: x.name, hint: x.type }))} value={deps} onChange={setDeps} />
+              {fieldErrors.dependsOn ? <p className="mt-1 text-xs text-red-600 dark:text-red-400" role="alert">{fieldErrors.dependsOn}</p> : <p className="hint">{t('mux.form.depsHint')}</p>}
             </div>
-          </fieldset>
-          <TagValueEditor tags={tags.data ?? []} rows={tagVals} onChange={setTagVals} />
-          <Field label={t('monitors.form.deps')} hint={t('monitors.form.depsHint')}>{(fid) => (
-            <select id={fid} multiple size={5} className="input" value={deps.map(String)} onChange={(e) => setDeps([...e.target.selectedOptions].map((o) => Number(o.value)))}>
-              {monitors.data?.filter((x) => x.id !== id).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-            </select>)}</Field>
-          <Toggle checked={c.active} onChange={(v) => set('active', v)} label={t('monitors.form.active')} />
-          <div><Toggle checked={c.publicBadge} onChange={(v) => set('publicBadge', v)} label={t('monitors.form.publicBadge')} /><p className="hint">{t('monitors.form.publicBadgeHint')}</p></div>
-        </div>
-      </Card>
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
+              <Toggle checked={c.active} onChange={(v) => set('active', v)} label={t('monitors.form.active')} />
+              <Toggle checked={c.publicBadge} onChange={(v) => set('publicBadge', v)} label={t('monitors.form.publicBadge')} />
+            </div>
+            <p className="hint !mt-1">{t('monitors.form.publicBadgeHint')}</p>
+          </div>
+        </Card>
+      </div>
 
       {!isPush && probes.isSuccess && probeList.length === 0 && can('admin') && (
         <p className="rounded-lg border border-dashed border-slate-300 p-3 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300"><strong className="font-semibold">{t('probes.formHint.title')}.</strong> {t('probes.formHint.body')} <Link to="/probes">{t('probes.formHint.link')}</Link></p>
       )}
-      {!isPush && probeList.length > 0 && (
-        <Card>
-          <CardHeader title={t('monitors.locations')} subtitle={t('monitors.form.locationsHint')} />
-          <div className="space-y-3 p-4">
-            <div className="flex flex-wrap gap-3">
-              {([{ id: 'local' as const, name: t('monitors.form.local'), online: true }, ...probeList.filter((p) => p.enabled)]).map((p) => (
-                <label key={p.id} className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={locations.includes(p.id)} onChange={() => setLocations(toggleIn(locations, p.id))} />{p.name}{p.id !== 'local' && !p.online && <span className="text-xs text-amber-600">({t('monitors.form.offline')})</span>}</label>
-              ))}
-            </div>
-            {locCount > 1 && <div className="max-w-xs"><Field label={t('monitors.form.quorum')} hint={t('monitors.form.quorumHint', { n: c.quorum || 1, total: locCount })}>{(fid) => <Input id={fid} type="number" min={1} max={locCount} value={c.quorum} onChange={(e) => set('quorum', e.target.value)} />}</Field></div>}
-          </div>
-        </Card>
-      )}
+      <div className={cx('grid items-start gap-4', showLocations && 'lg:grid-cols-2')}>
+        {locationsCard}
+        {notificationsCard}
+      </div>
 
-      <Card>
-        <CardHeader title={t('monitors.form.notifications')} subtitle={t('monitors.form.notificationsHint')} actions={<Button size="sm" onClick={() => setRules([...rules, { channelId: null, policyId: null, events: ['down', 'up', 'flap'] }])}><Plus className="h-4 w-4" />{t('monitors.form.addRule')}</Button>} />
-        <div className="space-y-3 p-4">
-          {rules.length === 0 && <p className="text-sm text-slate-500">{t('monitors.form.noRules')}</p>}
-          {rules.map((r, i) => {
-            const patch = (p: Partial<Rule>) => setRules(rules.map((x, n) => (n === i ? { ...x, ...p } : x)));
-            return (
-              <div key={i} className="grid gap-3 rounded-lg border border-slate-200 p-3 dark:border-slate-800 sm:grid-cols-[1fr_1fr_auto]">
-                <Field label={t('monitors.form.channel')}>{(fid) => <Select id={fid} value={r.channelId ?? ''} onChange={(e) => patch({ channelId: e.target.value ? Number(e.target.value) : null })}><option value="">–</option>{channels.data?.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>}</Field>
-                <Field label={t('monitors.form.policy')}>{(fid) => <Select id={fid} value={r.policyId ?? ''} onChange={(e) => patch({ policyId: e.target.value ? Number(e.target.value) : null })}><option value="">–</option>{policies.data?.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</Select>}</Field>
-                <div className="flex items-end"><Button size="sm" variant="ghost" aria-label={t('common.delete')} onClick={() => setRules(rules.filter((_, n) => n !== i))}><Trash2 className="h-4 w-4" /></Button></div>
-                <div className="flex flex-wrap gap-3 sm:col-span-3">{EVENTS.map((ev) => <label key={ev} className="inline-flex items-center gap-1.5 text-sm"><input type="checkbox" checked={r.events.includes(ev)} onChange={() => patch({ events: toggleIn(r.events, ev) })} />{t(`monitors.form.event.${ev}`)}</label>)}</div>
-              </div>
-            );
-          })}
-        </div>
-      </Card>
-
-      <div className="flex justify-end gap-2 pb-6"><Button onClick={() => nav(-1)}>{t('common.cancel')}</Button><Button type="submit" variant="primary" loading={save.isPending || saveBulk.isPending}>{bulk ? t('monitors.bulk.create', { n: bulkLines.length }) : t('common.save')}</Button></div>
+      <div className="sticky bottom-0 z-20 -mx-4 flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 bg-white/95 px-4 py-2.5 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95 sm:-mx-6 sm:px-6">
+        {errorCount > 0 ? <span className="mr-auto text-sm text-red-600 dark:text-red-400" role="status">{t('mux.form.errorCount', { n: errorCount })}</span>
+          : dirty ? <span className="mr-auto text-sm text-slate-500">{t('mux.form.unsaved')}</span> : null}
+        <Button onClick={() => nav(cancelTo)}>{t('common.cancel')}</Button>
+        <Button type="submit" variant="primary" loading={busy}>{bulk ? t('monitors.bulk.create', { n: bulkLines.length }) : t('common.save')}</Button>
+      </div>
     </form>
   );
 }

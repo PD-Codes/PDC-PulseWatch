@@ -5,7 +5,7 @@ import * as oidc from 'openid-client';
 import { trustOptions, type FieldDef, type Runner } from '../../core';
 import { config } from '../config';
 import type { Ctx } from '../context';
-import { decryptJson, safeEqual } from '../crypto';
+import { decryptJson, safeEqual, sha256 } from '../crypto';
 import { bool } from '../db';
 
 /* Provider config schemas reuse the monitor field machinery (validation + secret masking). */
@@ -118,6 +118,21 @@ async function upsertExternal(ctx: Ctx, source: 'oidc' | 'ldap' | 'saml', extern
 
 const escFilter = (s: string) => s.replace(/[\\*()\0]/g, (c) => `\\${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
 
+/** `<provider id>:<DN>`; a DN too long for external_id (VARCHAR 255) is stored as `<provider id>:sha256:<hash>` instead. */
+export const ldapExternalId = (providerId: number, dn: string): string => {
+  const id = `${providerId}:${dn}`;
+  return id.length <= 255 ? id : `${providerId}:sha256:${sha256(dn)}`;
+};
+
+/**
+ * Accounts from before provider-prefixed LDAP ids carry the bare DN; the first sign-in through a provider moves such an account to that provider's id.
+ * shortcut: with several directories the first provider that authenticates the DN after the upgrade keeps the old account.
+ */
+async function adoptLegacyLdapId(ctx: Ctx, dn: string, extId: string): Promise<void> {
+  const taken = await ctx.db.selectFrom('users').select('id').where('auth_source', '=', 'ldap').where('external_id', '=', extId).executeTakeFirst();
+  if (!taken) await ctx.db.updateTable('users').set({ external_id: extId }).where('auth_source', '=', 'ldap').where('external_id', '=', dn).execute();
+}
+
 /** undefined = no LDAP provider enabled, null = rejected, NO_GROUP = valid login without an allowed group, number = local user id. */
 export async function ldapLogin(ctx: Ctx, username: string, password: string): Promise<number | null | undefined | typeof NO_GROUP> {
   if (!password) return null; // an empty password would turn the bind into an anonymous (always successful) one
@@ -142,9 +157,12 @@ export async function ldapLogin(ctx: Ctx, username: string, password: string): P
       try { if (c.startTls) await userClient.startTLS(tls); await userClient.bind(entry.dn, password); } finally { await userClient.unbind().catch(() => {}); }
       const groups = ([] as string[]).concat((entry.memberOf as string | string[] | undefined) ?? []).map((g) => g.toLowerCase());
       const str = (v: unknown) => (Array.isArray(v) ? String(v[0]) : v == null ? undefined : String(v));
-      await enforceGroups(ctx, 'ldap', entry.dn, lines(c.allowedGroupDns), [c.adminGroupDn, c.editorGroupDn].filter(Boolean).map(String), groups, staffOnlyOn(c), true);
+      // the DN alone is only unique within one directory: two providers with the same DN must not share an account, so the id carries the provider
+      const extId = ldapExternalId(prov.id, entry.dn);
+      await adoptLegacyLdapId(ctx, entry.dn, extId);
+      await enforceGroups(ctx, 'ldap', extId, lines(c.allowedGroupDns), [c.adminGroupDn, c.editorGroupDn].filter(Boolean).map(String), groups, staffOnlyOn(c), true);
       const mapped: Role | undefined = c.adminGroupDn && groups.includes(String(c.adminGroupDn).toLowerCase()) ? 'admin' : c.editorGroupDn && groups.includes(String(c.editorGroupDn).toLowerCase()) ? 'editor' : c.adminGroupDn || c.editorGroupDn ? (c.defaultRole ?? 'viewer') : undefined;
-      return await upsertExternal(ctx, 'ldap', entry.dn, { username, email: str(entry[c.emailAttr || 'mail']), displayName: str(entry[c.nameAttr || 'cn']), role: mapped, defaultRole: c.defaultRole ?? 'viewer', create: true });
+      return await upsertExternal(ctx, 'ldap', extId, { username, email: str(entry[c.emailAttr || 'mail']), displayName: str(entry[c.nameAttr || 'cn']), role: mapped, defaultRole: c.defaultRole ?? 'viewer', create: true });
     } catch (e) {
       if (e instanceof GroupDenied) denied = true; // another provider may still accept the user
       ctx.log.info({ err: (e as Error).message, provider: prov.id }, 'LDAP login failed');

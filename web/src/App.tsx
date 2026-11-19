@@ -5,12 +5,14 @@ import { Layout } from './components/Layout';
 import { Loading } from './components/ui';
 import { get } from './lib/api';
 import { useAuth } from './lib/auth';
+import { isChunkError, reloadOnce } from './lib/reload';
 import { StreamProvider } from './lib/stream';
 import Login from './pages/Login';
 import NotFound from './pages/NotFound';
 import Setup from './pages/Setup';
 
-const page = (loader: () => Promise<{ default: React.ComponentType<any> }>) => lazy(loader);
+// A chunk that vanished with a new deployment reloads the app once (see lib/reload.ts); the promise stays pending so no error flashes meanwhile
+const page = (loader: () => Promise<{ default: React.ComponentType<any> }>) => lazy(() => loader().catch((e) => { if (isChunkError(e) && reloadOnce()) return new Promise<never>(() => {}); throw e; }));
 const Dashboard = page(() => import('./pages/Dashboard'));
 const MonitorDetail = page(() => import('./pages/MonitorDetail'));
 const MonitorForm = page(() => import('./pages/MonitorForm'));

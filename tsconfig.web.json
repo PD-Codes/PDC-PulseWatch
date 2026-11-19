@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "lib": ["ES2023", "DOM", "DOM.Iterable"], "types": ["vite/client"], "jsx": "react-jsx", "noEmit": true },
-  "include": ["web/src", "web/vite.config.ts"],
+  "include": ["web/src", "web/vite.config.ts", "test/**/*.web.test.ts"],
   "exclude": ["node_modules", "dist"]
 }

@@ -12,6 +12,8 @@ export interface Monitor {
   intervalS: number; timeoutS: number; retries: number; retryIntervalS: number; upThreshold: number;
   flapWindow: number; flapThreshold: number; downAfterS: number | null; active: boolean; locations: (number | 'local')[] | null; quorum: number;
   pushToken: string | null; publicBadge: boolean; attempt: number; nextRunAt: Date | null; createdAt: Date;
+  /** Availability target over 30 days in percent, or null. */
+  sloTarget: number | null;
 }
 
 const isEnc = (v: unknown): v is string => typeof v === 'string' && v.startsWith('enc:v1:');
@@ -48,6 +50,7 @@ export function parseMonitor(row: Selectable<MonitorsTable>): Monitor {
     upThreshold: row.up_threshold, flapWindow: row.flap_window, flapThreshold: row.flap_threshold, downAfterS: row.down_after_s,
     active: bool(row.active), locations: parseJson(row.locations, null), quorum: row.quorum, pushToken: row.push_token,
     publicBadge: bool(row.public_badge), attempt: row.attempt, nextRunAt: row.next_run_at, createdAt: row.created_at,
+    sloTarget: row.slo_target == null ? null : Number(row.slo_target),
   };
 }
 

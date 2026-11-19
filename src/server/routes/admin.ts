@@ -2,9 +2,11 @@ import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { DEFAULT_DENY } from '../../core';
 import { writeAudit } from '../auth/access';
+import { clearAccountFailures } from '../auth/reauth';
 import { hashPassword } from '../crypto';
 import { bool } from '../db';
 import { applySsrfSettings, isCidr } from '../guard-sync';
+import { defaultTheme, saveDefaultTheme, ThemeSchema, type ThemeId } from '../themes';
 import { pwSchema } from './auth';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
@@ -56,6 +58,7 @@ export async function adminRoutes(app: FastifyInstance) {
     if (b.password) { if (u.auth_source !== 'local') return reply.code(400).send({ error: 'validation', message: 'Passwords of external accounts are managed by their provider' }); set.password_hash = await hashPassword(b.password); }
     if (b.resetTotp) { set.totp_enabled = 0; set.totp_secret_enc = null; set.totp_recovery = null; }
     if (b.unlock) { set.failed_logins = 0; set.locked_until = null; }
+    if (b.unlock) await clearAccountFailures(ctx, id, u.username); // per-address delays and the account-wide counter
     try { if (Object.keys(set).length) await db.updateTable('users').set(set).where('id', '=', id).execute(); }
     catch (e: any) { if (e.code === 'ER_DUP_ENTRY') return reply.code(409).send({ error: 'conflict', message: 'Email already exists' }); throw e; }
     // deactivation, password reset and role change take effect immediately
@@ -121,6 +124,15 @@ export async function adminRoutes(app: FastifyInstance) {
     await applySsrfSettings(ctx);
     await writeAudit(ctx, req.user, 'settings.ssrf_reset', { type: 'settings' }, undefined, req.ip);
     return { ok: true };
+  });
+
+  /** Instance default color theme; users may pick their own (PATCH /api/auth/me uiTheme), status pages have their own field. */
+  app.get('/api/settings/appearance', { ...admin, schema: { tags: ['settings'] } }, async () => ({ defaultTheme: await defaultTheme(ctx) }));
+  app.put('/api/settings/appearance', { ...admin, schema: { tags: ['settings'], body: Type.Object({ defaultTheme: ThemeSchema }) } }, async (req) => {
+    const b = req.body as { defaultTheme: ThemeId };
+    await saveDefaultTheme(ctx, b.defaultTheme);
+    await writeAudit(ctx, req.user, 'settings.appearance', { type: 'settings' }, b, req.ip);
+    return { defaultTheme: b.defaultTheme };
   });
 }
 

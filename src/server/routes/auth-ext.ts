@@ -6,8 +6,9 @@ import { fallbackStatusPath, writeAudit } from '../auth/access';
 import { GroupDenied, oidcFinish, oidcStart, providerRunner, samlAcsUrl, samlConfigErrors, samlEntityId, samlFinish, samlMetadata, samlStart } from '../auth/external';
 import { createSession, csrfFor } from '../auth/plugin';
 import { reauthError } from '../auth/reauth';
+import { reauthClient } from './auth';
 import { config } from '../config';
-import { decryptJson, encryptJson, hmac, safeEqual } from '../crypto';
+import { decryptJson, encryptJson, hmac, safeEqual, sha256 } from '../crypto';
 import { bool, parseJson } from '../db';
 
 const Id = Type.Object({ id: Type.Integer({ minimum: 1 }) });
@@ -26,6 +27,18 @@ function takeSigned<T>(req: FastifyRequest, reply: FastifyReply, name: string, s
   if (!body || !sig || !safeEqual(sig, hmac(`${name}:${body}`))) return null;
   const v = parseJson<{ d: T; e: number } | null>(Buffer.from(body, 'base64url').toString(), null);
   return v && v.e > Date.now() ? v.d : null;
+}
+
+/**
+ * The signed cookie alone could be presented twice within its lifetime (with a captured assertion of an authenticator whose counter stays 0),
+ * so each WebAuthn challenge is marked as used in the database, shared by all instances, like SAML request ids.
+ */
+async function consumeChallenge(ctx: FastifyInstance['ctx'], challenge: string): Promise<boolean> {
+  await ctx.db.deleteFrom('settings').where('key', 'like', 'webauthn.used.%').where('updated_at', '<', new Date(Date.now() - 30 * 60_000)).execute();
+  try { await ctx.db.insertInto('settings').values({ key: `webauthn.used.${sha256(challenge).slice(0, 48)}`, value: '1' }).execute(); return true; } catch (e: any) {
+    if (e.code === 'ER_DUP_ENTRY') return false;
+    throw e;
+  }
 }
 
 export async function authExtRoutes(app: FastifyInstance) {
@@ -148,7 +161,7 @@ export async function authExtRoutes(app: FastifyInstance) {
     // single sign-on and LDAP accounts must keep going through their provider: a passkey would skip its group checks and a disabled account
     const src = await db.selectFrom('users').select('auth_source').where('id', '=', u.id).executeTakeFirst();
     if (src?.auth_source !== 'local') return reply.code(400).send({ error: 'not_supported', message: 'Passkeys are only available for local accounts; sign in through your provider instead' });
-    const bad = await reauthError(ctx, u.id, b.password, b.code);
+    const bad = await reauthError(ctx, u.id, b.password, b.code, reauthClient(req));
     if (bad) return reply.code(400).send({ error: 'invalid_credentials', message: bad });
     const existing = await db.selectFrom('passkeys').select(['credential_id', 'transports']).where('user_id', '=', u.id).execute();
     const options = await generateRegistrationOptions({
@@ -161,7 +174,7 @@ export async function authExtRoutes(app: FastifyInstance) {
 
   app.post('/api/auth/passkeys/register/verify', { ...auth, schema: { tags: ['auth'], body: Type.Object({ name: Type.Optional(Type.String({ maxLength: 64 })), credential: Type.Any() }) } }, async (req, reply) => {
     const st = takeSigned<{ c: string; u: number }>(req, reply, 'pw_wa_reg');
-    if (!st || st.u !== req.user!.id) return reply.code(400).send({ error: 'expired', message: 'The request expired, please try again' });
+    if (!st || st.u !== req.user!.id || !(await consumeChallenge(ctx, st.c))) return reply.code(400).send({ error: 'expired', message: 'The request expired, please try again' });
     const b = req.body as { name?: string; credential: any };
     try {
       const v = await verifyRegistrationResponse({ response: b.credential, expectedChallenge: st.c, expectedOrigin: origin, expectedRPID: rpID });
@@ -185,6 +198,7 @@ export async function authExtRoutes(app: FastifyInstance) {
     const resp = (req.body as any).credential;
     const deny = async (why: string) => { await writeAudit(ctx, null, 'login.failed', { type: 'passkey' }, { why }, req.ip); return reply.code(401).send({ error: 'invalid_credentials', message: 'Passkey sign-in failed' }); };
     if (!st || typeof resp?.id !== 'string') return deny('expired');
+    if (!(await consumeChallenge(ctx, st.c))) return deny('challenge already used');
     const pk = await db.selectFrom('passkeys as p').innerJoin('users as u', 'u.id', 'p.user_id').select(['p.id', 'p.public_key', 'p.counter', 'p.transports', 'p.credential_id', 'u.id as uid', 'u.username', 'u.is_active', 'u.auth_source']).where('p.credential_id', '=', resp.id).executeTakeFirst();
     if (!pk || !bool(pk.is_active)) return deny('unknown credential');
     if (pk.auth_source !== 'local') return deny('passkeys are for local accounts only');

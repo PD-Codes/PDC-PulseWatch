@@ -13,6 +13,11 @@ const admin = {
   password: process.env.PW_TEST_DB_PASSWORD ?? 'dev',
 };
 
+/** Fixed setup token for the first admin; the client adds it to POST /api/setup unless the test sends its own. */
+export const SETUP_TOKEN = 'it-setup-token-0123456789abcdef';
+/** Password of the admin that loggedInAdmin creates. */
+export const ADMIN_PASSWORD = 'correct-horse-battery-1';
+
 export async function startApp() {
   const dbName = `pw_it_${crypto.randomBytes(4).toString('hex')}`;
   const root = await mysql.createConnection(admin);
@@ -24,6 +29,7 @@ export async function startApp() {
     PW_DATA_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'pw-it-')), PW_SECRET_KEY: crypto.randomBytes(32).toString('base64'),
     PW_MIGRATIONS_DIR: path.resolve(import.meta.dirname, '../../migrations'), PW_LOG_LEVEL: 'silent',
     PW_RATE_LIMIT_LOGIN: '1000', PW_RATE_LIMIT_MAX: '100000', PW_BASE_URL: 'http://localhost:3000', PW_DEMO: 'false',
+    PW_SETUP_TOKEN: SETUP_TOKEN,
   });
 
   // Imported late: config reads the environment at import time.
@@ -45,6 +51,9 @@ export async function startApp() {
       if (jar.size) headers.cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
       if (opts.bearer) headers.authorization = `Bearer ${opts.bearer}`;
       if (csrf && extra.csrf !== false) headers['x-csrf-token'] = csrf;
+      // shortcut: older tests predate the setup token and the re-authentication for new API tokens; they get both filled in unless they send their own
+      if (method === 'POST' && url === '/api/setup' && body && typeof body === 'object' && !('setupToken' in body)) body = { ...body, setupToken: SETUP_TOKEN };
+      if (method === 'POST' && url === '/api/tokens' && body && typeof body === 'object' && !('password' in body)) body = { ...body, password: ADMIN_PASSWORD };
       const res = await app.inject({ method: method as 'GET', url, payload: body as object | undefined, headers });
       for (const c of res.cookies) { if (c.value) jar.set(c.name, c.value); else jar.delete(c.name); }
       let json: any; try { json = res.json(); } catch { json = undefined; }
@@ -69,7 +78,7 @@ export type TestApp = Awaited<ReturnType<typeof startApp>>;
 /** Creates the first admin and returns a logged-in client. */
 export async function loggedInAdmin(t: TestApp) {
   const c = t.client();
-  const r = await c.post('/api/setup', { username: 'admin', password: 'correct-horse-battery-1' });
+  const r = await c.post('/api/setup', { username: 'admin', password: ADMIN_PASSWORD, setupToken: SETUP_TOKEN });
   if (r.status !== 200) throw new Error(`setup failed: ${r.status} ${r.body}`);
   return c;
 }

@@ -1,0 +1,25 @@
+# Build PulseWatch from this checkout instead of pulling the official images from ghcr.io.
+# Use it as an override on top of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+# or set COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml in .env and use plain `docker compose`.
+# pull_policy "build" makes Compose build every time it starts (layers are cached) and never pull.
+# The images get their own local names, so they cannot be mixed up with the official ones;
+# PW_IMAGE and PW_PROBE_IMAGE still override them.
+services:
+  app:
+    build: .
+    image: ${PW_IMAGE:-pulsewatch-local/app:latest}
+    pull_policy: build
+
+  # same image as app (profile "split")
+  worker:
+    build: .
+    image: ${PW_IMAGE:-pulsewatch-local/app:latest}
+    pull_policy: build
+
+  probe:
+    build:
+      context: .
+      dockerfile: Dockerfile.probe
+    image: ${PW_PROBE_IMAGE:-pulsewatch-local/probe:latest}
+    pull_policy: build

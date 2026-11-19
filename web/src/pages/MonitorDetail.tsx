@@ -3,7 +3,10 @@ import { Activity, Copy, Edit3, Pause, Play, RefreshCw, ShieldCheck, Trash2, Tri
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Loading, PageHeader, Select, useConfirm, useToast, cx } from '../components/ui';
-import { displayStatus, HeartbeatBar, StatusBadge, StatusDot, uptimeTone } from '../components/status';
+import { displayStatus, HeartbeatBar, HeartbeatLegend, StatusBadge, StatusDot, uptimeTone } from '../components/status';
+import { SnoozeBadge, SnoozeControl } from '../components/Snooze';
+import { SloPanel } from '../components/Slo';
+import { ExportCsvButton } from '../components/ExportCsv';
 import { Pager } from '../components/Pager';
 import { ServerInfoBlock } from '../components/ServerInfo';
 import { MultiSelect } from '../components/MultiSelect';
@@ -11,9 +14,11 @@ import { TimeChart } from '../components/TimeChart';
 import { MonitorCopy } from '../components/MonitorCopy';
 import { tagText } from '../components/TagEditor';
 import { del, errorMessage, get, post, type Beat, type MonitorItem } from '../lib/api';
+import { fmtUntil, type SloDetail, type SnoozeBody } from '../lib/monitorExtras';
+import { usePagedList, usePageSize } from '../lib/usePagedList';
 import { useAuth, useMeta } from '../lib/auth';
 import { fmtDateTime, fmtDuration, fmtMs, fmtPct, relTime } from '../lib/format';
-import { useT } from '../lib/i18n';
+import { useI18n, useT } from '../lib/i18n';
 import { subscribeStream } from '../lib/stream';
 
 interface Detail extends MonitorItem {
@@ -21,6 +26,7 @@ interface Detail extends MonitorItem {
   locationStates: { locationId: number | null; name: string; ok: boolean; ts: string; latencyMs: number | null; errorKind: string | null; message: string | null }[];
   cert: { subject: string; issuer: string; validFrom: string; validTo: string; daysLeft: number; fingerprint256: string; altNames: string[]; chain: { subject: string; issuer: string; validTo: string }[]; authorized?: boolean; authError?: string } | null;
   anomalyState: { slow: number; fast: number; flagged: boolean } | null;
+  snoozedUntil?: string | null; sloTarget?: number | null; slo?: SloDetail | null;
 }
 interface ChartData { range: string; resolution: string; points: { t: string; avg: number | null; p50?: number; p95?: number; p99?: number; status?: number }[]; summary: { avg: number | null; min: number | null; max: number | null; p50: number | null; p95: number | null; p99: number | null } }
 interface Period { status: string | number; from: string; to: string | null; durationS: number; errorKind: string | null; message: string | null }
@@ -40,6 +46,7 @@ export default function MonitorDetail() {
   const confirm = useConfirm();
   const { can } = useAuth();
   const meta = useMeta();
+  const { locale } = useI18n();
   const [range, setRange] = useState<(typeof RANGES)[number]>('24h');
   // a window picked by dragging across the chart (epoch seconds); it replaces the named range until reset
   const [win, setWin] = useState<{ from: number; to: number } | null>(null);
@@ -66,6 +73,21 @@ export default function MonitorDetail() {
     onSuccess: (_r, a) => { toast(t(`monitors.done.${a}`)); void qc.invalidateQueries({ queryKey: key }); void qc.invalidateQueries({ queryKey: ['monitors'] }); },
     onError: (e) => toast(errorMessage(e), 'error'),
   });
+
+  const snooze = useMutation({
+    mutationFn: (b: SnoozeBody | null) => (b ? post<{ snoozedUntil: string | null }>(`/api/monitors/${id}/snooze`, b) : del<{ snoozedUntil: null }>(`/api/monitors/${id}/snooze`)),
+    onSuccess: (r) => {
+      qc.setQueryData<Detail>(key, (o) => o && { ...o, snoozedUntil: r.snoozedUntil });
+      toast(r.snoozedUntil ? t('mux.snooze.done', { when: fmtUntil(r.snoozedUntil, locale) }) : t('mux.snooze.cleared'));
+      void qc.invalidateQueries({ queryKey: ['monitors'] });
+    },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
+
+  // lists below the chart: 20 per page by default, the page size remembered per list
+  const periodRows = periods.data ?? [];
+  const periodPage = usePagedList(periodRows, { key: 'monitor.periods', resetKey: span });
+  const incidentPage = usePagedList(incidents.data ?? [], { key: 'monitor.incidents' });
 
   const chartView = useMemo(() => {
     const pts = chart.data?.points ?? [];
@@ -95,9 +117,11 @@ export default function MonitorDetail() {
     <>
       <PageHeader
         title={<span className="flex items-center gap-3"><StatusDot status={s} pulse />{m.name}</span>}
-        subtitle={<span className="flex flex-wrap items-center gap-2"><StatusBadge status={s} /><span className="font-mono text-xs">{m.type}</span>{m.statusSince && <span>{t('monitors.since', { time: relTime(m.statusSince) })}</span>}{m.flapping && <Badge tone="amber">{t('monitors.flapping')}</Badge>}{m.tags.map((x) => <span key={`${x.id}:${x.value}`} className="rounded px-1.5 py-0.5 text-[11px] text-white" style={{ background: x.color }}>{tagText(x)}</span>)}</span>}
+        subtitle={<span className="flex flex-wrap items-center gap-2"><StatusBadge status={s} /><SnoozeBadge until={m.snoozedUntil} /><span className="font-mono text-xs">{m.type}</span>{m.statusSince && <span>{t('monitors.since', { time: relTime(m.statusSince) })}</span>}{m.flapping && <Badge tone="amber">{t('monitors.flapping')}</Badge>}{m.tags.map((x) => <span key={`${x.id}:${x.value}`} className="rounded px-1.5 py-0.5 text-[11px] text-white" style={{ background: x.color }}>{tagText(x)}</span>)}</span>}
         actions={editor ? (
           <>
+            <SnoozeControl until={m.snoozedUntil} busy={snooze.isPending} onSnooze={(b) => snooze.mutate(b)} onClear={() => snooze.mutate(null)} />
+            <ExportCsvButton monitorId={id} />
             <Button size="sm" variant="primary" loading={act.isPending && act.variables === 'check'} onClick={() => act.mutate('check')}><RefreshCw className="h-4 w-4" />{t('monitors.checkNow')}</Button>
             <Button size="sm" onClick={() => act.mutate(m.active ? 'pause' : 'resume')}>{m.active ? <><Pause className="h-4 w-4" />{t('monitors.pause')}</> : <><Play className="h-4 w-4" />{t('monitors.resume')}</>}</Button>
             <Link to={`/monitors/${id}/edit`} className="btn btn-sm no-underline"><Edit3 className="h-4 w-4" />{t('common.edit')}</Link>
@@ -107,7 +131,7 @@ export default function MonitorDetail() {
               try { await del(`/api/monitors/${id}`); void qc.invalidateQueries({ queryKey: ['monitors'] }); nav('/dashboard'); } catch (e) { toast(errorMessage(e), 'error'); }
             }}><Trash2 className="h-4 w-4" />{t('common.delete')}</Button>
           </>
-        ) : undefined}
+        ) : <ExportCsvButton monitorId={id} />}
       />
       {m.description && <p className="-mt-2 mb-4 text-sm text-slate-600 dark:text-slate-300">{m.description}</p>}
 
@@ -116,11 +140,12 @@ export default function MonitorDetail() {
 
       {m.info && <Card className="mb-4"><CardHeader title={t('info.title')} /><div className="p-4"><ServerInfoBlock info={m.info} className="text-sm" /></div></Card>}
 
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div className={cx('mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3', m.slo ? 'sm:grid-cols-4 lg:grid-cols-8' : 'lg:grid-cols-6')}>
         <div className="card p-3"><div className="text-xs text-slate-500">{t('monitors.current')}</div><div className="mt-1 text-xl font-semibold">{fmtMs(m.latencyMs)}</div></div>
         {([['24h', m.uptime.h24], ['7d', m.uptime.d7], ['30d', m.uptime.d30], ['90d', m.uptime.d90], ['365d', m.uptime.d365]] as const).map(([k, v]) => (
           <div key={k} className="card p-3"><div className="text-xs text-slate-500">{t('monitors.uptime')} {k}</div><div className={cx('mt-1 text-xl font-semibold', uptimeTone(v))}>{fmtPct(v, 3)}</div></div>
         ))}
+        {m.slo && <SloPanel slo={m.slo} className="col-span-2" />}
       </div>
 
       <Card className="mb-4">
@@ -144,7 +169,10 @@ export default function MonitorDetail() {
 
       <Card className="mb-4 p-4">
         <HeartbeatBar beats={m.recent} count={90} height="h-8" />
-        <p className="mt-2 text-xs text-slate-500">{t('monitors.beatsLabel', { up: m.recent.slice(-90).filter((b) => b[1] === 1).length, total: Math.min(90, m.recent.length) })}</p>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <p className="text-xs text-slate-500">{t('monitors.beatsLabel', { up: m.recent.slice(-90).filter((b) => b[1] === 1).length, total: Math.min(90, m.recent.length) })}</p>
+          <HeartbeatLegend />
+        </div>
       </Card>
 
       <div className="mb-4 grid gap-4 lg:grid-cols-2">
@@ -160,7 +188,7 @@ export default function MonitorDetail() {
           <CardHeader title={<span className="flex items-center gap-2"><ShieldCheck className="h-4 w-4" />{t('monitors.tls')}</span>} />
           <div className="p-4">{m.cert ? <>
             <Dl items={[
-              [t('monitors.cert.expires'), <span key="e" className={m.cert.daysLeft < 14 ? 'font-semibold text-red-600' : m.cert.daysLeft < 30 ? 'font-semibold text-amber-600' : ''}>{fmtDateTime(m.cert.validTo)} ({t('monitors.cert.days', { n: m.cert.daysLeft })})</span>],
+              [t('monitors.cert.expires'), <span key="e" className={m.cert.daysLeft < 14 ? 'font-semibold text-red-600 dark:text-red-400' : m.cert.daysLeft < 30 ? 'font-semibold text-amber-600 dark:text-amber-400' : ''}>{fmtDateTime(m.cert.validTo)} ({t('monitors.cert.days', { n: m.cert.daysLeft })})</span>],
               [t('monitors.cert.subject'), m.cert.subject], [t('monitors.cert.issuer'), m.cert.issuer],
               [t('monitors.cert.sans'), m.cert.altNames.slice(0, 6).join(', ') || '–'],
               [t('monitors.cert.fingerprint'), <code key="f" className="break-all text-xs">{m.cert.fingerprint256}</code>],
@@ -178,7 +206,7 @@ export default function MonitorDetail() {
             <li key={l.locationId ?? 'local'} className="flex flex-wrap items-center gap-3 px-4 py-2.5 text-sm">
               <StatusDot status={l.ok ? 'up' : 'down'} /><span className="font-medium">{l.name}</span>
               <span className="text-slate-500">{fmtMs(l.latencyMs)}</span>
-              {!l.ok && l.message && <span className="min-w-0 flex-1 truncate text-red-600" title={l.message}>{l.errorKind}: {l.message}</span>}
+              {!l.ok && l.message && <span className="min-w-0 flex-1 truncate text-red-600 dark:text-red-400" title={l.message}>{l.errorKind}: {l.message}</span>}
               <span className="ml-auto text-xs text-slate-400">{relTime(l.ts)}</span>
             </li>))}</ul>
         </Card>
@@ -212,22 +240,24 @@ export default function MonitorDetail() {
 
       <Card className="mb-4">
         <CardHeader title={t('monitors.incidents')} />
-        {incidents.isLoading ? <Loading /> : !incidents.data?.length ? <p className="p-4 text-sm text-slate-500">{t('monitors.noIncidents')}</p> : (
-          <ul className="divide-y divide-slate-100 dark:divide-slate-800">{incidents.data.map((i) => (
+        {incidents.isLoading ? <Loading /> : !incidents.data?.length ? <p className="p-4 text-sm text-slate-500">{t('monitors.noIncidents')}</p> : (<>
+          <ul className="divide-y divide-slate-100 dark:divide-slate-800">{incidentPage.pageRows.map((i) => (
             <li key={i.id} className="flex flex-wrap items-center gap-2 px-4 py-2.5 text-sm">
               <Link to={`/incidents/${i.id}`} className="font-medium">{i.title}</Link><Badge tone={i.status === 'resolved' ? 'green' : 'red'}>{t(`monitors.incStatus.${i.status}`)}</Badge>
               <span className="ml-auto text-xs text-slate-500">{fmtDateTime(i.started_at)}{i.resolved_at ? ` · ${fmtDuration((new Date(i.resolved_at).getTime() - new Date(i.started_at).getTime()) / 1000)}` : ''}</span>
             </li>))}</ul>
-        )}
+          <Pager {...incidentPage.pagerProps} />
+        </>)}
       </Card>
 
-      {periods.data && periods.data.length > 0 && (
+      {periodRows.length > 0 && (
         <Card className="mb-4">
-          <CardHeader title={t('monitors.periods')} subtitle={win ? windowLabel : t(`monitors.range.${range}`)} />
-          <ul className="max-h-72 divide-y divide-slate-100 overflow-y-auto dark:divide-slate-800">{periods.data.slice(0, 50).map((p, i) => {
+          <CardHeader title={t('monitors.periods')} subtitle={`${win ? windowLabel : t(`monitors.range.${range}`)} · ${t('mux.detail.periodCount', { n: periodRows.length })}`} />
+          <ul className="divide-y divide-slate-100 dark:divide-slate-800">{periodPage.pageRows.map((p, i) => {
             const st = p.status === 'down' || p.status === 0 ? 'down' : p.status === 'maintenance' || p.status === 3 ? 'maintenance' : 'up';
             return <li key={i} className="flex flex-wrap items-center gap-2 px-4 py-2 text-sm"><StatusDot status={st} /><span>{t(`status.${st}`)}</span><span className="text-slate-500">{fmtDuration(p.durationS)}</span>{p.message && <span className="min-w-0 flex-1 truncate text-xs text-slate-400" title={p.message}>{p.message}</span>}<span className="ml-auto text-xs text-slate-400">{fmtDateTime(p.from)}</span></li>;
           })}</ul>
+          <Pager {...periodPage.pagerProps} />
         </Card>
       )}
     </>
@@ -248,7 +278,7 @@ interface Paged<T> { total: number; items: T[]; statuses?: number[] }
 /** Page size and number live in the component; the previous page stays visible while the next one loads. */
 function usePaged<T>(id: number, what: 'heartbeats' | 'events', status: number[] = []) {
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(5);
+  const [pageSize, setPageSize] = usePageSize(`monitor.${what}`);
   const filter = status.join(',');
   const q = useQuery({ queryKey: ['monitor', id, what, page, pageSize, filter], queryFn: () => get<Paged<T>>(`/api/monitors/${id}/${what}?page=${page}&pageSize=${pageSize}${filter ? `&status=${filter}` : ''}`), placeholderData: keepPreviousData });
   const total = q.data?.total ?? 0;

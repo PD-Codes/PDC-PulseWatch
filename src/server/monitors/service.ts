@@ -4,6 +4,7 @@ import { getRunner, maskSecrets, restoreSecrets, validateConfig } from '../../co
 import type { Ctx } from '../context';
 import { parseJson } from '../db';
 import { maxTimeoutS, monitorDefaults } from './defaults';
+import { sloCounts, sloDetail, validSloTarget, type SloDetail } from '../alerts';
 import type { ServerInfo } from './info';
 import { encryptConfig, parseMonitor, type Monitor } from './model';
 
@@ -14,6 +15,8 @@ export interface MonitorInput {
   intervalS?: number; timeoutS?: number; retries?: number; retryIntervalS?: number; upThreshold?: number;
   flapWindow?: number; flapThreshold?: number; downAfterS?: number | null; active?: boolean; locations?: (number | 'local')[] | null; quorum?: number; publicBadge?: boolean;
   tagIds?: number[]; tagValues?: TagValue[]; dependsOn?: number[]; notifications?: { channelId?: number | null; policyId?: number | null; events?: string[] }[];
+  /** 30-day availability target in percent (50 <= x < 100, three decimals) or null for none. */
+  sloTarget?: number | null;
 }
 
 const num = (v: unknown, def: number, min: number, max: number, label: string, errors: string[]) => {
@@ -45,6 +48,9 @@ async function hasCycle(ctx: Ctx, monitorId: number, deps: number[]): Promise<bo
   return false;
 }
 
+/** A random point within the next interval (at least one second ahead). */
+export const spreadOver = (intervalS: number, now = Date.now()) => new Date(now + Math.max(1000, Math.random() * intervalS * 1000));
+
 export async function saveMonitor(ctx: Ctx, input: MonitorInput, userId: number | null, existing?: Monitor): Promise<number> {
   const { db } = ctx;
   const errors: string[] = [];
@@ -65,13 +71,15 @@ export async function saveMonitor(ctx: Ctx, input: MonitorInput, userId: number 
   const timeoutS = num(input.timeoutS ?? existing?.timeoutS, Math.min(d.timeoutS, maxTimeoutS(intervalS)), 1, 300, 'Timeout', errors);
   const downAfterS = input.downAfterS !== undefined ? input.downAfterS : existing?.downAfterS ?? null;
   if (downAfterS !== null && !(Number.isInteger(downAfterS) && downAfterS >= 0 && downAfterS <= 86400)) errors.push('Down delay must be between 0 and 86400 seconds');
+  const sloTarget = input.sloTarget !== undefined ? input.sloTarget : existing?.sloTarget ?? null;
+  if (sloTarget !== null && !validSloTarget(sloTarget)) errors.push('SLO target must be a percentage of at least 50 and below 100 with at most three decimals');
   const row = {
     name, type: runner.type, group_id: input.groupId === undefined ? existing?.groupId ?? null : input.groupId, description: input.description === undefined ? existing?.description ?? null : input.description,
     config: JSON.stringify(encryptConfig(runner, v.config)), interval_s: intervalS, timeout_s: timeoutS,
     retries: num(input.retries ?? existing?.retries, d.retries, 0, 100, 'Retries', errors), retry_interval_s: num(input.retryIntervalS ?? existing?.retryIntervalS, d.retryIntervalS, 5, 3600, 'Retry interval', errors),
     up_threshold: num(input.upThreshold ?? existing?.upThreshold, d.upThreshold, 1, 20, 'Up threshold', errors),
     flap_window: num(input.flapWindow ?? existing?.flapWindow, d.flapWindow, 4, 60, 'Flap window', errors), flap_threshold: num(input.flapThreshold ?? existing?.flapThreshold, d.flapThreshold, 0, 60, 'Flap threshold', errors),
-    down_after_s: downAfterS,
+    down_after_s: downAfterS, slo_target: sloTarget,
     active: (input.active ?? existing?.active ?? true) ? 1 : 0, public_badge: (input.publicBadge ?? existing?.publicBadge ?? false) ? 1 : 0,
   };
   let locations = input.locations === undefined ? existing?.locations ?? null : input.locations;
@@ -105,9 +113,13 @@ export async function saveMonitor(ctx: Ctx, input: MonitorInput, userId: number 
       id = existing.id;
       if (deps && (await hasCycle(ctx, id, deps))) throw new ValidationError(['Dependencies must not form a cycle']);
       await trx.updateTable('monitors').set(common).where('id', '=', id).execute();
-      // changing the interval or resuming should take effect soon
-      if (!existing.active && common.active) await trx.updateTable('monitors').set({ next_run_at: new Date(), attempt: 0 }).where('id', '=', id).execute();
-      if (existing.intervalS !== intervalS && common.active) await trx.updateTable('monitors').set({ next_run_at: new Date(Date.now() + Math.random() * Math.min(intervalS, 10) * 1000) }).where('id', '=', id).execute();
+      // resuming checks soon and starts a new failure streak (one from before the pause must not skip the retries and the down delay)
+      if (!existing.active && common.active) {
+        await trx.updateTable('monitors').set({ next_run_at: new Date(), attempt: 0 }).where('id', '=', id).execute();
+        await trx.updateTable('monitor_state').set({ fail_since: null }).where('monitor_id', '=', id).execute();
+      }
+      // a new interval: the next round lands anywhere within it, so monitors edited together do not run in step
+      else if (existing.intervalS !== intervalS && common.active) await trx.updateTable('monitors').set({ next_run_at: spreadOver(intervalS) }).where('id', '=', id).execute();
     } else {
       const r = await trx.insertInto('monitors').values({
         ...common, created_by: userId, push_token: runner.type === 'push' ? crypto.randomBytes(16).toString('hex') : null,
@@ -145,6 +157,9 @@ export async function loadMonitor(ctx: Ctx, id: number): Promise<Monitor | null>
 }
 
 /* ------------------------------ read models ------------------------------ */
+type SloShort = Pick<SloDetail, 'target' | 'uptime30d' | 'met'>;
+const sloShort = (s: SloDetail): SloShort => ({ target: s.target, uptime30d: s.uptime30d, met: s.met });
+
 export interface UptimeSet { h24: number | null; d7: number | null; d30: number | null; d90: number | null; d365: number | null }
 
 const pctOf = (up: number | null, down: number | null): number | null => {
@@ -172,15 +187,18 @@ export async function listMonitors(ctx: Ctx, ids: number[] | null) {
   const { db } = ctx;
   if (ids && !ids.length) return [];
   let q = db.selectFrom('monitors as m').leftJoin('monitor_state as s', 's.monitor_id', 'm.id')
-    .select(['m.id', 'm.name', 'm.type', 'm.group_id', 'm.active', 'm.interval_s', 'm.description', 'm.public_badge', 'm.locations', 'm.push_token', 's.status', 's.overlay', 's.status_since', 's.last_check_at', 's.last_latency_ms', 's.last_error_kind', 's.last_message', 's.flapping', 's.recent', 's.cert_expires_at', 's.anomaly', 's.info'])
+    .select(['m.id', 'm.name', 'm.type', 'm.group_id', 'm.active', 'm.interval_s', 'm.description', 'm.public_badge', 'm.locations', 'm.push_token', 'm.slo_target', 's.snoozed_until', 's.status', 's.overlay', 's.status_since', 's.last_check_at', 's.last_latency_ms', 's.last_error_kind', 's.last_message', 's.flapping', 's.recent', 's.cert_expires_at', 's.anomaly', 's.info'])
     .orderBy('m.name');
   if (ids) q = q.where('m.id', 'in', ids);
   const rows = await q.execute();
   const mids = rows.map((r) => r.id);
-  const [tags, deps, uptime] = await Promise.all([
+  const now = new Date();
+  const sloIds = rows.filter((r) => r.slo_target != null).map((r) => r.id);
+  const [tags, deps, uptime, slo] = await Promise.all([
     mids.length ? db.selectFrom('monitor_tags as mt').innerJoin('tags as t', 't.id', 'mt.tag_id').select(['mt.monitor_id', 't.id', 't.name', 't.color', 'mt.value']).where('mt.monitor_id', 'in', mids).orderBy('t.name').orderBy('mt.value').execute() : [],
     mids.length ? db.selectFrom('monitor_dependencies').selectAll().where('monitor_id', 'in', mids).execute() : [],
     uptimeFor(ctx, ids ?? (mids.length ? mids : [0])),
+    sloCounts(db, sloIds, now),
   ]);
   return rows.map((r) => ({
     id: r.id, name: r.name, type: r.type, groupId: r.group_id, active: !!r.active, intervalS: r.interval_s, description: r.description,
@@ -191,6 +209,9 @@ export async function listMonitors(ctx: Ctx, ids: number[] | null) {
     tags: tags.filter((t) => t.monitor_id === r.id).map((t) => ({ id: t.id, name: t.name, color: t.color, value: t.value })),
     dependsOn: deps.filter((d) => d.monitor_id === r.id).map((d) => d.depends_on_id),
     uptime: uptime.get(r.id) ?? { h24: null, d7: null, d30: null, d90: null, d365: null },
+    snoozedUntil: r.snoozed_until && r.snoozed_until > now ? r.snoozed_until : null,
+    sloTarget: r.slo_target == null ? null : Number(r.slo_target),
+    slo: r.slo_target == null ? null : sloShort(sloDetail(Number(r.slo_target), slo.get(r.id))),
   }));
 }
 
@@ -198,16 +219,19 @@ export async function monitorDetail(ctx: Ctx, id: number) {
   const m = await loadMonitor(ctx, id);
   if (!m) return null;
   const { db } = ctx;
-  const [list, notifications, locStates, st] = await Promise.all([
+  const [list, notifications, locStates, st, counts] = await Promise.all([
     listMonitors(ctx, [id]),
     db.selectFrom('monitor_notifications').selectAll().where('monitor_id', '=', id).execute(),
     db.selectFrom('monitor_location_state').selectAll().where('monitor_id', '=', id).execute(),
     db.selectFrom('monitor_state').select(['cert_info', 'anomaly', 'consecutive_fail', 'consecutive_ok']).where('monitor_id', '=', id).executeTakeFirst(),
+    m.sloTarget === null ? null : sloCounts(db, [id]),
   ]);
   const runner = getRunner(m.type);
   const probes = locStates.length ? await db.selectFrom('probes').select(['id', 'name']).where('id', 'in', locStates.map((l) => l.location_id)).execute() : [];
   return {
     ...list[0],
+    // the list carries target, uptime and met; the detail adds the error budget
+    slo: m.sloTarget === null ? null : sloDetail(m.sloTarget, counts?.get(id)),
     config: maskSecrets(runner, m.config), timeoutS: m.timeoutS, retries: m.retries, retryIntervalS: m.retryIntervalS, upThreshold: m.upThreshold,
     flapWindow: m.flapWindow, flapThreshold: m.flapThreshold, downAfterS: m.downAfterS, quorum: m.quorum,
     notifications: notifications.map((n) => ({ channelId: n.channel_id, policyId: n.policy_id, events: n.events.split(',') })),

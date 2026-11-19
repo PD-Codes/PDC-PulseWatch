@@ -38,6 +38,9 @@ export interface MachineOut extends MachineState {
   flapEvent: 'start' | 'stop' | null;
 }
 
+/** monitors.attempt is SMALLINT UNSIGNED; a long down delay with a short retry interval must not overflow it. */
+export const MAX_ATTEMPT = 65_000;
+
 export const initialState = (): MachineState => ({ status: 'unknown', consecutiveFail: 0, consecutiveOk: 0, attempt: 0, outcomes: '', flapping: false, failSince: null });
 
 export function countTransitions(outcomes: string): number {
@@ -62,7 +65,7 @@ export function step(s: MachineState, p: MachineParams, ok: boolean): MachineOut
     if (status === 'unknown' || status === 'pending' || status === 'up') status = 'up';
     else if (consecutiveOk >= p.upThreshold) status = 'up'; // down -> up needs confirmation
   } else if (status !== 'down' && (attempt < p.retries || p.nowMs - failSince! < p.downAfterS * 1000)) { // a monitor that is already down does not start another round of retries
-    attempt++; hb = 2; retry = true; status = 'pending';
+    attempt = Math.min(attempt + 1, MAX_ATTEMPT); hb = 2; retry = true; status = 'pending';
   } else {
     attempt = 0; consecutiveFail++; consecutiveOk = 0; counted = true; status = 'down'; hb = 0;
   }

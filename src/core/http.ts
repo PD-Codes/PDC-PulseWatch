@@ -35,6 +35,9 @@ export interface HttpResponse {
 }
 
 const REDIRECT = new Set([301, 302, 303, 307, 308]);
+/** The only request headers that follow a redirect to another origin: custom headers (API keys, X-Auth-Token, cookies) stay with the server they were meant for. */
+const CROSS_ORIGIN_SAFE = new Set(['user-agent', 'accept', 'accept-language', 'accept-encoding']);
+export const crossOriginHeaders = (headers: Record<string, string>): Record<string, string> => Object.fromEntries(Object.entries(headers).filter(([k]) => CROSS_ORIGIN_SAFE.has(k.toLowerCase())));
 
 export async function httpRequest(o: HttpOptions): Promise<HttpResponse> {
   let url = new URL(o.url);
@@ -52,9 +55,7 @@ export async function httpRequest(o: HttpOptions): Promise<HttpResponse> {
       const next = new URL(loc, url);
       if (next.protocol !== 'http:' && next.protocol !== 'https:') throw new CheckError('redirect', `Redirect to unsupported protocol ${next.protocol}`);
       if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) { method = 'GET'; body = undefined; }
-      if (next.origin !== url.origin) {
-        headers = Object.fromEntries(Object.entries(headers).filter(([k]) => !['authorization', 'cookie'].includes(k.toLowerCase())));
-      }
+      if (next.origin !== url.origin) headers = crossOriginHeaders(headers);
       url = next;
       redirects++;
       continue;

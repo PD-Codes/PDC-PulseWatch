@@ -1,16 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarClock, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
-import { CheckList, timeZones, useGroupsQ, useMonitorsQ, useTagsQ } from '../components/ops-shared';
+import { CancelButton, CheckList, FormAlert, timeZones, useFieldErrors, useGroupsQ, useMonitorsQ, useTagsQ } from '../components/ops-shared';
+import { Pager } from '../components/Pager';
 import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Textarea, Toggle, useConfirm, useToast, type Tone } from '../components/ui';
 import { ApiError, del, get, post, put } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { useDirty } from '../lib/dirty';
 import { fmtDateTime } from '../lib/format';
 import { useT } from '../lib/i18n';
+import { usePagedList } from '../lib/usePagedList';
 
 type Target = { type: 'monitor' | 'group' | 'tag'; id: number };
 interface Win { id: number; name: string; description: string | null; kind: 'once' | 'cron'; startsAt: string | null; endsAt: string | null; cronExpr: string | null; durationMin: number | null; timezone: string | null; active: boolean; announce: boolean; targets: Target[]; state: 'disabled' | 'running' | 'scheduled' | 'finished'; currentEnd: string | null; nextStart: string | null }
 const STATE_TONE: Record<Win['state'], Tone> = { running: 'amber', scheduled: 'blue', finished: 'gray', disabled: 'violet' };
+const WIN_FIELDS = { name: [], description: [], startsAt: ['starts'], endsAt: ['ends'], cronExpr: ['cron'], durationMin: ['duration'], timezone: ['time zone'], targets: ['target'] };
 const PRESETS = [{ k: 'daily', v: '0 2 * * *' }, { k: 'weekdays', v: '0 22 * * 1-5' }, { k: 'weekly', v: '0 3 * * 0' }, { k: 'monthly', v: '0 3 1 * *' }];
 
 /** Local "YYYY-MM-DDTHH:mm" value for datetime-local inputs. */
@@ -42,6 +46,8 @@ export default function Maintenance() {
   const list = useQuery({ queryKey: ['maintenance'], queryFn: () => get<Win[]>('/api/maintenance') });
   const monitors = useMonitorsQ(); const groups = useGroupsQ(); const tags = useTagsQ();
   const [f, setF] = useState<ReturnType<typeof blank> | null>(null);
+  const dirty = useDirty(f);
+  const { pageRows, pagerProps } = usePagedList(list.data ?? [], { key: 'maintenance' });
 
   const refresh = () => void qc.invalidateQueries({ queryKey: ['maintenance'] });
   const save = useMutation({
@@ -51,8 +57,9 @@ export default function Maintenance() {
       return v.id ? put(`/api/maintenance/${v.id}`, body) : post('/api/maintenance', body);
     },
     onSuccess: () => { refresh(); setF(null); toast(t('common.saved')); },
-    onError: (e) => toast(e instanceof ApiError ? e.message : t('common.failed'), 'error'),
   });
+  const { fieldErrors: fe, rest } = useFieldErrors(save.error, WIN_FIELDS);
+  const open = (v: ReturnType<typeof blank>) => { save.reset(); setF(v); };
   const toggle = useMutation({
     mutationFn: (w: Win) => put(`/api/maintenance/${w.id}`, { name: w.name, description: w.description ?? undefined, kind: w.kind, active: !w.active, announce: w.announce, targets: w.targets,
       ...(w.kind === 'once' ? { startsAt: w.startsAt, endsAt: w.endsAt } : { cronExpr: w.cronExpr, durationMin: w.durationMin, timezone: w.timezone }) }),
@@ -67,14 +74,14 @@ export default function Maintenance() {
 
   return (
     <>
-      <PageHeader title={t('nav.maintenance')} subtitle={t('maintenance.subtitle')} actions={editor && <Button variant="primary" onClick={() => setF(blank())}><Plus className="h-4 w-4" />{t('maintenance.new')}</Button>} />
+      <PageHeader title={t('nav.maintenance')} subtitle={t('maintenance.subtitle')} actions={editor && <Button variant="primary" onClick={() => open(blank())}><Plus className="h-4 w-4" />{t('maintenance.new')}</Button>} />
       <Card>
         {list.isLoading ? <Loading /> : list.error ? <div className="p-4"><ErrorBox error={list.error} /></div> : !list.data?.length ? (
           <EmptyState icon={<CalendarClock className="h-6 w-6" />} title={t('maintenance.empty')} body={t('maintenance.emptyBody')} />
         ) : (
           <div className="overflow-x-auto"><table className="tbl">
             <thead><tr><th>{t('common.name')}</th><th>{t('common.status')}</th><th>{t('maintenance.schedule')}</th><th className="hidden md:table-cell">{t('maintenance.targets')}</th>{editor && <th><span className="sr-only">{t('common.actions')}</span></th>}</tr></thead>
-            <tbody>{list.data.map((w) => (
+            <tbody>{pageRows.map((w) => (
               <tr key={w.id}>
                 <td className="max-w-xs"><div className="truncate font-medium">{w.name}</div>{w.announce && <span className="text-xs text-slate-500">{t('maintenance.announced')}</span>}</td>
                 <td><Badge tone={STATE_TONE[w.state]}>{t(`maintenance.state.${w.state}`)}</Badge></td>
@@ -86,37 +93,40 @@ export default function Maintenance() {
                 <td className="hidden max-w-[16rem] truncate text-sm md:table-cell" title={targetNames(w).join(', ')}>{targetNames(w).join(', ')}</td>
                 {editor && <td className="whitespace-nowrap text-right">
                   <Toggle checked={w.active} onChange={() => toggle.mutate(w)} label={<span className="sr-only">{t('common.enabled')}</span>} />
-                  <Button size="sm" variant="ghost" aria-label={t('common.edit')} onClick={() => setF({ id: w.id, name: w.name, description: w.description ?? '', kind: w.kind, startsAt: toLocalInput(w.startsAt) || blank().startsAt, endsAt: toLocalInput(w.endsAt) || blank().endsAt, cronExpr: w.cronExpr ?? '0 2 * * *', durationMin: w.durationMin ?? 60, timezone: w.timezone ?? 'UTC', active: w.active, announce: w.announce, targets: w.targets })}><Pencil className="h-4 w-4" /></Button>
+                  <Button size="sm" variant="ghost" aria-label={t('common.edit')} onClick={() => open({ id: w.id, name: w.name, description: w.description ?? '', kind: w.kind, startsAt: toLocalInput(w.startsAt) || blank().startsAt, endsAt: toLocalInput(w.endsAt) || blank().endsAt, cronExpr: w.cronExpr ?? '0 2 * * *', durationMin: w.durationMin ?? 60, timezone: w.timezone ?? 'UTC', active: w.active, announce: w.announce, targets: w.targets })}><Pencil className="h-4 w-4" /></Button>
                   <Button size="sm" variant="ghost" aria-label={t('common.delete')} onClick={() => void remove(w)}><Trash2 className="h-4 w-4" /></Button>
                 </td>}
               </tr>
             ))}</tbody>
           </table></div>
         )}
+        <Pager {...pagerProps} />
       </Card>
 
       {f && (
-        <Modal wide open onClose={() => setF(null)} title={f.id ? t('maintenance.edit') : t('maintenance.new')} footer={<><Button onClick={() => setF(null)}>{t('common.cancel')}</Button><Button variant="primary" loading={save.isPending} disabled={!valid} onClick={() => save.mutate(f)}>{t('common.save')}</Button></>}>
+        <Modal wide open dirty={dirty} onClose={() => setF(null)} title={f.id ? t('maintenance.edit') : t('maintenance.new')} footer={<><CancelButton /><Button variant="primary" loading={save.isPending} disabled={!valid} onClick={() => save.mutate(f)}>{t('common.save')}</Button></>}>
           <div className="space-y-4">
-            <Field label={t('common.name')}>{(id) => <Input id={id} value={f.name} maxLength={120} onChange={(e) => setF({ ...f, name: e.target.value })} />}</Field>
-            <Field label={t('common.description')}>{(id) => <Textarea id={id} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} className="font-sans" />}</Field>
+            <FormAlert messages={rest} />
+            <Field label={t('common.name')} error={fe.name}>{(id) => <Input id={id} value={f.name} maxLength={120} onChange={(e) => setF({ ...f, name: e.target.value })} />}</Field>
+            <Field label={t('common.description')} error={fe.description}>{(id) => <Textarea id={id} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} className="font-sans" />}</Field>
             <Field label={t('maintenance.kind')}>{(id) => <Select id={id} value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value as 'once' | 'cron' })}><option value="once">{t('maintenance.kind.once')}</option><option value="cron">{t('maintenance.kind.cron')}</option></Select>}</Field>
             {f.kind === 'once' ? (
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label={t('maintenance.starts')}>{(id) => <Input id={id} type="datetime-local" value={f.startsAt} onChange={(e) => setF({ ...f, startsAt: e.target.value })} />}</Field>
-                <Field label={t('maintenance.ends')} error={f.endsAt && f.startsAt && new Date(f.endsAt) <= new Date(f.startsAt) ? t('maintenance.endBeforeStart') : undefined}>{(id) => <Input id={id} type="datetime-local" value={f.endsAt} onChange={(e) => setF({ ...f, endsAt: e.target.value })} />}</Field>
+                <Field label={t('maintenance.starts')} error={fe.startsAt}>{(id) => <Input id={id} type="datetime-local" value={f.startsAt} onChange={(e) => setF({ ...f, startsAt: e.target.value })} />}</Field>
+                <Field label={t('maintenance.ends')} error={f.endsAt && f.startsAt && new Date(f.endsAt) <= new Date(f.startsAt) ? t('maintenance.endBeforeStart') : fe.endsAt}>{(id) => <Input id={id} type="datetime-local" value={f.endsAt} onChange={(e) => setF({ ...f, endsAt: e.target.value })} />}</Field>
               </div>
             ) : (
               <div className="space-y-4">
                 <div className="flex flex-wrap gap-1" role="group" aria-label={t('maintenance.presets')}>{PRESETS.map((p) => <Button key={p.k} size="sm" variant={f.cronExpr === p.v ? 'primary' : 'default'} onClick={() => setF({ ...f, cronExpr: p.v })}>{t(`maintenance.preset.${p.k}`)}</Button>)}</div>
                 <div className="grid gap-4 sm:grid-cols-3">
-                  <Field label={t('maintenance.cron')} hint={describeCron(f.cronExpr, t)} className="sm:col-span-3">{(id) => <Input id={id} className="font-mono" value={f.cronExpr} onChange={(e) => setF({ ...f, cronExpr: e.target.value })} />}</Field>
-                  <Field label={t('maintenance.duration')}>{(id) => <Input id={id} type="number" min={1} max={10080} value={f.durationMin} onChange={(e) => setF({ ...f, durationMin: Number(e.target.value) })} />}</Field>
-                  <Field label={t('maintenance.timezone')} className="sm:col-span-2">{(id) => <Select id={id} value={f.timezone} onChange={(e) => setF({ ...f, timezone: e.target.value })}>{(timeZones.includes(f.timezone) ? timeZones : [f.timezone, ...timeZones]).map((z) => <option key={z}>{z}</option>)}</Select>}</Field>
+                  <Field label={t('maintenance.cron')} hint={describeCron(f.cronExpr, t)} error={fe.cronExpr} className="sm:col-span-3">{(id) => <Input id={id} className="font-mono" value={f.cronExpr} onChange={(e) => setF({ ...f, cronExpr: e.target.value })} />}</Field>
+                  <Field label={t('maintenance.duration')} error={fe.durationMin}>{(id) => <Input id={id} type="number" min={1} max={10080} value={f.durationMin} onChange={(e) => setF({ ...f, durationMin: Number(e.target.value) })} />}</Field>
+                  <Field label={t('maintenance.timezone')} error={fe.timezone} className="sm:col-span-2">{(id) => <Select id={id} value={f.timezone} onChange={(e) => setF({ ...f, timezone: e.target.value })}>{(timeZones.includes(f.timezone) ? timeZones : [f.timezone, ...timeZones]).map((z) => <option key={z}>{z}</option>)}</Select>}</Field>
                 </div>
               </div>
             )}
             <fieldset className="space-y-3"><legend className="label">{t('maintenance.targets')} <span className="font-normal text-slate-500">· {t('maintenance.targetsHint')}</span></legend>
+              {fe.targets && <FormAlert messages={[fe.targets]} />}
               <div><span className="hint">{t('maintenance.monitors')}</span><CheckList searchable items={(monitors.data ?? []).map((m) => ({ id: m.id, label: m.name }))} value={has('monitor')} onChange={(v) => setType('monitor', v)} /></div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div><span className="hint">{t('maintenance.groups')}</span><CheckList items={(groups.data ?? []).map((g) => ({ id: g.id, label: g.name }))} value={has('group')} onChange={(v) => setType('group', v)} /></div>

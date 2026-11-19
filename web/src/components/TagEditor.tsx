@@ -3,6 +3,8 @@ import { Plus, X } from 'lucide-react';
 import { useState } from 'react';
 import { errorMessage, post, type Tag, type TagInfo } from '../lib/api';
 import { useT } from '../lib/i18n';
+import { useDirty } from '../lib/dirty';
+import { CancelButton } from './ops-shared';
 import { Button, Input, Modal, Select, useToast } from './ui';
 
 /** One row of the name + value tag editor; empty rows are dropped on save. */
@@ -27,6 +29,7 @@ export function TagValueEditor({ tags, rows, onChange }: { tags: TagInfo[]; rows
   const [name, setName] = useState('');
   const [color, setColor] = useState('#6366f1');
   const [text, setText] = useState('');
+  const dirty = useDirty(dlg ? { name, color, text } : null);
 
   const options = (tagId: number | null, current: string) => {
     const used = tags.find((x) => x.id === tagId)?.values.map((v) => v.value) ?? [];
@@ -80,8 +83,8 @@ export function TagValueEditor({ tags, rows, onChange }: { tags: TagInfo[]; rows
         <Button size="sm" onClick={() => onChange([...rows, { tagId: null, value: '' }])}><Plus className="h-4 w-4" />{t('tags.addRow')}</Button>
       </div>
 
-      <Modal open={!!dlg} onClose={() => setDlg(null)} title={dlg?.kind === 'tag' ? t('tags.newTag') : t('tags.newValue')}
-        footer={<><Button onClick={() => setDlg(null)}>{t('common.cancel')}</Button><Button variant="primary" loading={createTag.isPending} disabled={dlg?.kind === 'tag' ? !name.trim() : !text.trim()} onClick={submit}>{t('common.add')}</Button></>}>
+      <Modal open={!!dlg} dirty={dirty} onClose={() => setDlg(null)} title={dlg?.kind === 'tag' ? t('tags.newTag') : t('tags.newValue')}
+        footer={<><CancelButton /><Button variant="primary" loading={createTag.isPending} disabled={dlg?.kind === 'tag' ? !name.trim() : !text.trim()} onClick={submit}>{t('common.add')}</Button></>}>
         {dlg?.kind === 'tag' ? (
           <div className="space-y-3">
             <label className="block text-sm">{t('tags.name')}<Input className="mt-1" maxLength={64} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }} /></label>

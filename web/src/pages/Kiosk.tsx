@@ -8,6 +8,10 @@ import { PlayersLine } from '../components/ServerInfo';
 import { displayStatus, HeartbeatBar, StatusDot, type DisplayStatus } from '../components/status';
 import { Button, cx, Field, Modal, Select, Toggle, useToast } from '../components/ui';
 import { get, type Group, type MonitorItem } from '../lib/api';
+import { parseReloads, RELOAD_KEY, reloadDelay } from '../lib/kioskReload';
+import { useStreamState } from '../lib/stream';
+import { applyTheme, isThemeId, THEMES, themeInfo, type ThemeId } from '../lib/theme';
+import { useVersionMismatch } from '../lib/useVersionCheck';
 import { fmtDuration, fmtMs, fmtPct } from '../lib/format';
 import { packPages, type Row, type Section } from '../lib/kiosk-layout';
 import { useI18n, useT } from '../lib/i18n';
@@ -15,8 +19,21 @@ import { useI18n, useT } from '../lib/i18n';
 type View = 'all' | 'auto' | 'problems';
 type Size = 's' | 'm' | 'l';
 type Layout = 'flat' | 'grouped';
-interface Cfg { groups: number[]; tags: string[]; monitors: number[]; view: View; layout: Layout; size: Size; zoom: number; rotate: number; theme: 'dark' | 'light'; incidents: boolean; clock: boolean; bars: boolean }
-const DEFAULT: Cfg = { groups: [], tags: [], monitors: [], view: 'all', layout: 'flat', size: 'm', zoom: 100, rotate: 12, theme: 'dark', incidents: true, clock: true, bars: true };
+type Mode = 'dark' | 'light';
+interface Cfg { groups: number[]; tags: string[]; monitors: number[]; view: View; layout: Layout; size: Size; zoom: number; rotate: number; theme: ThemeId; mode: Mode; incidents: boolean; clock: boolean; bars: boolean }
+const DEFAULT: Cfg = { groups: [], tags: [], monitors: [], view: 'all', layout: 'flat', size: 'm', zoom: 100, rotate: 12, theme: 'classic', mode: 'dark', incidents: true, clock: true, bars: true };
+/** Effective brightness: themes with a single mode fix it, the others follow the chosen mode. */
+const isDark = (c: Pick<Cfg, 'theme' | 'mode'>) => { const modes = themeInfo(c.theme).modes; return modes.length === 1 ? modes[0] === 'dark' : c.mode === 'dark'; };
+/**
+ * Theme from `?theme=` (and `?mode=`). Links from before themes carried `theme=dark|light` without `mode`: that is classic dark/light.
+ * Because "dark" is also a theme id, links to that theme always carry `mode=dark`.
+ */
+function themeFrom(theme: string | null | undefined, mode: string | null | undefined): Pick<Cfg, 'theme' | 'mode'> | null {
+  const md: Mode | null = mode === 'dark' || mode === 'light' ? mode : null;
+  if ((theme === 'dark' || theme === 'light') && !md) return { theme: 'classic', mode: theme };
+  if (isThemeId(theme)) return { theme, mode: md ?? (themeInfo(theme).modes.length === 1 ? themeInfo(theme).modes[0]! : 'dark') };
+  return null;
+}
 const ROTATIONS = [0, 5, 8, 12, 20, 30, 60];
 const TILE: Record<Size, [number, number]> = { s: [210, 124], m: [270, 156], l: [350, 196] };
 const NAME_CLS: Record<Size, string> = { s: 'text-base', m: 'text-xl', l: 'text-2xl' };
@@ -37,6 +54,9 @@ const LOOK = {
 function readCfg(p: URLSearchParams): Cfg {
   let stored: Partial<Cfg> = {};
   try { stored = JSON.parse(localStorage.getItem(KEY) ?? '{}'); } catch { /* storage unavailable or damaged: use the defaults */ }
+  const storedTheme = themeFrom(stored.theme, stored.mode); // older browsers remembered theme 'dark' | 'light'
+  stored = { ...stored, ...(storedTheme ?? { theme: DEFAULT.theme, mode: DEFAULT.mode }) };
+  const urlTheme = themeFrom(p.get('theme'), p.get('mode'));
   const ints = (s: string | null) => (s ? s.split(',').map(Number).filter((n) => Number.isInteger(n) && n > 0) : null);
   const one = Number(p.get('group')); // older links carried a single group
   const groups = ints(p.get('groups')) ?? (one > 0 ? [one] : null);
@@ -53,7 +73,7 @@ function readCfg(p: URLSearchParams): Cfg {
     ...(pick(p.get('size'), ['s', 'm', 'l'] as const) ? { size: pick(p.get('size'), ['s', 'm', 'l'] as const)! } : {}),
     ...(Number.isFinite(zoom) && zoom >= ZOOM_MIN && zoom <= ZOOM_MAX ? { zoom: clampZoom(zoom) } : {}),
     ...(rotate !== undefined && Number.isFinite(rotate) && rotate >= 0 && rotate <= 300 ? { rotate } : {}),
-    ...(pick(p.get('theme'), ['dark', 'light'] as const) ? { theme: pick(p.get('theme'), ['dark', 'light'] as const)! } : {}),
+    ...(urlTheme ?? {}),
     ...(p.get('incidents') !== null ? { incidents: p.get('incidents') !== '0' } : {}), ...(p.get('clock') !== null ? { clock: p.get('clock') !== '0' } : {}), ...(p.get('bars') !== null ? { bars: p.get('bars') !== '0' } : {}),
   };
   return merged;
@@ -69,7 +89,10 @@ function toParams(c: Cfg): URLSearchParams {
   if (c.size !== DEFAULT.size) p.set('size', c.size);
   if (c.zoom !== DEFAULT.zoom) p.set('zoom', String(c.zoom));
   if (c.rotate !== DEFAULT.rotate) p.set('rotate', String(c.rotate));
-  if (c.theme !== DEFAULT.theme) p.set('theme', c.theme);
+  if (c.theme !== DEFAULT.theme || c.mode !== DEFAULT.mode) {
+    p.set('theme', c.theme);
+    if (themeInfo(c.theme).modes.length > 1 || c.theme === 'dark') p.set('mode', c.mode);
+  }
   if (!c.incidents) p.set('incidents', '0');
   if (!c.clock) p.set('clock', '0');
   if (!c.bars) p.set('bars', '0');
@@ -97,7 +120,10 @@ export default function Kiosk() {
   const [params, setParams] = useSearchParams();
   const [cfg, setCfg] = useState<Cfg>(() => readCfg(params));
   const set = <K extends keyof Cfg>(k: K, v: Cfg[K]) => setCfg((c) => ({ ...c, [k]: v }));
-  const look = LOOK[cfg.theme];
+  const dark = isDark(cfg);
+  const look = LOOK[dark ? 'dark' : 'light'];
+  const { connected } = useStreamState();
+  const mismatch = useVersionMismatch();
   const body = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 1280, h: 720 });
   const [page, setPage] = useState(0);
@@ -107,10 +133,11 @@ export default function Kiosk() {
   const [full, setFull] = useState(!!document.fullscreenElement);
   const [idle, setIdle] = useState(false);
 
-  const monitors = useQuery({ queryKey: ['monitors'], queryFn: () => get<MonitorItem[]>('/api/monitors'), refetchInterval: 20_000 });
+  // the event stream carries status and latency only; uptime, players and the like come with the list, so it is always polled (faster while the stream is down)
+  const monitors = useQuery({ queryKey: ['monitors'], queryFn: () => get<MonitorItem[]>('/api/monitors'), refetchInterval: connected ? 60_000 : 20_000 });
   const groups = useGroupsQ();
   const tags = useTagsQ();
-  const incidents = useQuery({ queryKey: ['incidents', 'kiosk'], queryFn: () => get<ActiveIncident[]>('/api/incidents?status=active&limit=4'), refetchInterval: 20_000, enabled: cfg.incidents });
+  const incidents = useQuery({ queryKey: ['incidents', 'kiosk'], queryFn: () => get<ActiveIncident[]>('/api/incidents?status=active&limit=4'), refetchInterval: connected ? 60_000 : 20_000, enabled: cfg.incidents });
 
   // the address always shows the current settings, so it can be bookmarked or copied to another screen
   useEffect(() => {
@@ -127,13 +154,23 @@ export default function Kiosk() {
     root.style.fontSize = `${(16 * cfg.zoom) / 100}px`;
     return () => { root.style.fontSize = was; };
   }, [cfg.zoom]);
-  // the shared components (heartbeat bars, dialogs) follow the page theme, so the kiosk look sets it while it is open
+  // the wall display has its own theme; it is applied without touching what this device chose, and dropped on leaving
+  useEffect(() => { applyTheme(cfg.theme, cfg.mode); }, [cfg.theme, cfg.mode]);
+  useEffect(() => () => applyTheme(), []);
+  // a wall display runs for weeks: after an update of the server, load the new version by itself. Attempts are counted per tab,
+  // so a version that stays different (two instances behind one load balancer) costs three reloads and then one every 6 hours.
   useEffect(() => {
-    const root = document.documentElement;
-    const was = root.classList.contains('dark');
-    root.classList.toggle('dark', cfg.theme === 'dark');
-    return () => { root.classList.toggle('dark', was); };
-  }, [cfg.theme]);
+    if (!mismatch) return;
+    let store: Storage | null = null;
+    try { store = sessionStorage; } catch { /* storage unavailable: no automatic reload, the update banner remains */ }
+    if (!store) return;
+    const state = parseReloads(store.getItem(RELOAD_KEY), Date.now());
+    const timer = setTimeout(() => {
+      try { store!.setItem(RELOAD_KEY, JSON.stringify({ n: state.n + 1, at: Date.now() })); } catch { return; }
+      location.reload();
+    }, reloadDelay(state, Date.now()));
+    return () => clearTimeout(timer);
+  }, [mismatch]);
   useEffect(() => { const i = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(i); }, []);
   useEffect(() => {
     const el = body.current;
@@ -241,10 +278,10 @@ export default function Kiosk() {
           <div className="flex items-start gap-2"><StatusDot status={s} pulse className="mt-2 h-3 w-3" /><span className={cx('min-w-0 flex-1 truncate font-semibold leading-tight', NAME_CLS[cfg.size])}>{m.name}</span></div>
           {!grouped && m.groupId != null && groupName.get(m.groupId) && <div className={cx('truncate pl-5 text-xs', look.faint)}>{groupName.get(m.groupId)}</div>}
         </div>
-        {s === 'down' && m.message ? <p className="truncate text-sm font-medium text-red-500" title={m.message}>{m.message}</p> : null}
-        {cfg.bars && <HeartbeatBar beats={m.recent} count={cfg.size === 's' ? 24 : 32} height={cfg.size === 's' ? 'h-4' : 'h-6'} />}
+        {s === 'down' && m.message ? <p className={cx('truncate text-sm font-medium', dark ? 'text-red-400' : 'text-red-700')} title={m.message}>{m.message}</p> : null}
+        {cfg.bars && <HeartbeatBar beats={m.recent} count={cfg.size === 's' ? 24 : 32} height={cfg.size === 's' ? 'h-4' : 'h-6'} interactive={false} />}
         <div className={cx('flex items-end justify-between gap-2', look.muted)}>
-          <span className={cx('font-bold tabular-nums', BIG_CLS[cfg.size], cfg.theme === 'dark' ? 'text-white' : 'text-slate-900')}>{s === 'down' ? t(`status.${s}`) : fmtMs(m.latencyMs)}</span>
+          <span className={cx('font-bold tabular-nums', BIG_CLS[cfg.size], dark ? 'text-white' : 'text-slate-900')}>{s === 'down' ? t(`status.${s}`) : fmtMs(m.latencyMs)}</span>
           <span className="flex flex-col items-end text-sm leading-tight">
             {m.info?.players !== undefined && <PlayersLine info={m.info} short className="font-semibold" />}
             <span>{s !== 'up' && since != null ? t('kiosk.for', { d: fmtDuration(since) }) : <><span className="sr-only">{t('monitors.uptime')} 24h </span>{fmtPct(m.uptime.h24, 2)}</>}</span>
@@ -257,10 +294,10 @@ export default function Kiosk() {
     const ms = r.sec.items;
     const dn = ms.filter((m) => displayStatus(m) === 'down').length, tr = ms.filter((m) => isProblem(displayStatus(m))).length - dn, ok = ms.filter((m) => displayStatus(m) === 'up').length;
     return (
-      <li key={`h-${r.sec.key}-${r.cont}`} className={cx('col-span-full flex h-9 items-center gap-3 border-b', cfg.theme === 'dark' ? 'border-slate-700' : 'border-slate-300')}>
+      <li key={`h-${r.sec.key}-${r.cont}`} className={cx('col-span-full flex h-9 items-center gap-3 border-b', dark ? 'border-slate-700' : 'border-slate-300')}>
         <span className={cx('h-3 w-3 shrink-0 rounded-full', dn ? 'bg-red-500' : tr ? 'bg-amber-500' : ok === ms.length ? 'bg-emerald-500' : 'bg-slate-400')} aria-hidden />
         <h2 className="min-w-0 truncate text-xl font-semibold">{r.sec.id == null ? t('kiosk.noGroup') : r.sec.label}{r.cont && <span className={cx('ml-2 text-sm font-normal', look.faint)}>{t('kiosk.groupCont')}</span>}</h2>
-        <span className={cx('ml-auto shrink-0 text-sm', dn ? 'font-semibold text-red-500' : look.faint)}>{t('kiosk.groupUp', { n: ok, total: ms.length })}</span>
+        <span className={cx('ml-auto shrink-0 text-sm', dn ? cx('font-semibold', dark ? 'text-red-400' : 'text-red-700') : look.faint)}>{t('kiosk.groupUp', { n: ok, total: ms.length })}</span>
       </li>
     );
   };
@@ -298,7 +335,7 @@ export default function Kiosk() {
       </header>
 
       {active.length > 0 && (
-        <section aria-label={t('kiosk.incidents')} className={cx('flex flex-wrap items-center gap-x-6 gap-y-1 border-b px-6 py-2 text-sm', look.strip, cfg.theme === 'dark' ? 'border-slate-800' : 'border-slate-200')}>
+        <section aria-label={t('kiosk.incidents')} className={cx('flex flex-wrap items-center gap-x-6 gap-y-1 border-b px-6 py-2 text-sm', look.strip, dark ? 'border-slate-800' : 'border-slate-200')}>
           <span className={cx('font-semibold uppercase tracking-wide', look.faint)}>{t('kiosk.incidents')}</span>
           {active.map((i) => (
             <span key={i.id} className="inline-flex min-w-0 items-center gap-2">
@@ -325,11 +362,11 @@ export default function Kiosk() {
       </div>
 
       <footer className={cx('relative flex items-center justify-between gap-3 px-6 pb-2 pt-1 text-xs', look.faint)}>
-        {rotating && <><style>{'@keyframes kiosk-progress{from{width:0}to{width:100%}}'}</style><div key={`${cur}-${cfg.rotate}`} className="absolute inset-x-0 top-0 h-0.5 bg-white/0"><div className={cx('h-full motion-reduce:hidden', cfg.theme === 'dark' ? 'bg-white/40' : 'bg-slate-400')} style={{ animation: `kiosk-progress ${cfg.rotate}s linear` }} /></div></>}
+        {rotating && <><style>{'@keyframes kiosk-progress{from{width:0}to{width:100%}}'}</style><div key={`${cur}-${cfg.rotate}`} className="absolute inset-x-0 top-0 h-0.5 bg-white/0"><div className={cx('h-full motion-reduce:hidden', dark ? 'bg-white/40' : 'bg-slate-400')} style={{ animation: `kiosk-progress ${cfg.rotate}s linear` }} /></div></>}
         <span className="hidden min-w-0 truncate md:inline">{t('kiosk.hints')}</span>
         {pages > 1 ? (
           <nav className="flex items-center gap-2" aria-label={t('kiosk.pages')}>
-            {Array.from({ length: pages }, (_, i) => <button key={i} type="button" onClick={() => setPage(i)} aria-label={t('kiosk.page', { n: i + 1 })} aria-current={i === cur} className={cx('h-2.5 rounded-full transition-all', i === cur ? (cfg.theme === 'dark' ? 'w-8 bg-white' : 'w-8 bg-slate-800') : (cfg.theme === 'dark' ? 'w-2.5 bg-slate-600' : 'w-2.5 bg-slate-300'))} />)}
+            {Array.from({ length: pages }, (_, i) => <button key={i} type="button" onClick={() => setPage(i)} aria-label={t('kiosk.page', { n: i + 1 })} aria-current={i === cur} className={cx('h-2.5 rounded-full transition-all', i === cur ? (dark ? 'w-8 bg-white' : 'w-8 bg-slate-800') : (dark ? 'w-2.5 bg-slate-600' : 'w-2.5 bg-slate-300'))} />)}
             <span className="ml-1 tabular-nums">{t('kiosk.pageOf', { n: cur + 1, total: pages })}</span>
           </nav>
         ) : <span />}
@@ -348,7 +385,11 @@ export default function Kiosk() {
           <Field label={t('kiosk.s.size')}>{(i) => <Select id={i} value={cfg.size} onChange={(e) => set('size', e.target.value as Size)}>{(['s', 'm', 'l'] as const).map((v) => <option key={v} value={v}>{t(`kiosk.s.size.${v}`)}</option>)}</Select>}</Field>
           <Field label={t('kiosk.s.zoom', { n: cfg.zoom })}>{(i) => <input id={i} type="range" min={ZOOM_MIN} max={ZOOM_MAX} step={5} value={cfg.zoom} onChange={(e) => set('zoom', clampZoom(Number(e.target.value)))} className="w-full accent-indigo-600" />}</Field>
           <Field label={t('kiosk.s.rotate')}>{(i) => <Select id={i} value={cfg.rotate} onChange={(e) => set('rotate', Number(e.target.value))}>{(ROTATIONS.includes(cfg.rotate) ? ROTATIONS : [...ROTATIONS, cfg.rotate].sort((a, b) => a - b)).map((n) => <option key={n} value={n}>{n === 0 ? t('kiosk.s.rotateOff') : t('kiosk.s.rotateN', { n })}</option>)}</Select>}</Field>
-          <Field label={t('kiosk.s.theme')}>{(i) => <Select id={i} value={cfg.theme} onChange={(e) => set('theme', e.target.value as Cfg['theme'])}><option value="dark">{t('kiosk.s.theme.dark')}</option><option value="light">{t('kiosk.s.theme.light')}</option></Select>}</Field>
+          <Field label={t('kiosk.s.theme')}>{(i) => (
+            <div className="flex gap-2">
+              <Select id={i} value={cfg.theme} onChange={(e) => set('theme', e.target.value as ThemeId)}>{THEMES.map((x) => <option key={x.id} value={x.id}>{t(`themes.name.${x.id}`)}</option>)}</Select>
+              {themeInfo(cfg.theme).modes.length > 1 && <Select aria-label={t('themes.mode')} className="w-auto" value={cfg.mode} onChange={(e) => set('mode', e.target.value as Mode)}><option value="dark">{t('kiosk.s.theme.dark')}</option><option value="light">{t('kiosk.s.theme.light')}</option></Select>}
+            </div>)}</Field>
           <div className="sm:col-span-2">
             <span className="label">{t('kiosk.s.monitors')}</span>
             <MonitorPicker monitors={(monitors.data ?? []).filter((m) => displayStatus(m) !== 'paused')} groups={groups.data ?? []} value={cfg.monitors} onChange={(v) => set('monitors', v)} />

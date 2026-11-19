@@ -8,10 +8,11 @@ import { mailConfigured, sendSystemMail } from './mail';
 import { fill, groupByLang, notifyLang, TEXTS, type Lang } from './notify/texts';
 import { describeTarget } from '../core';
 import { parseMonitor } from './monitors/model';
+import { localDate, startOfLocalDay } from './tz';
 
 export type Scope = { type: 'all' | 'group' | 'monitor' | 'tag'; id?: number | null };
 export interface SlaRow { monitorId: number; name: string; group: string | null; uptime: number | null; downtimeMin: number; incidents: number; mttrMin: number | null; avgMs: number | null; p95Ms: number | null; checks: number }
-export interface SlaReport { generatedAt: string; from: string; to: string; days: number; scope: string; scopeType: Scope['type']; scopeId: number | null; rows: SlaRow[]; overall: number | null }
+export interface SlaReport { generatedAt: string; from: string; to: string; days: number; scope: string; scopeType: Scope['type']; scopeId: number | null; rows: SlaRow[]; overall: number | null; timezone: string }
 
 const DAY = 86_400_000;
 
@@ -32,18 +33,19 @@ export async function scopeMonitorIds(ctx: Ctx, scope: Scope, limit: number[] | 
 
 /**
  * Hourly rollups for ranges up to 90 days, daily ones beyond. Downtime is estimated as the down share of checks times the
- * observed span, which is accurate to about one check interval per outage.
+ * observed span, which is accurate to about one check interval per outage. Longer ranges start at a local midnight of
+ * PW_TIMEZONE, so they cover whole daily buckets.
  */
-export async function buildSla(ctx: Ctx, scope: Scope, days: number, limit: number[] | null = null): Promise<SlaReport> {
+export async function buildSla(ctx: Ctx, scope: Scope, days: number, limit: number[] | null = null, tz = config.timezone): Promise<SlaReport> {
   const { db } = ctx;
   const to = new Date();
-  const from = new Date(to.getTime() - days * DAY);
+  const res = days <= 90 ? 'hour' : 'day';
+  const from = res === 'day' ? startOfLocalDay(tz, to.getTime() - days * DAY) : new Date(to.getTime() - days * DAY);
   const ids = await scopeMonitorIds(ctx, scope, limit);
   const rows: SlaRow[] = [];
   let up = 0, down = 0;
   if (ids.length) {
     const mons = await db.selectFrom('monitors as m').leftJoin('monitor_groups as g', 'g.id', 'm.group_id').select(['m.id', 'm.name', 'm.created_at', 'g.name as gname']).where('m.id', 'in', ids).orderBy('m.name').execute();
-    const res = days <= 90 ? 'hour' : 'day';
     const agg = await sql<any>`SELECT monitor_id, SUM(up_n) u, SUM(down_n) d, SUM(lat_n) ln, SUM(lat_sum) ls, SUM(lat_p95 * lat_n) p95w, SUM(CASE WHEN lat_p95 IS NULL THEN 0 ELSE lat_n END) p95n
       FROM rollups WHERE res = ${res} AND bucket >= ${from} AND monitor_id IN (${sql.join(ids)}) GROUP BY monitor_id`.execute(db);
     const byMon = new Map<number, any>(agg.rows.map((r: any) => [r.monitor_id, r]));
@@ -64,13 +66,13 @@ export async function buildSla(ctx: Ctx, scope: Scope, days: number, limit: numb
     }
   }
   const scopeName = scope.type === 'all' ? 'All monitors' : `${scope.type} #${scope.id}`;
-  return { generatedAt: to.toISOString(), from: from.toISOString(), to: to.toISOString(), days, scope: scopeName, scopeType: scope.type, scopeId: scope.id ?? null, rows, overall: up + down ? Math.round((up / (up + down)) * 10000) / 100 : null };
+  return { generatedAt: to.toISOString(), from: from.toISOString(), to: to.toISOString(), days, scope: scopeName, scopeType: scope.type, scopeId: scope.id ?? null, rows, overall: up + down ? Math.round((up / (up + down)) * 10000) / 100 : null, timezone: tz };
 }
 
-const csvCell = (v: unknown) => {
+export const csvCell = (v: unknown) => {
   let s = v == null ? '' : String(v);
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // neutralize spreadsheet formula injection from monitor names
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
 /** shortcut: a byte order mark is added for German only, so Excel reads the umlauts of the headings; English stays byte-identical. */
@@ -78,6 +80,9 @@ export function slaCsv(r: SlaReport, lang: Lang = 'en'): string {
   const head = TEXTS[lang].csvHead;
   return (lang === 'de' ? '\uFEFF' : '') + [head, ...r.rows.map((x) => [x.name, x.group, x.uptime, x.downtimeMin, x.incidents, x.mttrMin, x.avgMs, x.p95Ms, x.checks])].map((row) => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
 }
+
+/** A date of the report period, as a local date of the report's zone (reports from before PW_TIMEZONE: UTC). */
+export const reportDate = (r: Pick<SlaReport, 'timezone'>, iso: string) => localDate(r.timezone ?? 'UTC', new Date(iso));
 
 /** The scope in words, in the language of the document. */
 const scopeLabel = (r: SlaReport, T: (typeof TEXTS)[Lang]) => (r.scopeType === 'all' ? T.scope.all : `${T.scope[r.scopeType]} #${r.scopeId}`);
@@ -89,7 +94,7 @@ export function slaPdf(r: SlaReport, lang: Lang = 'en'): Promise<Buffer> {
     const chunks: Buffer[] = [];
     doc.on('data', (c: Buffer) => chunks.push(c)).on('end', () => resolve(Buffer.concat(chunks))).on('error', reject);
     doc.fontSize(20).text(fill(T.pdfTitle, { brand: config.brand.name }));
-    doc.moveDown(0.3).fontSize(10).fillColor('#555').text(fill(T.pdfSub, { scope: scopeLabel(r, T), days: r.days, from: r.from.slice(0, 10), to: r.to.slice(0, 10), v: r.overall ?? T.na })).fillColor('#000');
+    doc.moveDown(0.3).fontSize(10).fillColor('#555').text(fill(T.pdfSub, { scope: scopeLabel(r, T), days: r.days, from: reportDate(r, r.from), to: reportDate(r, r.to), v: r.overall ?? T.na })).fillColor('#000');
     doc.moveDown();
     const cols = [230, 110, 55, 65, 45, 50, 55, 55].map((w, i) => ({ t: T.pdfCols[i], w }));
     const row = (vals: (string | number | null)[], bold = false) => {
@@ -164,7 +169,7 @@ export async function buildDigest(ctx: Ctx, lang?: Lang): Promise<{ subject: str
 
 export async function sendReport(ctx: Ctx, s: { name: string; scope_type: Scope['type']; scope_id: number | null; range_days: number; recipients: string; format: 'pdf' | 'csv' }): Promise<void> {
   const rep = await buildSla(ctx, { type: s.scope_type, id: s.scope_id }, s.range_days);
-  const stamp = rep.to.slice(0, 10);
+  const stamp = reportDate(rep, rep.to);
   // one mail per language: every recipient gets text and attachment in the language of their own profile
   for (const [lang, to] of await groupByLang(ctx, s.recipients.split(',').map((x) => x.trim()).filter(Boolean))) {
     const T = TEXTS[lang];

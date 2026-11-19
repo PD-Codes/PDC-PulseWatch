@@ -3,7 +3,9 @@ import { Download, Upload } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, errorMessage, get, post, upload } from '../lib/api';
 import { useT } from '../lib/i18n';
+import { usePagedList } from '../lib/usePagedList';
 import { ReportView, type Report } from './ImportReport';
+import { Pager } from './Pager';
 import { CopyButton } from './settingsParts';
 import { Badge, Button, Card, CardHeader, Field, Input, Select, useToast } from './ui';
 
@@ -54,6 +56,7 @@ function SelectionList({ section, rows, selected, onChange }: { section: Section
   const [q, setQ] = useState('');
   const shown = useMemo(() => (q ? rows.filter((r) => r.label.toLowerCase().includes(q.toLowerCase())) : rows), [rows, q]);
   const all = selected.size === rows.length;
+  const { pageRows, pagerProps } = usePagedList(shown, { key: 'kuma-list', resetKey: q });
   const master = useRef<HTMLInputElement>(null);
   useEffect(() => { if (master.current) master.current.indeterminate = selected.size > 0 && !all; }, [selected.size, all]);
   if (!rows.length) return null;
@@ -68,8 +71,8 @@ function SelectionList({ section, rows, selected, onChange }: { section: Section
       </summary>
       <div className="space-y-2 border-t border-slate-200 p-3 dark:border-slate-800">
         {rows.length > 12 && <Input aria-label={t('kuma.select.filter')} placeholder={t('kuma.select.filter')} value={q} onChange={(e) => setQ(e.target.value)} />}
-        <ul className="max-h-64 divide-y divide-slate-100 overflow-auto dark:divide-slate-800">
-          {shown.map((r, n) => (
+        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+          {pageRows.map((r, n) => (
             <li key={`${n}:${r.key}`}>
               <label className="flex cursor-pointer items-center gap-2 py-1.5 text-sm">
                 <input type="checkbox" checked={selected.has(r.key)} onChange={() => toggle(r.key)} />
@@ -81,6 +84,7 @@ function SelectionList({ section, rows, selected, onChange }: { section: Section
             </li>
           ))}
         </ul>
+        <Pager {...pagerProps} />
       </div>
     </details>
   );
@@ -89,9 +93,14 @@ function SelectionList({ section, rows, selected, onChange }: { section: Section
 /** Everything Uptime Kuma has that cannot be taken over, greyed out and without checkboxes, so that nothing disappears silently. Can be copied or downloaded as CSV. */
 function UnsupportedList({ items }: { items: Unsupported[] }) {
   const t = useT();
+  // the hooks run before the early return below, so their order stays the same
+  const rows = useMemo(() => {
+    const kindOf = (k: string) => { const key = `kuma.kind.${k}`; const v = t(key); return v === key ? k : v; };
+    return [...items].sort((a, b) => kindOf(a.kind).localeCompare(kindOf(b.kind)) || a.name.localeCompare(b.name));
+  }, [items, t]);
+  const { pageRows, pagerProps } = usePagedList(rows, { key: 'kuma-unsupported' });
   if (!items.length) return null;
   const kind = (k: string) => { const key = `kuma.kind.${k}`; const v = t(key); return v === key ? k : v; };
-  const rows = [...items].sort((a, b) => kind(a.kind).localeCompare(kind(b.kind)) || a.name.localeCompare(b.name));
   const text = rows.map((u) => `${kind(u.kind)}\t${u.name}\t${u.reason}`).join('\n');
   const download = () => {
     const head = [t('kuma.unsupported.col.kind'), t('kuma.unsupported.col.name'), t('kuma.unsupported.col.reason')];
@@ -112,11 +121,12 @@ function UnsupportedList({ items }: { items: Unsupported[] }) {
           <CopyButton text={text} label={t('kuma.unsupported.copy')} />
           <Button size="sm" onClick={download}><Download className="h-3.5 w-3.5" />{t('kuma.unsupported.csv')}</Button>
         </div>
-        <div className="max-h-72 overflow-auto text-slate-600 dark:text-slate-400">
+        <div className="overflow-x-auto text-slate-600 dark:text-slate-400">
           <table className="tbl">
             <thead><tr><th scope="col">{t('kuma.unsupported.col.kind')}</th><th scope="col">{t('kuma.unsupported.col.name')}</th><th scope="col">{t('kuma.unsupported.col.reason')}</th></tr></thead>
-            <tbody>{rows.map((u, i) => <tr key={i}><td className="whitespace-nowrap">{kind(u.kind)}</td><td className="break-all">{u.name}</td><td>{u.reason}</td></tr>)}</tbody>
+            <tbody>{pageRows.map((u, i) => <tr key={i}><td className="whitespace-nowrap">{kind(u.kind)}</td><td className="break-all">{u.name}</td><td>{u.reason}</td></tr>)}</tbody>
           </table>
+          <Pager {...pagerProps} />
         </div>
       </div>
     </details>

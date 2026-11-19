@@ -1,3 +1,4 @@
+import net from 'node:net';
 import nodemailer from 'nodemailer';
 import { httpRequest } from '../../core/http';
 import type { FieldDef, Runner } from '../../core';
@@ -47,11 +48,14 @@ const email: ChannelType = {
     { key: 'to', label: 'Recipients (comma separated)', kind: 'text', required: true },
   ],
   async send(c, msg, ctx) {
-    await ctx.guard.resolve(c.host);
+    // connect to the address the guard approved: letting nodemailer resolve the name again would open a DNS rebinding window
+    const [addr] = await ctx.guard.resolve(c.host);
+    const host = String(c.host).replace(/^\[|\]$/g, '');
     const t = nodemailer.createTransport({
-      host: c.host, port: c.port, secure: c.security === 'ssl', requireTLS: c.security === 'starttls', ignoreTLS: c.security === 'none',
+      host: addr!.address, port: c.port, secure: c.security === 'ssl', requireTLS: c.security === 'starttls', ignoreTLS: c.security === 'none',
       auth: c.username ? { user: c.username, pass: c.password } : undefined, connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000,
-      tls: trustOptions(),
+      // certificate checks and SNI still use the configured name (no SNI for IP literals)
+      tls: { ...trustOptions(), ...(net.isIP(host) ? {} : { servername: host }) },
     });
     try { await t.sendMail({ from: c.from, to: c.to, subject: msg.subject, text: msg.text, html: msg.html }); } finally { t.close(); }
   },

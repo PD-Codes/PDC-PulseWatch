@@ -3,6 +3,9 @@ import type { ServerInfo } from '../lib/api';
 import { useT } from '../lib/i18n';
 import { cx } from './ui';
 
+/** The player list is cut here (a busy server can report hundreds of names); the count above stays complete. */
+const MAX_NAMES = 20;
+
 /** "7 of 50 players online" with a small icon, or just "7/50" when space is tight. Renders nothing without a player count. */
 export function PlayersLine({ info, short, className }: { info: ServerInfo; short?: boolean; className?: string }) {
   const t = useT();
@@ -19,7 +22,7 @@ export function ServerInfoBlock({ info, className }: { info: ServerInfo; classNa
     <div className={cx('space-y-1 text-xs text-slate-600 dark:text-slate-400', className)}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5"><PlayersLine info={info} />{bits.map((b) => <span key={b}>{b}</span>)}</div>
       {info.motd && <p className="italic">{info.motd}</p>}
-      {info.names && info.names.length > 0 && <p><span className="font-medium">{t('info.onlineNow')}:</span> {info.names.join(', ')}</p>}
+      {info.names && info.names.length > 0 && <p><span className="font-medium">{t('info.onlineNow')}:</span> {info.names.slice(0, MAX_NAMES).join(', ')}{info.names.length > MAX_NAMES && ` ${t('ux.info.moreNames', { n: info.names.length - MAX_NAMES })}`}</p>}
     </div>
   );
 }

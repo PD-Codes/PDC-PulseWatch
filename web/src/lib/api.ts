@@ -1,3 +1,5 @@
+import { ts } from './tr';
+
 /** Thin fetch wrapper: JSON in/out, CSRF header for cookie sessions, typed errors. */
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public body?: any) { super(message); }
@@ -6,22 +8,71 @@ export class ApiError extends Error {
 let csrf = '';
 export const setCsrf = (t: string) => { csrf = t; };
 
-export async function api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
+export interface ApiOptions {
+  /** Aborts the request (e.g. TanStack Query's signal); the abort error is passed through untouched. */
+  signal?: AbortSignal;
+  /** Overall limit in ms. Default 30 s for JSON requests, none for uploads (FormData / Blob bodies). 0 disables it. */
+  timeoutMs?: number;
+}
+const DEFAULT_TIMEOUT = 30_000;
+
+/** One round trip including reading the body, bounded by the timeout; network failures become ApiError(0, ...). */
+async function send(method: string, path: string, body: unknown, opts: ApiOptions): Promise<{ res: Response; text: string }> {
   const isForm = typeof FormData !== 'undefined' && body instanceof FormData;
   const isBlob = typeof Blob !== 'undefined' && body instanceof Blob; // sent as is (streamed from disk by the browser)
-  const res = await fetch(path, {
-    method, credentials: 'same-origin',
-    headers: { ...(isBlob ? { 'content-type': 'application/octet-stream' } : body !== undefined && !isForm ? { 'content-type': 'application/json' } : {}), ...(method !== 'GET' && csrf ? { 'x-csrf-token': csrf } : {}) },
-    body: body === undefined ? undefined : isForm || isBlob ? (body as FormData | Blob) : JSON.stringify(body),
-  });
-  const text = await res.text();
-  let data: any = text;
-  if ((res.headers.get('content-type') ?? '').includes('json')) { try { data = text ? JSON.parse(text) : null; } catch { /* keep text */ } }
+  const limit = opts.timeoutMs ?? (isForm || isBlob ? 0 : DEFAULT_TIMEOUT);
+  const ctl = new AbortController();
+  let timedOut = false;
+  const timer = limit > 0 ? setTimeout(() => { timedOut = true; ctl.abort(); }, limit) : undefined;
+  const ext = opts.signal;
+  const onAbort = () => ctl.abort(ext?.reason);
+  if (ext) { if (ext.aborted) ctl.abort(ext.reason); else ext.addEventListener('abort', onAbort, { once: true }); }
+  try {
+    const res = await fetch(path, {
+      method, credentials: 'same-origin', signal: ctl.signal,
+      headers: { ...(isBlob ? { 'content-type': 'application/octet-stream' } : body !== undefined && !isForm ? { 'content-type': 'application/json' } : {}), ...(method !== 'GET' && csrf ? { 'x-csrf-token': csrf } : {}) },
+      body: body === undefined ? undefined : isForm || isBlob ? (body as FormData | Blob) : JSON.stringify(body),
+    });
+    return { res, text: await res.text() };
+  } catch (e) {
+    if (ext?.aborted) throw e; // the caller cancelled: not an error to report
+    if (timedOut) throw new ApiError(0, 'timeout', ts('shell.api.timeout'));
+    throw new ApiError(0, 'network', ts('shell.api.network'));
+  } finally {
+    clearTimeout(timer);
+    ext?.removeEventListener('abort', onAbort);
+  }
+}
+
+const parse = (res: Response, text: string): any => {
+  if (!(res.headers.get('content-type') ?? '').includes('json')) return text;
+  try { return text ? JSON.parse(text) : null; } catch { return text; }
+};
+
+export async function api<T = any>(method: string, path: string, body?: unknown, opts: ApiOptions = {}): Promise<T> {
+  let { res, text } = await send(method, path, body, opts);
+  let data = parse(res, text);
+  // the CSRF token belongs to the session: after a server restart or a login in another tab it can be stale. Reload it once and retry.
+  if (res.status === 403 && data?.error === 'csrf' && method !== 'GET' && await reloadCsrf()) {
+    ({ res, text } = await send(method, path, body, opts));
+    data = parse(res, text);
+  }
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith('/api/auth/login') && !path.startsWith('/api/public/')) window.dispatchEvent(new Event('pw:unauthorized'));
     throw new ApiError(res.status, data?.error ?? 'error', data?.message ?? res.statusText ?? 'Request failed', data);
   }
   return data as T;
+}
+
+/** Fetch the current session's CSRF token; false when there is no session (or the server is unreachable). */
+async function reloadCsrf(): Promise<boolean> {
+  try {
+    const { res, text } = await send('GET', '/api/auth/me', undefined, { timeoutMs: 10_000 });
+    const me = parse(res, text);
+    if (!res.ok || !me?.csrf) return false;
+    csrf = me.csrf;
+    return true;
+  } catch { return false; }
 }
 
 /** POST a file as the raw body and report upload progress (fetch cannot). Errors look like those of api(). */
@@ -32,7 +83,7 @@ export function upload<T = any>(path: string, file: Blob, onProgress: (loaded: n
     x.setRequestHeader('content-type', 'application/octet-stream');
     if (csrf) x.setRequestHeader('x-csrf-token', csrf);
     x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded, e.total); };
-    x.onerror = () => reject(new ApiError(0, 'network', 'The upload was interrupted'));
+    x.onerror = () => reject(new ApiError(0, 'network', ts('shell.api.uploadInterrupted')));
     x.onload = () => {
       let data: any = x.responseText;
       try { data = data ? JSON.parse(data) : null; } catch { /* keep text */ }
@@ -44,11 +95,11 @@ export function upload<T = any>(path: string, file: Blob, onProgress: (loaded: n
   });
 }
 
-export const get = <T = any>(path: string) => api<T>('GET', path);
-export const post = <T = any>(path: string, body?: unknown) => api<T>('POST', path, body ?? {});
-export const put = <T = any>(path: string, body?: unknown) => api<T>('PUT', path, body ?? {});
-export const patch = <T = any>(path: string, body?: unknown) => api<T>('PATCH', path, body ?? {});
-export const del = <T = any>(path: string) => api<T>('DELETE', path);
+export const get = <T = any>(path: string, opts?: ApiOptions) => api<T>('GET', path, undefined, opts);
+export const post = <T = any>(path: string, body?: unknown, opts?: ApiOptions) => api<T>('POST', path, body ?? {}, opts);
+export const put = <T = any>(path: string, body?: unknown, opts?: ApiOptions) => api<T>('PUT', path, body ?? {}, opts);
+export const patch = <T = any>(path: string, body?: unknown, opts?: ApiOptions) => api<T>('PATCH', path, body ?? {}, opts);
+export const del = <T = any>(path: string, opts?: ApiOptions) => api<T>('DELETE', path, undefined, opts);
 
 /** Query string from an object, skipping empty values. */
 export const qs = (o: Record<string, string | number | boolean | undefined | null>) => {
@@ -85,4 +136,4 @@ export interface ServerInfo { players?: number; maxPlayers?: number; names?: str
 export interface Group { id: number; parentId: number | null; name: string; description: string | null }
 export type Role = 'admin' | 'editor' | 'viewer';
 export interface Me { id: number; username: string; displayName: string; email: string | null; role: Role; locale: 'en' | 'de' | null; theme: 'light' | 'dark' | 'system'; totpEnabled: boolean; authSource: string; scopeRestricted: boolean; csrf?: string }
-export interface Meta { brand: { name: string; vendor?: string; [k: string]: unknown }; version: string; smtp: boolean; baseUrl: string; demo: boolean; role: string; languages: 'both' | 'en' | 'de' }
+export interface Meta { brand: { name: string; vendor?: string; [k: string]: unknown }; version: string; build?: string; smtp: boolean; baseUrl: string; demo: boolean; role: string; languages: 'both' | 'en' | 'de' }

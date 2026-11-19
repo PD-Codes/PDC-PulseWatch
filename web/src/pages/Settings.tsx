@@ -1,44 +1,50 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Download, KeyRound, Pencil, Plus, ShieldCheck, Trash2, Upload } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
 import { CertsTab } from '../components/CertsTab';
 import { DefaultsTab } from '../components/DefaultsTab';
 import { ReportView, type Report } from '../components/ImportReport';
 import { KumaImport } from '../components/KumaImport';
-import { CopyButton, EMAIL_RE, FieldsForm, splitList } from '../components/settingsParts';
-import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Tabs, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
+import { CancelButton, FormAlert } from '../components/ops-shared';
+import { Pager } from '../components/Pager';
+import { ReauthFields } from '../components/ReauthFields';
+import { clearSecrets, CopyButton, EMAIL_RE, FieldsForm, isEmptySecret, splitList } from '../components/settingsParts';
+import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, TabPanel, Tabs, Textarea, Toggle, cx, useConfirm, useTabParam, useToast } from '../components/ui';
+import { parseSecretRefusal } from '../lib/adminErrors';
 import { del, download, errorMessage, get, post, put, qs } from '../lib/api';
-import { useMeta } from '../lib/auth';
+import { useAuth, useMeta } from '../lib/auth';
+import { useDirty } from '../lib/dirty';
+import { mapApiError, serverErrors, useFocusFirstError, type MappedErrors } from '../lib/formErrors';
 import { useT } from '../lib/i18n';
+import { setDefaultTheme, THEMES, type ThemeId } from '../lib/theme';
+import { useUnsavedChangesGuard } from '../lib/useUnsavedGuard';
+import { usePagedList } from '../lib/usePagedList';
 import type { FieldDef } from '../../../src/core/types';
 
-const TABS = ['network', 'defaults', 'certificates', 'incidents', 'languages', 'digest', 'auth', 'backup', 'about'] as const;
+const TABS = ['network', 'defaults', 'certificates', 'incidents', 'languages', 'appearance', 'digest', 'auth', 'backup', 'about'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings() {
   const t = useT();
-  const [sp, setSp] = useSearchParams();
   const meta = useMeta();
   // the daily digest is mailed, so its tab only exists when SMTP is configured
-  const tabs = TABS.filter((id) => id !== 'digest' || meta?.smtp);
-  const raw = sp.get('tab') as Tab | null;
-  const tab: Tab = raw && tabs.includes(raw) ? raw : 'network';
+  const tabs = useMemo(() => TABS.filter((id) => id !== 'digest' || meta?.smtp), [meta?.smtp]);
+  const [tab, setTab] = useTabParam<Tab>('tab', 'network', tabs);
+  const label = (id: Tab) => t(id === 'appearance' ? 'ux.settings.tab.appearance' : `settings.tab.${id}`);
   return (
     <div className="space-y-6">
       <PageHeader title={t('settings.title')} subtitle={t('settings.subtitle')} />
-      <div className="overflow-x-auto">
-        <Tabs tabs={tabs.map((id) => ({ id, label: t(`settings.tab.${id}`) }))} value={tab} onChange={(v) => setSp({ tab: v }, { replace: true })} />
-      </div>
-      {tab === 'network' && <NetworkTab />}
-      {tab === 'defaults' && <DefaultsTab />}
-      {tab === 'certificates' && <CertsTab />}
-      {tab === 'incidents' && <IncidentsTab />}
-      {tab === 'languages' && <LanguagesTab />}
-      {tab === 'digest' && <DigestTab />}
-      {tab === 'auth' && <AuthTab />}
-      {tab === 'backup' && <BackupTab />}
-      {tab === 'about' && <AboutTab />}
+      <Tabs<Tab> idPrefix="settings" label={t('settings.title')} className="-mt-3 mb-0" tabs={tabs.map((id) => ({ id, label: label(id) }))} value={tab} onChange={setTab} />
+      <TabPanel idPrefix="settings" id="network" value={tab}><NetworkTab /></TabPanel>
+      <TabPanel idPrefix="settings" id="defaults" value={tab}><DefaultsTab /></TabPanel>
+      <TabPanel idPrefix="settings" id="certificates" value={tab}><CertsTab /></TabPanel>
+      <TabPanel idPrefix="settings" id="incidents" value={tab}><IncidentsTab /></TabPanel>
+      <TabPanel idPrefix="settings" id="languages" value={tab}><LanguagesTab /></TabPanel>
+      <TabPanel idPrefix="settings" id="appearance" value={tab}><AppearanceTab /></TabPanel>
+      <TabPanel idPrefix="settings" id="digest" value={tab}><DigestTab /></TabPanel>
+      <TabPanel idPrefix="settings" id="auth" value={tab}><AuthTab /></TabPanel>
+      <TabPanel idPrefix="settings" id="backup" value={tab}><BackupTab /></TabPanel>
+      <TabPanel idPrefix="settings" id="about" value={tab}><AboutTab /></TabPanel>
     </div>
   );
 }
@@ -54,6 +60,7 @@ function NetworkTab() {
   const [allow, setAllow] = useState(''); const [deny, setDeny] = useState('');
   const load = (d: Ssrf) => { setMode(d.mode); setAllow(d.allow.join('\n')); setDeny(d.deny.join('\n')); };
   useEffect(() => { if (q.data) load(q.data); }, [q.data]);
+  useUnsavedChangesGuard(!!q.data && (mode !== q.data.mode || allow !== q.data.allow.join('\n') || deny !== q.data.deny.join('\n')));
   const done = (d?: Ssrf) => { toast(t('settings.ssrf.saved')); if (d) qc.setQueryData(['settings', 'ssrf'], d); else qc.invalidateQueries({ queryKey: ['settings', 'ssrf'] }); };
   const save = useMutation({ mutationFn: () => put<Ssrf>('/api/settings/ssrf', { mode, allow: splitList(allow), deny: splitList(deny) }), onSuccess: (d) => done(d?.mode ? d : undefined), onError: (e) => toast(errorMessage(e), 'error') });
   const reset = useMutation({ mutationFn: () => del('/api/settings/ssrf'), onSuccess: () => done(), onError: (e) => toast(errorMessage(e), 'error') });
@@ -134,6 +141,40 @@ function LanguagesTab() {
   );
 }
 
+/** The theme everyone gets who has not picked one in the profile or on the device. Saved on click, like the language. */
+function AppearanceTab() {
+  const t = useT(); const toast = useToast(); const qc = useQueryClient();
+  const q = useQuery({ queryKey: ['settings', 'appearance'], queryFn: () => get<{ defaultTheme: ThemeId }>('/api/settings/appearance') });
+  const save = useMutation({
+    mutationFn: (defaultTheme: ThemeId) => put<{ defaultTheme: ThemeId }>('/api/settings/appearance', { defaultTheme }),
+    onSuccess: (r, id) => { qc.setQueryData(['settings', 'appearance'], { defaultTheme: r?.defaultTheme ?? id }); setDefaultTheme(id); void qc.invalidateQueries({ queryKey: ['meta'] }); toast(t('common.saved')); },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
+  if (q.isLoading) return <Loading />;
+  if (q.error || !q.data) return <ErrorBox error={q.error} />;
+  const cur = q.data.defaultTheme;
+  return (
+    <Card>
+      <CardHeader title={t('ux.settings.appearance.title')} subtitle={t('ux.settings.appearance.intro')} />
+      <div className="space-y-3 p-4">
+        <div role="radiogroup" aria-label={t('ux.settings.appearance.title')} className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          {THEMES.map((x) => (
+            <label key={x.id} className={cx('relative flex cursor-pointer flex-col gap-1.5 rounded-lg border p-2 transition has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-brand-500', cur === x.id ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500 dark:bg-brand-700/20' : 'border-slate-200 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800', save.isPending && 'opacity-60')}>
+              <input type="radio" name="default-theme" className="sr-only" checked={cur === x.id} disabled={save.isPending} onChange={() => save.mutate(x.id)} />
+              <span className="flex h-6 overflow-hidden rounded ring-1 ring-slate-900/10 dark:ring-white/15" aria-hidden>
+                {x.swatch.slice(0, 4).map((c, i) => <span key={i} className={i === 0 ? 'w-2/5' : 'w-1/5'} style={{ background: c }} />)}
+              </span>
+              <span className="text-sm font-medium">{t(`themes.name.${x.id}`)}</span>
+              <span className="line-clamp-2 text-xs leading-snug text-slate-500 dark:text-slate-400">{t(`themes.desc.${x.id}`)}</span>
+            </label>
+          ))}
+        </div>
+        <p className="hint">{t('ux.settings.appearance.hint')}</p>
+      </div>
+    </Card>
+  );
+}
+
 function DigestTab() {
   const t = useT(); const toast = useToast(); const qc = useQueryClient();
   const q = useQuery({ queryKey: ['settings', 'digest'], queryFn: () => get<Digest>('/api/settings/digest') });
@@ -141,6 +182,8 @@ function DigestTab() {
   const [rec, setRec] = useState('');
   const [preview, setPreview] = useState<Preview | null>(null);
   useEffect(() => { if (q.data) { setF(q.data); setRec(q.data.recipients.join('\n')); } }, [q.data]);
+  const d0 = q.data;
+  useUnsavedChangesGuard(!!d0 && !!f && (f.enabled !== d0.enabled || f.hour !== d0.hour || f.timezone !== d0.timezone || rec !== d0.recipients.join('\n')));
   const save = useMutation({
     mutationFn: () => {
       const recipients = splitList(rec); const bad = recipients.find((r) => !EMAIL_RE.test(r));
@@ -196,44 +239,69 @@ function AuthTab() {
   const t = useT(); const toast = useToast(); const confirm = useConfirm(); const qc = useQueryClient();
   const q = useQuery({ queryKey: ['auth', 'providers'], queryFn: () => get<Providers>('/api/auth/providers') });
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [saveErr, setSaveErr] = useState<unknown>(null);
+  const [refused, setRefused] = useState<{ keys: string[]; changed: string } | null>(null);
+  const dirty = useDirty(draft);
+  const { pageRows, pagerProps } = usePagedList(q.data?.items ?? [], { key: 'settings-providers' });
   const inv = () => qc.invalidateQueries({ queryKey: ['auth', 'providers'] });
+  const fields = draft && q.data ? q.data.fields[draft.kind] : NO_FIELDS;
   const save = useMutation({
     mutationFn: (d: Draft) => (d.id ? put(`/api/auth/providers/${d.id}`, d) : post('/api/auth/providers', d)),
-    onSuccess: () => { toast(t('common.saved')); setDraft(null); inv(); }, onError: (e) => toast(errorMessage(e), 'error'),
+    onMutate: () => { setSaveErr(null); setRefused(null); },
+    onSuccess: () => { toast(t('common.saved')); setDraft(null); inv(); },
+    onError: (e, v) => {
+      // a stored secret is not reused for another target: empty the field and ask again, right at the field
+      const r = parseSecretRefusal(serverErrors(e), q.data?.fields[v.kind] ?? []);
+      if (r) { setRefused(r); setDraft((cur) => (cur ? { ...cur, config: clearSecrets(cur.config, r.keys) } : cur)); } else setSaveErr(e);
+    },
   });
   const remove = useMutation({ mutationFn: (id: number) => del(`/api/auth/providers/${id}`), onSuccess: () => { toast(t('common.deleted')); inv(); }, onError: (e) => toast(errorMessage(e), 'error') });
   const toggle = useMutation({ mutationFn: (p: Provider) => put(`/api/auth/providers/${p.id}`, { ...p, enabled: !p.enabled }), onSuccess: inv, onError: (e) => toast(errorMessage(e), 'error') });
+  // field name -> words that identify it in a server message
+  const mapped = useMemo<MappedErrors>(() => (saveErr ? mapApiError(saveErr, { name: [], ...Object.fromEntries(fields.map((x) => [x.key, [x.label]])) }) : NO_ERRORS), [saveErr]); // eslint-disable-line react-hooks/exhaustive-deps
+  const errors = useMemo(() => {
+    const e: Record<string, string> = { ...mapped.fieldErrors };
+    if (refused && draft) for (const k of refused.keys) if (isEmptySecret(draft.config[k])) e[k] = t('ux.secret.again', { changed: refused.changed });
+    return e;
+  }, [mapped, refused, draft, t]);
+  // focus the first invalid field once per failed save, not on every keystroke afterwards
+  const trigger = useMemo(() => (Object.keys(mapped.fieldErrors).length || refused ? { go: 1 } : null), [mapped, refused]);
+  useFocusFirstError(trigger);
   if (q.isLoading) return <Loading />;
   if (q.error || !q.data) return <ErrorBox error={q.error} />;
   const d = q.data;
-  const fields = draft ? d.fields[draft.kind] : [];
+  const open = (v: Draft) => { setSaveErr(null); setRefused(null); setDraft(v); };
   return (
     <Card>
       <CardHeader title={<span className="inline-flex items-center gap-2"><KeyRound className="h-4 w-4" aria-hidden />{t('settings.auth.title')}</span>} subtitle={t('settings.auth.intro')}
-        actions={<Button variant="primary" size="sm" onClick={() => setDraft({ kind: 'oidc', name: '', enabled: true, config: defaults(d.fields.oidc) })}><Plus className="h-4 w-4" />{t('settings.auth.add')}</Button>} />
+        actions={<Button variant="primary" size="sm" onClick={() => open({ kind: 'oidc', name: '', enabled: true, config: defaults(d.fields.oidc) })}><Plus className="h-4 w-4" />{t('settings.auth.add')}</Button>} />
       <div className="space-y-3 border-b border-slate-200 p-4 text-sm dark:border-slate-800">
         <div className="label">{t('settings.auth.redirect')}</div>
         <div className="flex flex-wrap items-center gap-2"><code className="break-all rounded bg-slate-100 px-2 py-1 dark:bg-slate-800">{d.redirectUri}</code><CopyButton text={d.redirectUri} /></div>
       </div>
       {d.items.length === 0 ? <EmptyState icon={<KeyRound className="h-8 w-8" />} title={t('settings.auth.empty')} body={t('settings.auth.emptyBody')} /> : (
-        <ul className="divide-y divide-slate-200 dark:divide-slate-800">
-          {d.items.map((p) => (
-            <li key={p.id} className="flex flex-wrap items-center gap-3 p-4">
-              <div className="min-w-0 flex-1"><div className="truncate font-medium">{p.name}</div><div className="mt-1 flex flex-wrap gap-1.5"><Badge tone="violet">{p.kind.toUpperCase()}</Badge>{(p.config.allowedGroups || p.config.allowedGroupDns) && <Badge tone="amber">{t('settings.auth.access.badge')}</Badge>}</div></div>
-              <Toggle checked={p.enabled} onChange={() => toggle.mutate(p)} label={p.enabled ? t('common.enabled') : t('common.disabled')} />
-              <Button size="sm" aria-label={`${t('common.edit')} ${p.name}`} onClick={() => setDraft({ ...p, config: { ...defaults(d.fields[p.kind]), ...p.config } })}><Pencil className="h-3.5 w-3.5" />{t('common.edit')}</Button>
-              <Button size="sm" variant="danger" aria-label={`${t('common.delete')} ${p.name}`} onClick={async () => { if (await confirm({ title: t('common.delete'), body: p.name, danger: true, confirmLabel: t('common.delete') })) remove.mutate(p.id); }}><Trash2 className="h-3.5 w-3.5" /></Button>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="divide-y divide-slate-200 dark:divide-slate-800">
+            {pageRows.map((p) => (
+              <li key={p.id} className="flex flex-wrap items-center gap-3 p-4">
+                <div className="min-w-0 flex-1"><div className="truncate font-medium">{p.name}</div><div className="mt-1 flex flex-wrap gap-1.5"><Badge tone="violet">{p.kind.toUpperCase()}</Badge>{(p.config.allowedGroups || p.config.allowedGroupDns) && <Badge tone="amber">{t('settings.auth.access.badge')}</Badge>}</div></div>
+                <Toggle checked={p.enabled} onChange={() => toggle.mutate(p)} label={p.enabled ? t('common.enabled') : t('common.disabled')} />
+                <Button size="sm" aria-label={`${t('common.edit')} ${p.name}`} onClick={() => open({ ...p, config: { ...defaults(d.fields[p.kind]), ...p.config } })}><Pencil className="h-3.5 w-3.5" />{t('common.edit')}</Button>
+                <Button size="sm" variant="danger" aria-label={`${t('common.delete')} ${p.name}`} onClick={async () => { if (await confirm({ title: t('common.delete'), body: p.name, danger: true, confirmLabel: t('common.delete') })) remove.mutate(p.id); }}><Trash2 className="h-3.5 w-3.5" /></Button>
+              </li>
+            ))}
+          </ul>
+          <Pager {...pagerProps} />
+        </>
       )}
-      <Modal open={!!draft} onClose={() => setDraft(null)} wide title={draft?.id ? t('settings.auth.editTitle') : t('settings.auth.newTitle')}
-        footer={<><Button onClick={() => setDraft(null)}>{t('common.cancel')}</Button><Button variant="primary" loading={save.isPending} onClick={() => draft && save.mutate(draft)}>{t('common.save')}</Button></>}>
+      <Modal open={!!draft} onClose={() => setDraft(null)} dirty={dirty} wide title={draft?.id ? t('settings.auth.editTitle') : t('settings.auth.newTitle')}
+        footer={<><CancelButton /><Button variant="primary" loading={save.isPending} onClick={() => draft && save.mutate(draft)}>{t('common.save')}</Button></>}>
         {draft && (
           <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); save.mutate(draft); }}>
+            <FormAlert messages={mapped.rest} />
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label={t('settings.auth.kind')}>{(id) => <Select id={id} value={draft.kind} disabled={!!draft.id} onChange={(e) => { const kind = e.target.value as Draft['kind']; setDraft({ ...draft, kind, config: defaults(d.fields[kind]) }); }}><option value="oidc">OpenID Connect</option><option value="ldap">LDAP</option><option value="saml">{t('settings.auth.saml.kind')}</option></Select>}</Field>
-              <Field label={t('common.name')}>{(id) => <Input id={id} required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />}</Field>
+              <Field label={t('common.name')} error={errors.name}>{(id, aria) => <Input id={id} {...aria} required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />}</Field>
             </div>
             {draft.id && fields.some((f) => f.kind === 'secret') && <p className="hint">{t('settings.auth.secretKept')}</p>}
             {draft.kind === 'saml' && (
@@ -248,7 +316,7 @@ function AuthTab() {
             {fields.some((f) => f.key === 'allowedGroups' || f.key === 'allowedGroupDns') && (
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-800 dark:bg-slate-800/40"><div className="font-medium">{t('settings.auth.access.title')}</div><p className="mt-1 text-slate-600 dark:text-slate-300">{t('settings.auth.access.body')}</p></div>
             )}
-            <FieldsForm fields={fields} value={draft.config} onChange={(config) => setDraft({ ...draft, config })} />
+            <FieldsForm fields={fields} value={draft.config} onChange={(config) => setDraft({ ...draft, config })} errors={errors} />
             <Toggle checked={draft.enabled} onChange={(enabled) => setDraft({ ...draft, enabled })} label={t('common.enabled')} />
           </form>
         )}
@@ -256,6 +324,9 @@ function AuthTab() {
     </Card>
   );
 }
+
+const NO_FIELDS: FieldDef[] = [];
+const NO_ERRORS: MappedErrors = { fieldErrors: {}, rest: [] };
 
 /* ---------------- backup & import ---------------- */
 
@@ -291,21 +362,61 @@ function ImportCard({ title, intro, endpoint, accept }: { title: string; intro: 
 }
 
 
+/** Saves text the page already holds as a file (the export with secrets cannot be a plain link). */
+function saveAs(name: string, text: string, type: string) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** Exporting with secrets hands out every stored credential: password (and 2FA code) again, then the file arrives as a download. */
+function ExportDialog({ format, needPassword, needCode, onClose }: { format: 'yaml' | 'json'; needPassword: boolean; needCode: boolean; onClose: () => void }) {
+  const t = useT(); const toast = useToast();
+  const [password, setPassword] = useState(''); const [code, setCode] = useState('');
+  const run = useMutation({
+    mutationFn: () => post<unknown>('/api/config/export', { format, secrets: true, ...(needPassword ? { password } : {}), ...(needCode ? { code: code.trim() } : {}) }),
+    onSuccess: (data) => {
+      // YAML arrives as text; JSON is parsed by the client, so write it back readable
+      const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+      saveAs(`pulsewatch-config-${new Date().toISOString().slice(0, 10)}.${format}`, text, format === 'json' ? 'application/json' : 'application/yaml');
+      toast(t('ux.export.done')); onClose();
+    },
+  });
+  const nothing = !needPassword && !needCode;
+  return (
+    <Modal open onClose={onClose} title={t('ux.export.title')} footer={<><CancelButton /><Button variant="primary" loading={run.isPending} onClick={() => run.mutate()}><Download className="h-4 w-4" />{t('settings.backup.download')}</Button></>}>
+      <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); run.mutate(); }}>
+        <div role="alert" className="flex items-start gap-2 rounded-md bg-red-50 p-3 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-300"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />{t('settings.backup.secretsWarn')}</div>
+        <p className="text-sm text-slate-600 dark:text-slate-300">{t(nothing ? 'ux.export.confirmNoPassword' : 'ux.export.intro')}</p>
+        <ReauthFields needPassword={needPassword} needCode={needCode} password={password} code={code} onPassword={setPassword} onCode={setCode} error={run.error} />
+        {nothing && run.error ? <ErrorBox error={run.error} /> : null}
+        <button type="submit" className="hidden" aria-hidden tabIndex={-1} />
+      </form>
+    </Modal>
+  );
+}
+
 function BackupTab() {
   const t = useT();
+  const { user } = useAuth();
   const [format, setFormat] = useState<'yaml' | 'json'>('yaml');
   const [secrets, setSecrets] = useState(false);
+  const [ask, setAsk] = useState(false);
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader title={t('settings.backup.export')} subtitle={t('settings.backup.exportIntro')} />
         <div className="space-y-4 p-4">
-          <Field label={t('settings.backup.format')}>{(id) => <Select id={id} value={format} onChange={(e) => setFormat(e.target.value as 'yaml' | 'json')}><option value="yaml">YAML</option><option value="json">JSON</option></Select>}</Field>
+          <Field label={t('settings.backup.format')} className="max-w-xs">{(id) => <Select id={id} value={format} onChange={(e) => setFormat(e.target.value as 'yaml' | 'json')}><option value="yaml">YAML</option><option value="json">JSON</option></Select>}</Field>
           <Toggle checked={secrets} onChange={setSecrets} label={t('settings.backup.secrets')} />
           {secrets && <div role="alert" className="flex items-start gap-2 rounded-md bg-red-50 p-3 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-300"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />{t('settings.backup.secretsWarn')}</div>}
-          <Button variant="primary" onClick={() => download(`/api/config/export${qs({ format, secrets: secrets || undefined })}`)}><Download className="h-4 w-4" />{t('settings.backup.download')}</Button>
+          {/* with secrets the server wants the password again, so there is no plain download link for that */}
+          <Button variant="primary" onClick={() => (secrets ? setAsk(true) : download(`/api/config/export${qs({ format })}`))}><Download className="h-4 w-4" />{secrets ? t('ux.export.withSecrets') : t('settings.backup.download')}</Button>
         </div>
       </Card>
+      {ask && <ExportDialog format={format} needPassword={user?.authSource === 'local'} needCode={!!user?.totpEnabled} onClose={() => setAsk(false)} />}
       <ImportCard title={t('settings.backup.import')} intro={t('settings.backup.importIntro')} endpoint="/api/config/import" accept=".yaml,.yml,.json,application/json" />
       <KumaImport />
       <ImportCard title={t('settings.backup.kuma')} intro={t('settings.backup.kumaIntro')} endpoint="/api/import/kuma" accept=".json,application/json" />

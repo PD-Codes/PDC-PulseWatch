@@ -7,8 +7,11 @@ import { NO_VERSIONS, Translations, type Versions } from '../components/Translat
 import { Badge, Button, Card, CardHeader, Dl, EmptyState, ErrorBox, Field, Input, Loading, PageHeader, Select, Textarea, Toggle, useConfirm, useToast } from '../components/ui';
 import { ApiError, del, errorMessage, get, patch, post } from '../lib/api';
 import { useAuth } from '../lib/auth';
+import { SnoozeBadge, SnoozeControl } from '../components/Snooze';
+import { useMonitorsQ } from '../components/ops-shared';
+import { fmtUntil, snoozeActive, type MonitorX, type SnoozeBody } from '../lib/monitorExtras';
 import { fmtDateTime, fmtDuration, relTime } from '../lib/format';
-import { useT } from '../lib/i18n';
+import { useI18n, useT } from '../lib/i18n';
 
 interface Detail {
   id: number; title: string; titleEn: string | null; titleDe: string | null; status: string; severity: string; source: string; startedAt: string; acknowledgedAt: string | null; acknowledgedBy: string | null; resolvedAt: string | null;
@@ -19,8 +22,8 @@ interface Update { id: number; ts: string; kind: string; status: string | null; 
 /** Entries that can appear on a status page; the rest is the system's record. */
 const PUBLISHABLE = new Set(['note', 'status', 'resolve', 'postmortem']);
 const KIND_ICON: Record<string, React.ReactNode> = {
-  note: <MessageSquare className="h-4 w-4" />, ack: <Eye className="h-4 w-4" />, resolve: <CheckCircle2 className="h-4 w-4 text-emerald-600" />, assign: <UserCheck className="h-4 w-4" />,
-  postmortem: <FileText className="h-4 w-4" />, auto: <PlayCircle className="h-4 w-4 text-red-600" />, status: <PlayCircle className="h-4 w-4" />,
+  note: <MessageSquare className="h-4 w-4" />, ack: <Eye className="h-4 w-4" />, resolve: <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />, assign: <UserCheck className="h-4 w-4" />,
+  postmortem: <FileText className="h-4 w-4" />, auto: <PlayCircle className="h-4 w-4 text-red-600 dark:text-red-400" />, status: <PlayCircle className="h-4 w-4" />,
 };
 
 /** One timeline entry: its text, whether it is on the status page, and (for people's entries) an inline editor for both. */
@@ -63,6 +66,9 @@ function Entry({ u, incidentId, canEdit }: { u: Update; incidentId: number; canE
   );
 }
 
+/** The latest running snooze among the monitors (shown on the incident's snooze control). */
+const latestSnooze = (list: (string | null | undefined)[]): string | null => list.filter((x): x is string => snoozeActive({ snoozedUntil: x })).sort().pop() ?? null;
+
 export default function IncidentDetail() {
   const t = useT();
   const id = Number(useParams().id);
@@ -83,6 +89,24 @@ export default function IncidentDetail() {
   const [pm, setPm] = useState('');
   useEffect(() => { if (q.data) setPm(q.data.postmortem ?? ''); }, [q.data?.postmortem]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (q.data) setTi({ title: q.data.title, v: { en: q.data.titleEn ?? '', de: q.data.titleDe ?? '' } }); }, [q.data?.title, q.data?.titleEn, q.data?.titleDe]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { locale } = useI18n();
+  const monitorList = useMonitorsQ();
+  // notifications for every monitor of the incident: snooze them together, or end the snoozes that run
+  const snooze = useMutation({
+    mutationFn: async (b: SnoozeBody | null): Promise<{ n: number; until: string | null }> => {
+      if (b) { const r = await post<{ snoozed: number[]; snoozedUntil: string }>(`/api/incidents/${id}/snooze`, b); return { n: r.snoozed.length, until: r.snoozedUntil }; }
+      const ids = (q.data?.monitors ?? []).map((m) => m.id).filter((mid) => snoozeActive(byId.get(mid)));
+      await Promise.all(ids.map((mid) => del(`/api/monitors/${mid}/snooze`)));
+      return { n: ids.length, until: null };
+    },
+    onSuccess: (r) => {
+      toast(r.until ? t('mux.snooze.doneMany', { n: r.n, when: fmtUntil(r.until, locale) }) : t('mux.snooze.cleared'));
+      void qc.invalidateQueries({ queryKey: ['monitors'] }); void qc.invalidateQueries({ queryKey: ['monitor'] });
+    },
+    onError: (e) => toast(errorMessage(e), 'error'),
+  });
+  const byId = new Map(((monitorList.data ?? []) as MonitorX[]).map((m) => [m.id, m]));
 
   const run = useMutation({
     mutationFn: (fn: () => Promise<unknown>) => fn(),
@@ -183,7 +207,13 @@ export default function IncidentDetail() {
           )}
           <Card>
             <CardHeader title={t('incidents.affected')} />
-            <ul className="space-y-1 p-4 text-sm">{i.monitors.length ? i.monitors.map((m) => <li key={m.id}><Link to={`/monitors/${m.id}`}>{m.name}</Link></li>) : <li className="text-slate-500">{t('incidents.noMonitors')}</li>}</ul>
+            <ul className="space-y-1 p-4 text-sm">{i.monitors.length ? i.monitors.map((m) => <li key={m.id} className="flex flex-wrap items-center justify-between gap-x-2"><Link to={`/monitors/${m.id}`}>{m.name}</Link><SnoozeBadge until={byId.get(m.id)?.snoozedUntil} /></li>) : <li className="text-slate-500">{t('incidents.noMonitors')}</li>}</ul>
+            {editor && i.monitors.length > 0 && (
+              <div className="border-t border-slate-200 px-4 py-3 dark:border-slate-800">
+                <SnoozeControl variant="inline" until={latestSnooze(i.monitors.map((m) => byId.get(m.id)?.snoozedUntil))} busy={snooze.isPending} onSnooze={(b) => snooze.mutate(b)} onClear={() => snooze.mutate(null)} />
+                <p className="hint">{t('mux.snooze.incidentHint')}</p>
+              </div>
+            )}
           </Card>
           {user?.role === 'admin' && <Button variant="danger" className="w-full" onClick={async () => { if (await confirm({ title: t('common.delete'), body: t('common.deleteConfirm', { name: i.title }), danger: true, confirmLabel: t('common.delete') })) { try { await del(`/api/incidents/${id}`); void qc.invalidateQueries({ queryKey: ['incidents'] }); nav('/incidents'); } catch (e) { toast(errorMessage(e), 'error'); } } }}>{t('common.delete')}</Button>}
         </div>

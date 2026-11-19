@@ -7,9 +7,58 @@ import { uptimeFor } from '../monitors/service';
 import type { Scheduler } from '../engine/scheduler';
 import { mailConfigured } from '../mail';
 import { langMode } from '../notify/texts';
-import { VERSION } from '../version';
+import { defaultTheme } from '../themes';
+import { BUILD, VERSION } from '../version';
 
 export interface SystemDeps { scheduler?: Scheduler }
+
+/** The part of a response stream the SSE writer needs (a fake in tests). */
+export interface SseSink {
+  write(chunk: string): boolean;
+  end(): void;
+  destroy(): void;
+  readonly writableLength: number;
+  readonly destroyed?: boolean;
+  once(event: 'drain' | 'close', fn: () => void): unknown;
+  off(event: 'drain' | 'close', fn: () => void): unknown;
+}
+
+/**
+ * Writes to a slow SSE client without letting its buffer grow: once the socket buffer is full, events wait for 'drain'.
+ * The stream is ended when more than `maxBuffered` bytes are pending or the client has not drained for `drainTimeoutMs`;
+ * the browser reconnects and refetches.
+ */
+export function sseWriter(raw: SseSink, opts: { maxBuffered?: number; drainTimeoutMs?: number; onClose?: () => void } = {}) {
+  const maxBuffered = opts.maxBuffered ?? 1024 * 1024, drainTimeoutMs = opts.drainTimeoutMs ?? 30_000;
+  let pending: string[] = [], pendingBytes = 0, closed = false;
+  let timer: NodeJS.Timeout | undefined;
+  /** `force` drops a client that stopped reading: ending gracefully would wait for its full buffer forever. */
+  const close = (force = false) => {
+    if (closed) return;
+    closed = true; clearTimeout(timer); pending = []; raw.off('drain', onDrain);
+    try { if (force) raw.destroy(); else raw.end(); } catch { /* already gone */ }
+    opts.onClose?.();
+  };
+  const onDrain = () => {
+    clearTimeout(timer); timer = undefined;
+    const chunk = pending.join(''); pending = []; pendingBytes = 0;
+    if (chunk) write(chunk);
+  };
+  const write = (chunk: string) => {
+    if (closed || raw.destroyed) return;
+    if (timer) { // still waiting for the client to catch up
+      pending.push(chunk); pendingBytes += Buffer.byteLength(chunk);
+      if (pendingBytes + raw.writableLength > maxBuffered) close(true);
+      return;
+    }
+    if (raw.write(chunk)) return;
+    if (raw.writableLength > maxBuffered) { close(true); return; }
+    timer = setTimeout(() => close(true), drainTimeoutMs);
+    timer.unref?.();
+    raw.once('drain', onDrain);
+  };
+  return { write, close: () => close(), get closed() { return closed; } };
+}
 
 const COLORS = { up: '#16a34a', down: '#dc2626', pending: '#d97706', unknown: '#6b7280', maintenance: '#2563eb' } as const;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -24,6 +73,9 @@ export function badge(label: string, value: string, color: string): string {
 export async function systemRoutes(app: FastifyInstance, deps: SystemDeps) {
   const ctx = app.ctx;
   const { db } = ctx;
+  // open event streams never end on their own: close them first on shutdown, so app.close() does not wait for them
+  const streams = new Set<() => void>();
+  app.addHook('preClose', async () => { for (const end of [...streams]) end(); });
 
   app.get('/health', { schema: { tags: ['system'], summary: 'Liveness probe' } }, async () => ({ status: 'ok' }));
 
@@ -42,7 +94,7 @@ export async function systemRoutes(app: FastifyInstance, deps: SystemDeps) {
     return reply.code(ok ? 200 : 503).send({ ok, ts: new Date().toISOString() });
   });
 
-  app.get('/api/meta', { schema: { tags: ['system'] } }, async () => ({ brand: config.brand, version: VERSION, smtp: mailConfigured(), baseUrl: config.baseUrl, demo: config.demo, role: config.role, languages: await langMode(ctx) }));
+  app.get('/api/meta', { schema: { tags: ['system'] } }, async () => ({ brand: config.brand, version: VERSION, build: BUILD, smtp: mailConfigured(), baseUrl: config.baseUrl, demo: config.demo, role: config.role, languages: await langMode(ctx), timezone: config.timezone, defaultTheme: await defaultTheme(ctx) }));
 
   /* ------------------------------ Prometheus ------------------------------ */
   app.get('/metrics', { schema: { tags: ['system'], summary: 'Prometheus metrics (Bearer token)' } }, async (req, reply) => {
@@ -81,7 +133,9 @@ export async function systemRoutes(app: FastifyInstance, deps: SystemDeps) {
     reply.hijack();
     const raw = reply.raw;
     raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-    const send = (event: string, data: unknown) => raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    let cleanup = () => {};
+    const out = sseWriter(raw, { onClose: () => cleanup() });
+    const send = (event: string, data: unknown) => out.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     send('hello', { ts: Date.now() });
     const unsub = ctx.bus.subscribe((e) => {
       if (e.type === 'monitor') { if (visible && !visible.has(e.monitorId)) return; send('monitor', e.data); }
@@ -90,18 +144,22 @@ export async function systemRoutes(app: FastifyInstance, deps: SystemDeps) {
       else if (restricted()) return; // maintenance and other global events carry nothing a restricted user may see
       else send(e.type, e);
     });
-    const ping = setInterval(() => raw.write(': ping\n\n'), 15_000);
+    const ping = setInterval(() => out.write(': ping\n\n'), 15_000);
     // a stream outlives the login it started with: end it when the account or session is gone, and follow changes of role or scope
     const refresh = setInterval(async () => {
       try {
         const row = await db.selectFrom('users').select(['role', 'scope_restricted', 'is_active']).where('id', '=', user.id).executeTakeFirst();
         const session = user.sessionId ? await db.selectFrom('sessions').select('id').where('id', '=', user.sessionId).where('expires_at', '>', new Date()).executeTakeFirst() : true;
-        if (!row || !row.is_active || !session) { raw.end(); return; }
+        if (!row || !row.is_active || !session) { out.close(); return; }
         Object.assign(user, { role: row.role, scopeRestricted: !!row.scope_restricted });
         visible = await accessibleMonitorIds(ctx, user).then((v) => (v ? new Set(v) : null));
       } catch { /* keep the previous state until the next round */ }
     }, 60_000);
-    req.raw.on('close', () => { unsub(); clearInterval(ping); clearInterval(refresh); });
+    let done = false;
+    cleanup = () => { if (done) return; done = true; unsub(); clearInterval(ping); clearInterval(refresh); streams.delete(out.close); };
+    streams.add(out.close);
+    if (out.closed) cleanup(); // the client was gone before the subscriptions were made
+    req.raw.on('close', () => { cleanup(); out.close(); });
   });
 
   /* -------------------------------- badges -------------------------------- */

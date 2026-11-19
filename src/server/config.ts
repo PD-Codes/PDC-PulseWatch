@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import net from 'node:net';
 import brand from '../../brand.json';
+import { checkTimeZone } from './tz';
 
 const env = process.env;
 
@@ -23,6 +25,30 @@ const bool = (name: string, def: boolean) => {
   return v === undefined || v === '' ? def : ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
 };
 const list = (name: string) => (read(name) ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+
+/**
+ * PW_TRUST_PROXY: false (default), true (every proxy is trusted, X-Forwarded-For can then be forged by clients), a hop count, or comma separated proxy IPs/CIDRs.
+ * Returns what Fastify's trustProxy option takes; throws on anything else so a typo cannot silently trust the wrong clients.
+ */
+export function parseTrustProxy(raw: string | undefined): boolean | number | string[] {
+  const v = (raw ?? '').trim();
+  if (!v || ['0', 'false', 'no', 'off'].includes(v.toLowerCase())) return false;
+  if (['true', 'yes', 'on'].includes(v.toLowerCase())) return true;
+  if (/^\d+$/.test(v)) { const n = Number(v); if (n >= 1 && n <= 32) return n; }
+  else {
+    const entries = v.split(',').map((e) => e.trim()).filter(Boolean);
+    const ok = (e: string) => { const [a, b, extra] = e.split('/'); return extra === undefined && net.isIP(a ?? '') > 0 && (b === undefined || (/^\d+$/.test(b) && Number(b) <= (net.isIPv6(a!) ? 128 : 32))); };
+    if (entries.length && entries.every(ok)) return entries;
+  }
+  throw new Error(`PW_TRUST_PROXY="${v}" is not valid: use false, true, the number of proxies in front of the app (1-32), or comma separated proxy IPs/CIDRs such as 10.0.0.0/8`);
+}
+
+/** PW_SSRF_MODE: only the two known modes; anything else stops the start instead of silently allowing private targets. */
+export function parseSsrfMode(raw: string | undefined): 'allow-private' | 'public-only' {
+  const v = (raw ?? '').trim() || 'allow-private';
+  if (v === 'allow-private' || v === 'public-only') return v;
+  throw new Error(`PW_SSRF_MODE="${v}" is not valid: use allow-private or public-only`);
+}
 
 const dataDir = path.resolve(read('PW_DATA_DIR', './data')!);
 
@@ -47,7 +73,7 @@ export const config = {
   host: read('PW_HOST', '0.0.0.0')!,
   port: int('PW_PORT', 3000),
   baseUrl: read('PW_BASE_URL', 'http://localhost:3000')!.replace(/\/$/, ''),
-  trustProxy: bool('PW_TRUST_PROXY', false),
+  trustProxy: parseTrustProxy(read('PW_TRUST_PROXY')),
   logLevel: read('PW_LOG_LEVEL', 'info')!,
   dataDir,
   migrationsDir: path.resolve(read('PW_MIGRATIONS_DIR', './migrations')!),
@@ -67,8 +93,10 @@ export const config = {
     maxConcurrency: int('PW_MAX_CONCURRENCY', 200),
     jitterPct: int('PW_JITTER_PCT', 5),
   },
+  /** Total time a SIGTERM may take: running checks, lease release, HTTP close, DB close. Keep it below the orchestrator's stop timeout. */
+  shutdownGraceMs: int('PW_SHUTDOWN_GRACE_MS', 20_000),
   session: { ttlHours: int('PW_SESSION_TTL_HOURS', 168), cookieSecure: bool('PW_COOKIE_SECURE', (read('PW_BASE_URL', '') ?? '').startsWith('https://')) },
-  ssrf: { mode: read('PW_SSRF_MODE', 'allow-private') as 'allow-private' | 'public-only', allow: list('PW_SSRF_ALLOW'), deny: list('PW_SSRF_DENY') },
+  ssrf: { mode: parseSsrfMode(read('PW_SSRF_MODE')), allow: list('PW_SSRF_ALLOW'), deny: list('PW_SSRF_DENY') },
   retention: {
     rawDays: int('PW_RETENTION_RAW_DAYS', 14),
     minuteDays: int('PW_RETENTION_MINUTE_DAYS', 60),
@@ -78,6 +106,8 @@ export const config = {
     auditDays: int('PW_RETENTION_AUDIT_DAYS', 730),
   },
   metricsToken: read('PW_METRICS_TOKEN'),
+  /** Token for creating the first administrator; generated (and logged) at start when unset. */
+  setupToken: read('PW_SETUP_TOKEN')?.trim() || undefined,
   deadman: { url: read('PW_DEADMAN_URL'), intervalSec: int('PW_DEADMAN_INTERVAL', 60) },
   smtp: {
     host: read('PW_SMTP_HOST'), port: int('PW_SMTP_PORT', 587), user: read('PW_SMTP_USER'), pass: read('PW_SMTP_PASS'),
@@ -86,6 +116,8 @@ export const config = {
   demo: bool('PW_DEMO', false),
   rateLimit: { max: int('PW_RATE_LIMIT_MAX', 300), loginMax: int('PW_RATE_LIMIT_LOGIN', 10) },
   otlpEndpoint: read('PW_OTEL_EXPORTER_OTLP_ENDPOINT'),
+  /** Calendar days (daily rollups, heatmaps, day bars, reports) are counted in this zone; must be the same for all roles. */
+  timezone: checkTimeZone(read('PW_TIMEZONE', 'UTC') || 'UTC', 'PW_TIMEZONE'),
 };
 
 export type Config = typeof config;

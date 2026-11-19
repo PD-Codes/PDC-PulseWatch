@@ -3,9 +3,12 @@ name: Release
 # Releases are driven by one number: `version` in package.json.
 #
 # Push a commit to main that raises it and this workflow tags the commit, publishes a
-# GitHub release and pushes the Docker image to ghcr.io. Push anything else and it does
-# nothing: the tag check below makes the run idempotent, so a re-run, a revert or a merge
-# commit cannot publish the same version twice.
+# GitHub release and pushes the Docker images (app and probe) to ghcr.io. Push anything
+# else and it does nothing: the tag check below makes the run idempotent, so a re-run,
+# a revert or a merge commit cannot publish the same version twice.
+#
+# Actions are pinned to commit SHAs (the comment names the release). To update one, look up
+# the new tag with `git ls-remote https://github.com/<owner>/<action> 'refs/tags/v*'`.
 
 on:
   push:
@@ -16,9 +19,9 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # shortcut: amd64 only, because the arm64 build runs under QEMU and was not tried here;
-  # add linux/arm64 once a test build of the image passes.
-  PLATFORMS: linux/amd64
+  # The Dockerfiles build and install on the runner's own architecture and only run the short
+  # runtime steps (apk add) under QEMU for the other one, so arm64 costs little extra time.
+  PLATFORMS: linux/amd64,linux/arm64
 
 permissions:
   contents: write # create the tag and the release
@@ -32,10 +35,24 @@ jobs:
   release:
     name: Tag, build and publish
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+
+    # Throwaway database for the integration tests (the harness creates its own schemas in it).
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: dev
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # tags are needed to know what was already released
 
@@ -50,12 +67,12 @@ jobs:
 
           # ghcr.io only accepts lowercase image names, the repository name does not have to be.
           IMAGE="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          MAJOR="${VERSION%%.*}"
+          MINOR="$(echo "$VERSION" | cut -d. -f1,2)"
 
           {
             echo "version=$VERSION"
             echo "image=$IMAGE"
-            echo "major=${VERSION%%.*}"
-            echo "minor=$(echo "$VERSION" | cut -d. -f1,2)"
           } >> "$GITHUB_OUTPUT"
 
           # A hyphen means a pre-release (1.1.0-rc1): it gets its own tag, but it must
@@ -65,6 +82,26 @@ jobs:
           else
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
+
+          # Tag lists for the app image and the probe image (same logic, name suffix -probe).
+          # `latest` and the short tags are deliberately absent for pre-releases.
+          tags() {
+            local name="$REGISTRY/$IMAGE$1"
+            echo "$name:$VERSION"
+            if [[ "$VERSION" != *-* ]]; then
+              echo "$name:$MINOR"
+              echo "$name:$MAJOR"
+              echo "$name:latest"
+            fi
+          }
+          {
+            echo "tags_app<<__TAGS__"
+            tags ""
+            echo "__TAGS__"
+            echo "tags_probe<<__TAGS__"
+            tags "-probe"
+            echo "__TAGS__"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Skip when this version was already released
         id: check
@@ -77,17 +114,17 @@ jobs:
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.check.outputs.publish == 'true'
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
 
       - name: Install
         if: steps.check.outputs.publish == 'true'
         run: npm ci --ignore-scripts
 
-      # Both run only for a version that is about to be published. Unit tests need no database.
+      # All of these run only for a version that is about to be published.
       - name: Typecheck
         if: steps.check.outputs.publish == 'true'
         run: npm run typecheck && npx tsc --noEmit -p tsconfig.web.json
@@ -96,34 +133,39 @@ jobs:
         if: steps.check.outputs.publish == 'true'
         run: npm run test:unit
 
-      - uses: docker/setup-qemu-action@v4
+      - name: Integration tests
+        if: steps.check.outputs.publish == 'true'
+        env:
+          PW_TEST_DB_HOST: 127.0.0.1
+          PW_TEST_DB_PORT: '3306'
+          PW_TEST_DB_USER: root
+          PW_TEST_DB_PASSWORD: dev
+        run: npm run test:integration
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         if: steps.check.outputs.publish == 'true'
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         if: steps.check.outputs.publish == 'true'
 
       - name: Log in to ghcr.io
         if: steps.check.outputs.publish == 'true'
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
+      - name: Build and push the app image
         if: steps.check.outputs.publish == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
+          file: Dockerfile
           platforms: ${{ env.PLATFORMS }}
           push: true
           provenance: false # keeps the package page readable on ghcr.io
-          # `latest` and the short tags are deliberately absent for pre-releases.
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.prerelease == 'false' && format('{0}/{1}:{2}', env.REGISTRY, steps.meta.outputs.image, steps.meta.outputs.minor) || '' }}
-            ${{ steps.meta.outputs.prerelease == 'false' && format('{0}/{1}:{2}', env.REGISTRY, steps.meta.outputs.image, steps.meta.outputs.major) || '' }}
-            ${{ steps.meta.outputs.prerelease == 'false' && format('{0}/{1}:latest', env.REGISTRY, steps.meta.outputs.image) || '' }}
+          tags: ${{ steps.meta.outputs.tags_app }}
           labels: |
             org.opencontainers.image.title=PulseWatch
             org.opencontainers.image.description=Self-hosted uptime and status monitoring
@@ -132,34 +174,75 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.licenses=GPL-3.0-only
             org.opencontainers.image.vendor=PD-Codes
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+
+      - name: Build and push the probe image
+        if: steps.check.outputs.publish == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.probe
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags_probe }}
+          labels: |
+            org.opencontainers.image.title=PulseWatch Probe
+            org.opencontainers.image.description=Remote probe agent for PulseWatch
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=GPL-3.0-only
+            org.opencontainers.image.vendor=PD-Codes
+          cache-from: type=gha,scope=probe
+          cache-to: type=gha,mode=max,scope=probe
 
       # `gh release create` creates the tag itself, so the tag only ever exists for a
-      # version whose image is already in the registry.
+      # version whose images are already in the registry.
       - name: Create the GitHub release
         if: steps.check.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          V: v${{ steps.meta.outputs.version }}
+          VERSION: ${{ steps.meta.outputs.version }}
           IMAGE: ${{ env.REGISTRY }}/${{ steps.meta.outputs.image }}
         run: |
           set -euo pipefail
-          cat > notes.md <<EOF
-          ## Container image
+
+          # The CHANGELOG section `## [<version>]` (without its heading line) is the release text.
+          awk -v v="$VERSION" '
+            /^## \[/ { if (on) exit; on = (index($0, "## [" v "]") == 1); next }
+            on
+          ' CHANGELOG.md > changelog-section.md 2>/dev/null || : > changelog-section.md
+
+          {
+            if grep -q '[^[:space:]]' changelog-section.md; then
+              cat changelog-section.md
+              echo
+            fi
+            cat <<EOF
+          ## Container images
 
           \`\`\`bash
-          docker pull $IMAGE:${{ steps.meta.outputs.version }}
+          docker pull $IMAGE:$VERSION
+          docker pull $IMAGE-probe:$VERSION
           \`\`\`
 
-          Set \`PW_IMAGE=$IMAGE:${{ steps.meta.outputs.version }}\` to run this release with the
-          provided docker-compose.yml. See the [README](https://github.com/${{ github.repository }}#readme)
+          Set \`PW_IMAGE=$IMAGE:$VERSION\` (and \`PW_PROBE_IMAGE=$IMAGE-probe:$VERSION\`) to run this
+          release with the provided docker-compose.yml. See the [README](https://github.com/${{ github.repository }}#readme)
           for setup and upgrade notes.
           EOF
+          } > notes.md
 
-          gh release create "$V" \
+          # Without a CHANGELOG section for this version GitHub generates the notes from the commits.
+          GENERATE=()
+          grep -q '[^[:space:]]' changelog-section.md || GENERATE=(--generate-notes)
+          PRERELEASE=()
+          [[ "$VERSION" == *-* ]] && PRERELEASE=(--prerelease)
+
+          gh release create "v$VERSION" \
             --target "${{ github.sha }}" \
-            --title "$V" \
+            --title "v$VERSION" \
             --notes-file notes.md \
-            --generate-notes \
-            ${{ steps.meta.outputs.prerelease == 'true' && '--prerelease' || '' }}
+            "${GENERATE[@]}" \
+            "${PRERELEASE[@]}"

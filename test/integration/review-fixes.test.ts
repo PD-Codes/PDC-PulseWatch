@@ -69,7 +69,8 @@ describe('retry timing', () => {
     const slow = t.ctx.engine.nextRun(m, undefined, true, now - 48_000).getTime() - now; // the attempt ran into its 48 s timeout
     expect(slow).toBeGreaterThan(5_000);
     expect(slow).toBeLessThan(20_000); // about 12 s left of the 60 s retry interval, not another full 60 s
-    expect(t.ctx.engine.nextRun(m, undefined, true, now - 120_000).getTime() - now).toBeLessThanOrEqual(1_000); // overdue: right away
+    // overdue: right away (nextRun reads the clock itself, so allow the few ms that pass between `now` and the call)
+    expect(t.ctx.engine.nextRun(m, undefined, true, now - 120_000).getTime() - now).toBeLessThanOrEqual(1_100);
   });
 });
 

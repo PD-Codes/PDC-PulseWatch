@@ -4,6 +4,9 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { CalendarHeatmap, type HeatDay } from '../components/CalendarHeatmap';
 import { Badge, Card, CardHeader, EmptyState, ErrorBox, Loading, PageHeader, Select, Tabs } from '../components/ui';
 import { StatusDot } from '../components/status';
+import { Pager } from '../components/Pager';
+import { useMeta } from '../lib/auth';
+import { usePagedList } from '../lib/usePagedList';
 import { get, type MonitorItem } from '../lib/api';
 import { fmtDateTime } from '../lib/format';
 import { useT } from '../lib/i18n';
@@ -33,6 +36,8 @@ function Heatmap() {
   const [monitorId, setMonitorId] = useState('');
   const [days, setDays] = useState('365');
   const monitors = useQuery({ queryKey: ['monitors'], queryFn: () => get<MonitorItem[]>('/api/monitors') });
+  // days are counted in the instance time zone (server setting), not in the browser's
+  const tz = (useMeta() as { timezone?: string } | undefined)?.timezone ?? null;
   const q = useQuery({ queryKey: ['insights', 'heatmap', monitorId, days], queryFn: () => get<{ days: HeatDay[] }>(`/api/insights/heatmap?days=${days}${monitorId ? `&monitorId=${monitorId}` : ''}`) });
 
   return (
@@ -43,7 +48,7 @@ function Heatmap() {
       </>} />
       <div className="p-4">
         {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : !q.data?.days.length ? <EmptyState title={t('monitors.noData')} /> : (
-          <CalendarHeatmap days={q.data?.days ?? []} />
+          <CalendarHeatmap days={q.data?.days ?? []} timeZone={tz} />
         )}
       </div>
     </Card>
@@ -59,6 +64,7 @@ function WhatChanged() {
   const [windowMin, setWindowMin] = useState('30');
   const incidents = useQuery({ queryKey: ['incidents', 'picker'], queryFn: () => get<IncidentRow[]>('/api/incidents?limit=50') });
   const q = useQuery({ queryKey: ['insights', 'changes', incidentId, windowMin], queryFn: () => get<Changes>(`/api/insights/changes?incidentId=${incidentId}&windowMin=${windowMin}`), enabled: !!incidentId });
+  const events = usePagedList(q.data?.events ?? [], { key: 'insights.changes', resetKey: `${incidentId}|${windowMin}` });
   const pick = (v: string) => { const p = new URLSearchParams(params); p.set('tab', 'changes'); if (v) p.set('incidentId', v); else p.delete('incidentId'); setParams(p, { replace: true }); };
 
   return (
@@ -86,8 +92,8 @@ function WhatChanged() {
         <Card>
           <CardHeader title={t('insights.timeline')} subtitle={t('insights.timelineHint', { n: q.data.windowMin })} />
           {q.data.events.length === 0 ? <p className="p-4 text-sm text-slate-500">{t('insights.noEvents')}</p> : (
-            <ol className="divide-y divide-slate-100 dark:divide-slate-800">
-              {q.data.events.map((e) => {
+            <><ol className="divide-y divide-slate-100 dark:divide-slate-800">
+              {events.pageRows.map((e) => {
                 const abs = Math.abs(e.offsetSec);
                 const off = abs < 60 ? `${abs}s` : `${Math.round(abs / 60)}m`;
                 return (
@@ -101,7 +107,7 @@ function WhatChanged() {
                   </li>
                 );
               })}
-            </ol>
+            </ol><Pager {...events.pagerProps} /></>
           )}
         </Card>
       )}

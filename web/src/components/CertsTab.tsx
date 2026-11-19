@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { del, errorMessage, get, post } from '../lib/api';
 import { fmtDate } from '../lib/format';
 import { useT } from '../lib/i18n';
+import { usePagedList } from '../lib/usePagedList';
+import { Pager } from './Pager';
 import { Badge, Button, Card, CardHeader, EmptyState, ErrorBox, Field, Input, Loading, Textarea, useConfirm, useToast } from './ui';
 
 interface Ca { id: number; name: string; subject: string; issuer: string; fingerprint256: string; validTo: string; expired: boolean }
@@ -20,6 +22,7 @@ export function CertsTab() {
     onError: (e) => toast(errorMessage(e), 'error'),
   });
   const remove = useMutation({ mutationFn: (id: number) => del(`/api/ca-certs/${id}`), onSuccess: () => { toast(t('common.deleted')); qc.invalidateQueries({ queryKey: ['ca-certs'] }); }, onError: (e) => toast(errorMessage(e), 'error') });
+  const { pageRows, pagerProps } = usePagedList(q.data ?? [], { key: 'ca-certs' });
   const readFile = async (f?: File) => { if (!f) return; try { setPem(await f.text()); } catch { toast(t('certs.readFailed'), 'error'); } };
   return (
     <div className="space-y-4">
@@ -44,7 +47,7 @@ export function CertsTab() {
         {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : !q.data?.length ? <EmptyState title={t('certs.empty')} body={t('certs.emptyHint')} /> : (
           <div className="overflow-x-auto"><table className="tbl">
             <thead><tr><th>{t('certs.subject')}</th><th>{t('certs.issuer')}</th><th>{t('certs.validUntil')}</th><th>{t('certs.fingerprint')}</th><th /></tr></thead>
-            <tbody>{q.data.map((c) => (
+            <tbody>{pageRows.map((c) => (
               <tr key={c.id}>
                 <td className="break-all"><div className="font-medium">{c.name}</div><div className="text-xs text-slate-500">{c.subject}</div></td>
                 <td className="break-all text-xs">{c.issuer}</td>
@@ -55,6 +58,7 @@ export function CertsTab() {
             ))}</tbody>
           </table></div>
         )}
+        <Pager {...pagerProps} />
       </Card>
     </div>
   );

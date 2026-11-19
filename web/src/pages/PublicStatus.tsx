@@ -3,12 +3,14 @@ import { AlertTriangle, CheckCircle2, CircleHelp, HelpCircle, Lock, Rss, Wrench,
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { ServerInfoBlock } from '../components/ServerInfo';
-import { CalendarHeatmap, type HeatDay } from '../components/CalendarHeatmap';
+import { CalendarHeatmap, fmtDay, type HeatDay } from '../components/CalendarHeatmap';
 import { Pager } from '../components/Pager';
 import { Badge, Button, cx, ErrorBox, Field, Input, Loading, type Tone } from '../components/ui';
 import { ApiError, get, post, type ServerInfo } from '../lib/api';
-import { fmtDate, fmtDateTime, fmtPct, relTime } from '../lib/format';
+import { fmtDateTime, fmtPct, relTime } from '../lib/format';
 import { useForcedLocale, useI18n, useT, type Locale } from '../lib/i18n';
+import { applyTheme, isThemeId } from '../lib/theme';
+import { usePagedList } from '../lib/usePagedList';
 
 type CompStatus = 'operational' | 'outage' | 'degraded' | 'maintenance' | 'unknown';
 interface Comp { monitorId: number; name: string; description: string | null; status: CompStatus; since: string | null; info: ServerInfo | null; uptime: number | null; daily: { date: string; uptime: number | null }[] }
@@ -23,6 +25,8 @@ interface Page {
   overall: 'operational' | 'partial' | 'outage' | 'degraded' | 'maintenance' | 'unknown'; unknownCount: number; generatedAt: string; sections: { name: string; components: Comp[] }[]; components: Comp[];
   announcements: { id: number; kind: 'info' | 'maintenance' | 'incident'; title: string; body: string | null; startsAt: string; endsAt: string | null }[];
   maintenance: { id: number; name: string; description: string | null; endsAt: string }[]; incidents: Incident[]; recentIncidents: Incident[]; incidentDays: number; incidentPageSize: number; blocks: Block[]; subscribe: { email: boolean };
+  /** Theme chosen for this page; null: classic, light or dark as the visitor's system prefers. */
+  theme?: string | null;
 }
 
 const DOT: Record<CompStatus, string> = { operational: 'bg-emerald-500', outage: 'bg-red-500', degraded: 'bg-amber-500', maintenance: 'bg-sky-500', unknown: 'bg-slate-400' };
@@ -35,23 +39,55 @@ const BANNER: Record<Page['overall'], { cls: string; icon: ReactNode }> = {
 const SEVERITY: Record<Incident['severity'], Tone> = { minor: 'amber', major: 'red', critical: 'red' };
 
 const barColor = (u: number | null) => (u == null ? 'bg-slate-200 dark:bg-slate-800' : u >= 99.9 ? 'bg-emerald-500' : u >= 99 ? 'bg-lime-500' : u >= 95 ? 'bg-amber-500' : 'bg-red-500');
+/** Color and threshold of each bar class; the label is formatted at render time (decimal comma in German). */
+const LEGEND: [string, string, number | null][] = [['bg-emerald-500', '≥', 99.9], ['bg-lime-500', '≥', 99], ['bg-amber-500', '≥', 95], ['bg-red-500', '<', 95], ['bg-slate-200 dark:bg-slate-800', '', null]];
+
+/** "Today (so far): 64 % available, 36 % down" – the bars are history per day, the status label is the present. */
+function useDayText() {
+  const t = useT();
+  const { locale } = useI18n();
+  return (d: { date: string; uptime: number | null }, today: boolean) => {
+    const day = today ? t('mux.public.todaySoFar') : fmtDay(d.date, locale);
+    if (d.uptime == null) return `${day}: ${t('public.noData')}`;
+    const down = Math.max(0, 100 - d.uptime);
+    return down < 0.005 ? t('mux.public.dayFull', { day, up: fmtPct(d.uptime) }) : t('mux.public.dayDown', { day, up: fmtPct(d.uptime), down: fmtPct(down) });
+  };
+}
 
 function UptimeStrip({ comp, days }: { comp: Comp; days: number }) {
   const t = useT();
+  const text = useDayText();
+  const last = comp.daily.length - 1;
   return (
     <div className="flex h-7 items-stretch gap-px" role="img" aria-label={t('public.uptimeStrip', { n: days, pct: fmtPct(comp.uptime) })}>
-      {comp.daily.map((d) => <span key={d.date} title={`${fmtDate(`${d.date}T12:00:00Z`)}: ${d.uptime == null ? t('public.noData') : fmtPct(d.uptime)}`} className={cx('min-w-px flex-1 rounded-[1px]', barColor(d.uptime))} />)}
+      {comp.daily.map((d, i) => <span key={d.date} title={text(d, i === last)} className={cx('min-w-px flex-1 rounded-[1px]', barColor(d.uptime), i === last && 'opacity-90 ring-1 ring-inset ring-slate-900/20 dark:ring-white/30')} />)}
+    </div>
+  );
+}
+
+/** One line above the components: what the colors of the day bars mean, and that they are history. */
+function StripLegend({ days }: { days: number }) {
+  const t = useT();
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-slate-500 dark:text-slate-400">
+      <span>{t('mux.public.legend', { n: days })}</span>
+      {LEGEND.map(([cls, op, v]) => <span key={cls} className="inline-flex items-center gap-1"><span className={cx('h-3 w-1.5 rounded-[1px]', cls)} aria-hidden />{v == null ? t('public.noData') : `${op} ${fmtPct(v, 1)}`}</span>)}
     </div>
   );
 }
 
 function Component({ comp, history, days }: { comp: Comp; history: boolean; days: number }) {
   const t = useT();
+  const today = history ? comp.daily[comp.daily.length - 1] : undefined;
+  const downToday = today?.uptime != null ? Math.max(0, 100 - today.uptime) : 0;
   return (
     <li className="px-4 py-3">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0"><div className="truncate font-medium">{comp.name}</div>{comp.description && <div className="truncate text-xs text-slate-500">{comp.description}</div>}</div>
-        <span className={cx('flex shrink-0 items-center gap-1.5 text-sm font-medium', TEXT[comp.status])}><span className={cx('h-2.5 w-2.5 rounded-full', DOT[comp.status])} aria-hidden />{t(`public.status.${comp.status}`)}</span>
+        <div className="flex shrink-0 flex-col items-end">
+          <span className={cx('flex items-center gap-1.5 text-sm font-medium', TEXT[comp.status])} title={t('mux.public.nowTip')}><span className={cx('h-2.5 w-2.5 rounded-full', DOT[comp.status])} aria-hidden /><span className="sr-only">{t('mux.public.now')}: </span>{t(`public.status.${comp.status}`)}</span>
+          {downToday >= 0.01 && <span className="text-xs text-slate-500 dark:text-slate-400">{t('mux.public.todayDown', { pct: fmtPct(downToday) })}</span>}
+        </div>
       </div>
       {comp.info && <ServerInfoBlock info={comp.info} className="mt-1.5" />}
       {history && comp.daily.length > 0 && (
@@ -146,6 +182,18 @@ function Gate({ slug, title, onUnlocked }: { slug: string; title?: string; onUnl
   );
 }
 
+/** Components of one section; long lists get pages. */
+function CompList({ comps, name, history, days }: { comps: Comp[]; name?: string; history: boolean; days: number }) {
+  const { pageRows, pagerProps, pageSize } = usePagedList(comps, { key: 'public.components' });
+  return (
+    <section className="card overflow-hidden">
+      {name && <h2 className="border-b border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold dark:border-slate-800 dark:bg-slate-800/50">{name}</h2>}
+      <ul className="divide-y divide-slate-100 dark:divide-slate-800">{pageRows.map((c) => <Component key={c.monitorId} comp={c} history={history} days={days} />)}</ul>
+      {comps.length > pageSize && <Pager {...pagerProps} />}
+    </section>
+  );
+}
+
 /** Public status page. Works signed out; `slug` is passed when the page is served on its own domain. */
 export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
   const t = useT();
@@ -160,6 +208,10 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
   const q = useQuery({ queryKey: ['public-status', slug, locale], queryFn: () => get<Page>(`/api/public/status/${encodeURIComponent(slug)}?lang=${locale}`), placeholderData: (prev) => prev, refetchInterval: (query) => (query.state.data ? 30_000 : false), retry: false }); // no polling while the gate or an error is shown
   const page = q.data;
   useEffect(() => { if (page) document.title = page.title; }, [page]);
+  // the page's own theme (classic by default), light or dark as the visitor's system prefers; the visitor's own choice returns on leaving
+  const pageTheme = page ? (isThemeId(page.theme) ? page.theme : 'classic') : null;
+  useEffect(() => { if (pageTheme) applyTheme(pageTheme, 'system'); }, [pageTheme]);
+  useEffect(() => () => applyTheme(), []);
   // the page's own language wins; otherwise a ?lang= link; a locked page already speaks its language in the password form
   const urlLang = sp.get('lang') === 'de' || sp.get('lang') === 'en' ? (sp.get('lang') as Locale) : null;
   useForcedLocale(page ? page.language ?? urlLang : (q.error as ApiError | null)?.body?.language ?? null);
@@ -178,12 +230,8 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
   const accent = /^#[0-9a-f]{6}$/i.test(page.branding.primaryColor ?? '') ? page.branding.primaryColor! : undefined;
   const banner = BANNER[page.overall];
   const logo = page.branding.logoUrl && /^(https?:\/\/|\/)/i.test(page.branding.logoUrl) ? page.branding.logoUrl : undefined; // no javascript: URLs
-  const list = (comps: Comp[], name?: string) => (
-    <section key={name ?? '_'} className="card overflow-hidden">
-      {name && <h2 className="border-b border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold dark:border-slate-800 dark:bg-slate-800/50">{name}</h2>}
-      <ul className="divide-y divide-slate-100 dark:divide-slate-800">{comps.map((c) => <Component key={c.monitorId} comp={c} history={page.showHistory} days={page.historyDays} />)}</ul>
-    </section>
-  );
+  const list = (comps: Comp[], name?: string) => <CompList key={name ?? '_'} comps={comps} name={name} history={page.showHistory} days={page.historyDays} />;
+  const hasBars = page.showHistory && [...page.sections.flatMap((x) => x.components), ...page.components].some((c) => c.daily.length > 0);
 
   return (
     <div className="min-h-screen" style={accent ? ({ '--accent': accent } as React.CSSProperties) : undefined}>
@@ -212,6 +260,7 @@ export default function PublicStatus({ slug: slugProp }: { slug?: string }) {
 
         {page.incidents.length > 0 && <section aria-labelledby="inc-now" className="space-y-3"><h2 id="inc-now" className="text-lg font-semibold">{t('public.activeIncidents')}</h2>{page.incidents.map((i) => <IncidentCard key={i.id} inc={i} />)}</section>}
 
+        {hasBars && <StripLegend days={page.historyDays} />}
         {page.sections.map((s) => list(s.components, s.name))}
         {page.components.length > 0 && list(page.components)}
         {page.sections.length === 0 && page.components.length === 0 && <p className="text-center text-sm text-slate-500">{t('public.noComponents')}</p>}

@@ -5,12 +5,14 @@ export const LANGS: Lang[] = ['en', 'de'];
 
 /** What notifications, the daily digest and report mails say. Channel templates written by the admin are never touched. */
 const en = {
-  tag: { down: 'DOWN', up: 'UP', flap: 'FLAPPING', cert: 'CERTIFICATE', test: 'TEST' } as Record<string, string>,
+  tag: { down: 'DOWN', up: 'UP', flap: 'FLAPPING', cert: 'CERTIFICATE', slo: 'SLO', test: 'TEST' } as Record<string, string>,
   down: '{name} is down.', target: 'Target: {v}', reason: 'Reason: {v}', unknown: 'unknown',
   up: '{name} is back up.', latency: 'Response time: {v}',
   flap: '{name} keeps changing state. Alerts are muted until it is stable again.',
   test: 'This is a test notification from {brand}.',
   escalation: 'Escalation step {n}: {msg}', stillDown: 'monitor is still down',
+  snoozeEnded: 'Snooze ended, the monitor is still down: {msg}',
+  slo: '{name} missed its availability target: {uptime}% over the last 30 days (target {target}%).', sloBudget: 'Error budget used: {used} of {budget} minutes.',
   digestSubject: '{brand} daily digest: {what}', digestDown: '{n} down', digestClear: 'all clear', digestTitle: '{brand} daily digest', digestOpen: 'Open {brand}',
   uptime24: 'Overall uptime (24h): {v}%', na: 'n/a', downNow: 'Monitors down right now: {n}', more: '  ... and {n} more', noDetails: 'no details',
   incidents: 'Incidents opened: {a}, resolved: {b}', lowest: 'Lowest uptime: {v}', flapping: 'Flapping: {v}', moreInline: ', ... and {n} more',
@@ -23,12 +25,14 @@ const en = {
   pdfNote: 'Downtime is estimated from the share of failed checks. Maintenance periods are excluded from uptime.',
 };
 const de: typeof en = {
-  tag: { down: 'OFFLINE', up: 'ONLINE', flap: 'INSTABIL', cert: 'ZERTIFIKAT', test: 'TEST' },
+  tag: { down: 'OFFLINE', up: 'ONLINE', flap: 'INSTABIL', cert: 'ZERTIFIKAT', slo: 'SLO', test: 'TEST' },
   down: '{name} ist nicht erreichbar.', target: 'Ziel: {v}', reason: 'Grund: {v}', unknown: 'unbekannt',
   up: '{name} ist wieder erreichbar.', latency: 'Antwortzeit: {v}',
   flap: '{name} wechselt ständig den Zustand. Benachrichtigungen sind stummgeschaltet, bis es wieder stabil ist.',
   test: 'Das ist eine Testbenachrichtigung von {brand}.',
   escalation: 'Eskalationsstufe {n}: {msg}', stillDown: 'Monitor ist weiterhin nicht erreichbar',
+  snoozeEnded: 'Stummschaltung beendet, der Monitor ist weiterhin nicht erreichbar: {msg}',
+  slo: '{name} verfehlt sein Verfügbarkeitsziel: {uptime} % in den letzten 30 Tagen (Ziel {target} %).', sloBudget: 'Verbrauchtes Fehlerbudget: {used} von {budget} Minuten.',
   digestSubject: '{brand} Tagesübersicht: {what}', digestDown: '{n} offline', digestClear: 'alles in Ordnung', digestTitle: '{brand} Tagesübersicht', digestOpen: '{brand} öffnen',
   uptime24: 'Gesamtverfügbarkeit (24 h): {v} %', na: 'k. A.', downNow: 'Monitore, die gerade offline sind: {n}', more: '  ... und {n} weitere', noDetails: 'keine Details',
   incidents: 'Vorfälle eröffnet: {a}, behoben: {b}', lowest: 'Geringste Verfügbarkeit: {v}', flapping: 'Instabil: {v}', moreInline: ', ... und {n} weitere',

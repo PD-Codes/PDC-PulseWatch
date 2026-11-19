@@ -1,45 +1,38 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Component, StrictMode, type ErrorInfo, type ReactNode } from 'react';
+import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import App from './App';
+import { ErrorBoundary, RouteCrash } from './components/ErrorBoundary';
 import { UiProvider } from './components/ui';
 import { ApiError } from './lib/api';
 import { AuthProvider } from './lib/auth';
+import { reloadOnce } from './lib/reload';
 import './index.css';
 
 const client = new QueryClient({
   defaultOptions: { queries: { staleTime: 15_000, refetchOnWindowFocus: false, retry: (n, e) => !(e instanceof ApiError && e.status < 500) && n < 2 } },
 });
 
-class Boundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  state = { error: null as Error | null };
-  static getDerivedStateFromError(error: Error) { return { error }; }
-  componentDidCatch(e: Error, i: ErrorInfo) { console.error(e, i.componentStack); }
-  render() {
-    if (!this.state.error) return this.props.children;
-    return (
-      <div className="mx-auto mt-24 max-w-md p-6 text-center">
-        <h1 className="text-xl font-semibold">Something went wrong</h1>
-        <p className="mt-2 text-sm text-slate-500">{this.state.error.message}</p>
-        <button className="btn btn-primary mt-4" onClick={() => location.reload()}>Reload</button>
-      </div>
-    );
-  }
-}
+// A data router (instead of <BrowserRouter>) is what lets pages block navigation while a form has unsaved input (useUnsavedChangesGuard).
+const router = createBrowserRouter([{ path: '*', element: <App />, ErrorBoundary: RouteCrash }]);
+
+// After a deployment the old hashed chunks are gone: reload once to get the new build (a flag keeps this from looping)
+window.addEventListener('vite:preloadError', (e) => { if (reloadOnce()) e.preventDefault(); });
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <Boundary>
+    <ErrorBoundary>
       <QueryClientProvider client={client}>
         <AuthProvider>
           <UiProvider>
-            <BrowserRouter><App /></BrowserRouter>
+            <RouterProvider router={router} />
           </UiProvider>
         </AuthProvider>
       </QueryClientProvider>
-    </Boundary>
+    </ErrorBoundary>
   </StrictMode>,
 );
 
-if ('serviceWorker' in navigator && import.meta.env.PROD) window.addEventListener('load', () => void navigator.serviceWorker.register('/sw.js').catch(() => {}));
+// One service worker (and cache) per build: the build id in the URL makes the browser install the new worker, which removes the old caches
+if ('serviceWorker' in navigator && import.meta.env.PROD) window.addEventListener('load', () => void navigator.serviceWorker.register(`/sw.js?v=${encodeURIComponent(__APP_BUILD__)}`).catch(() => {}));

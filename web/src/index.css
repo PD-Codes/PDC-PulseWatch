@@ -1,3 +1,7 @@
+/* Theme palettes (generated) and per-theme decoration; must precede the Tailwind layers. */
+@import './themes/palettes.css';
+@import './themes/themes.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -7,15 +11,15 @@
   body { @apply bg-slate-50 text-slate-800 antialiased dark:bg-slate-950 dark:text-slate-200; }
   :focus-visible { @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-white dark:ring-offset-slate-950; }
   a { @apply text-brand-600 dark:text-brand-400; }
-  h1, h2, h3 { @apply tracking-tight; }
+  h1, h2, h3 { font-family: var(--pw-font-display); letter-spacing: var(--pw-heading-tracking); text-transform: var(--pw-heading-case); }
   ::selection { @apply bg-brand-500/30; }
 }
 
 @layer components {
   .card { @apply rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900; }
   .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700; }
-  .btn-primary { @apply border-transparent bg-brand-600 text-white hover:bg-brand-700 dark:border-transparent dark:bg-brand-600 dark:text-white dark:hover:bg-brand-500; }
-  .btn-danger { @apply border-transparent bg-red-600 text-white hover:bg-red-700 dark:border-transparent dark:bg-red-600 dark:text-white dark:hover:bg-red-500; }
+  .btn-primary { @apply border-transparent bg-brand-600 text-white hover:bg-brand-700 dark:border-transparent dark:bg-brand-600 dark:text-white dark:hover:bg-brand-700; }
+  .btn-danger { @apply border-transparent bg-red-600 text-white hover:bg-red-700 dark:border-transparent dark:bg-red-600 dark:text-white dark:hover:bg-red-700; }
   .btn-ghost { @apply border-transparent bg-transparent shadow-none hover:bg-slate-100 dark:bg-transparent dark:hover:bg-slate-800; }
   .btn-sm { @apply px-2.5 py-1.5 text-xs; }
   .input { @apply block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100; }
@@ -40,5 +44,5 @@
 .uplot, .uplot * { box-sizing: border-box; }
 /* the span that is being dragged out to zoom: clearly visible, crosshair cursor invites the drag */
 .uplot .u-over { cursor: crosshair; }
-.uplot .u-select { background: rgb(99 102 241 / 0.18); border: 1px solid rgb(99 102 241 / 0.7); }
+.uplot .u-select { background: rgb(var(--pw-brand-500) / 0.18); border: 1px solid rgb(var(--pw-brand-500) / 0.7); }
 .u-legend { @apply text-xs text-slate-600 dark:text-slate-300; }
