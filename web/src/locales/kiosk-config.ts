@@ -1,0 +1,31 @@
+// Labels of the wall display settings (components/KioskConfigFields), shared by the kiosk page and the preset editor.
+export const en = {
+  'kioskcfg.display': 'Display', 'kioskcfg.display.cards': 'Tiles with history', 'kioskcfg.display.groups': 'Group overview', 'kioskcfg.display.table': 'List',
+  'kioskcfg.display.wall': 'Status wall', 'kioskcfg.display.heatmap': 'Last 24 hours',
+  'kioskcfg.show': 'Show', 'kioskcfg.show.all': 'All monitors', 'kioskcfg.show.auto': 'Everything, but only the problems while there are any', 'kioskcfg.show.problems': 'Only problems',
+  'kioskcfg.size': 'Size', 'kioskcfg.size.s': 'Small (more at a glance)', 'kioskcfg.size.m': 'Medium', 'kioskcfg.size.l': 'Large (readable from afar)',
+  'kioskcfg.zoom': 'Zoom: {n} %',
+  'kioskcfg.rotate': 'Switch pages', 'kioskcfg.rotate.off': 'Never', 'kioskcfg.rotate.n': 'Every {n} seconds',
+  'kioskcfg.theme': 'Look', 'kioskcfg.mode.dark': 'Dark', 'kioskcfg.mode.light': 'Light',
+  'kioskcfg.groups': 'Groups', 'kioskcfg.groups.all': 'All groups', 'kioskcfg.tags': 'Tags', 'kioskcfg.tags.all': 'All tags',
+  'kioskcfg.monitors': 'Pick monitors',
+  'kioskcfg.monitors.hint': 'Nothing picked shows all monitors. Groups and tags above narrow the list further. A group chip picks all of its monitors once; the Groups setting above follows the group when monitors are added to it.',
+  'kioskcfg.grouped': 'One heading per group', 'kioskcfg.bars': 'Show the history bars', 'kioskcfg.incidents': 'Show active incidents', 'kioskcfg.clock': 'Show the clock',
+  'kioskcfg.messages': 'Show error messages', 'kioskcfg.messages.hint': 'Applies to screens opened with a kiosk key. Error messages can name internal hosts and addresses.',
+  'kioskcfg.preset.all': 'All monitors', 'kioskcfg.preset.wall': 'Status wall', 'kioskcfg.preset.groups': 'Groups', 'kioskcfg.preset.problems': 'Problems only', 'kioskcfg.preset.history': 'Last 24 hours',
+};
+export const de: typeof en = {
+  'kioskcfg.display': 'Ansicht', 'kioskcfg.display.cards': 'Kacheln mit Verlauf', 'kioskcfg.display.groups': 'Gruppen-Übersicht', 'kioskcfg.display.table': 'Liste',
+  'kioskcfg.display.wall': 'Statuswand', 'kioskcfg.display.heatmap': 'Letzte 24 Stunden',
+  'kioskcfg.show': 'Anzeigen', 'kioskcfg.show.all': 'Alle Monitore', 'kioskcfg.show.auto': 'Alles, bei Problemen nur die Probleme', 'kioskcfg.show.problems': 'Nur Probleme',
+  'kioskcfg.size': 'Größe', 'kioskcfg.size.s': 'Klein (mehr auf einen Blick)', 'kioskcfg.size.m': 'Mittel', 'kioskcfg.size.l': 'Groß (aus der Ferne lesbar)',
+  'kioskcfg.zoom': 'Zoom: {n} %',
+  'kioskcfg.rotate': 'Seitenwechsel', 'kioskcfg.rotate.off': 'Nie', 'kioskcfg.rotate.n': 'Alle {n} Sekunden',
+  'kioskcfg.theme': 'Aussehen', 'kioskcfg.mode.dark': 'Dunkel', 'kioskcfg.mode.light': 'Hell',
+  'kioskcfg.groups': 'Gruppen', 'kioskcfg.groups.all': 'Alle Gruppen', 'kioskcfg.tags': 'Tags', 'kioskcfg.tags.all': 'Alle Tags',
+  'kioskcfg.monitors': 'Monitore auswählen',
+  'kioskcfg.monitors.hint': 'Ohne Auswahl werden alle Monitore gezeigt. Gruppen und Tags oben schränken die Liste zusätzlich ein. Ein Gruppen-Chip wählt einmalig alle Monitore der Gruppe; die Einstellung Gruppen oben folgt der Gruppe, auch wenn Monitore dazukommen.',
+  'kioskcfg.grouped': 'Überschrift je Gruppe', 'kioskcfg.bars': 'Verlaufsbalken anzeigen', 'kioskcfg.incidents': 'Aktive Vorfälle anzeigen', 'kioskcfg.clock': 'Uhr anzeigen',
+  'kioskcfg.messages': 'Fehlermeldungen anzeigen', 'kioskcfg.messages.hint': 'Gilt für Bildschirme mit Kiosk-Schlüssel. Fehlermeldungen können interne Hosts und Adressen nennen.',
+  'kioskcfg.preset.all': 'Alle Monitore', 'kioskcfg.preset.wall': 'Statuswand', 'kioskcfg.preset.groups': 'Gruppen', 'kioskcfg.preset.problems': 'Nur Probleme', 'kioskcfg.preset.history': 'Letzte 24 Stunden',
+};

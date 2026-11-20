@@ -403,11 +403,11 @@ test('the wall display keeps its settings in the address and rotates through the
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   await page.keyboard.press('s');
   const dialog = page.getByRole('dialog', { name: 'Wall display settings' });
-  await expect(dialog.getByLabel('Tile size')).toHaveValue('s');
+  await expect(dialog.getByLabel('Size', { exact: true })).toHaveValue('s');
   await expect(dialog.getByLabel('Show', { exact: true })).toHaveValue('problems');
   await dialog.getByLabel('Show', { exact: true }).selectOption('all');
   await dialog.getByLabel('Switch pages').selectOption('0');
-  await dialog.getByLabel('Tile size').selectOption('l');
+  await dialog.getByLabel('Size', { exact: true }).selectOption('l');
   await expect(page).toHaveURL(/size=l/);
   await expect(page).not.toHaveURL(/view=/);
   await dialog.getByText('Close', { exact: true }).click();

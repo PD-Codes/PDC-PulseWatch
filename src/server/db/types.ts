@@ -118,6 +118,11 @@ export interface EngineOutboxTable {
   next_attempt_at: Ts; claimed_by: string | null; claimed_until: NTs; incident_done: Flag; incident_ids: string | null; done_at: NTs; last_error: string | null;
 }
 export interface MaintenanceMarksTable { monitor_id: number; since: Ts }
+/** `config`: JSON of the settings that differ from KIOSK_DEFAULTS (src/core/kiosk.ts). */
+export interface KioskPresetsTable { id: Id; slug: string; name: Generated<string>; config: string; sort: Generated<number>; created_by: number | null; created_at: Ts; updated_at: Ts }
+export interface KioskKeysTable {
+  id: Id; preset_id: number; name: string; token_hash: string; token_prefix: string; created_by: number | null; created_at: Ts; last_used_at: NTs; last_ip: string | null;
+}
 
 export interface DB {
   users: UsersTable; auth_failures: AuthFailuresTable; sessions: SessionsTable; api_tokens: ApiTokensTable; passkeys: PasskeysTable; auth_providers: AuthProvidersTable;
@@ -131,6 +136,7 @@ export interface DB {
   notification_templates: NotificationTemplatesTable; notification_channels: NotificationChannelsTable; escalation_policies: EscalationPoliciesTable;
   monitor_notifications: MonitorNotificationsTable; notification_deliveries: NotificationDeliveriesTable; escalation_runs: EscalationRunsTable;
   report_schedules: ReportSchedulesTable; engine_outbox: EngineOutboxTable; maintenance_marks: MaintenanceMarksTable; ca_certs: CaCertsTable; probe_results_seen: ProbeResultsSeenTable;
+  kiosk_presets: KioskPresetsTable; kiosk_keys: KioskKeysTable;
 }
 
 export type { ColumnType };

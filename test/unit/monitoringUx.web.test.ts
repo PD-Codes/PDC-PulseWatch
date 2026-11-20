@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { alertKind, claimLease, parseLease } from '../../web/src/lib/browserAlerts';
-import { EMPTY_FILTERS, filtersToParams, initialMode, matchStatus, parseFilters, sortMonitors } from '../../web/src/lib/dashboardView';
+import { EMPTY_FILTERS, filtersToParams, matchStatus, parseFilters, sortMonitors } from '../../web/src/lib/dashboardView';
 import { nextMorning, snoozeActive, snoozeBody, sloTone, type MonitorX } from '../../web/src/lib/monitorExtras';
 
 const mon = (id: number, p: Partial<MonitorX> = {}): MonitorX => ({
@@ -50,11 +50,6 @@ describe('dashboard sorting', () => {
     expect(matchStatus(muted, 'snoozed', now)).toBe(true);
     expect(matchStatus(muted, 'snoozed', Date.parse('2026-06-01T14:00:00Z'))).toBe(false);
     expect(list.filter((m) => matchStatus(m, 'problems')).map((m) => m.id)).toEqual([2, 3, 5]);
-  });
-  it('starts in the dense list from 12 monitors unless a layout was chosen', () => {
-    expect(initialMode(null, 11)).toBe('grid');
-    expect(initialMode(null, 12)).toBe('list');
-    expect(initialMode('grid', 50)).toBe('grid');
   });
 });
 

@@ -1,3 +1,4 @@
+import type { KioskConfig } from '../../../src/core/kiosk';
 import { ts } from './tr';
 
 /** Thin fetch wrapper: JSON in/out, CSRF header for cookie sessions, typed errors. */
@@ -13,6 +14,8 @@ export interface ApiOptions {
   signal?: AbortSignal;
   /** Overall limit in ms. Default 30 s for JSON requests, none for uploads (FormData / Blob bodies). 0 disables it. */
   timeoutMs?: number;
+  /** Extra request headers, e.g. the kiosk key of a wall display. */
+  headers?: Record<string, string>;
 }
 const DEFAULT_TIMEOUT = 30_000;
 
@@ -30,7 +33,7 @@ async function send(method: string, path: string, body: unknown, opts: ApiOption
   try {
     const res = await fetch(path, {
       method, credentials: 'same-origin', signal: ctl.signal,
-      headers: { ...(isBlob ? { 'content-type': 'application/octet-stream' } : body !== undefined && !isForm ? { 'content-type': 'application/json' } : {}), ...(method !== 'GET' && csrf ? { 'x-csrf-token': csrf } : {}) },
+      headers: { ...opts.headers, ...(isBlob ? { 'content-type': 'application/octet-stream' } : body !== undefined && !isForm ? { 'content-type': 'application/json' } : {}), ...(method !== 'GET' && csrf ? { 'x-csrf-token': csrf } : {}) },
       body: body === undefined ? undefined : isForm || isBlob ? (body as FormData | Blob) : JSON.stringify(body),
     });
     return { res, text: await res.text() };
@@ -137,3 +140,23 @@ export interface Group { id: number; parentId: number | null; name: string; desc
 export type Role = 'admin' | 'editor' | 'viewer';
 export interface Me { id: number; username: string; displayName: string; email: string | null; role: Role; locale: 'en' | 'de' | null; theme: 'light' | 'dark' | 'system'; totpEnabled: boolean; authSource: string; scopeRestricted: boolean; csrf?: string }
 export interface Meta { brand: { name: string; vendor?: string; [k: string]: unknown }; version: string; build?: string; smtp: boolean; baseUrl: string; demo: boolean; role: string; languages: 'both' | 'en' | 'de' }
+
+/* ---- wall display presets, kiosk keys and the hourly history ---- */
+/** A wall display preset (GET /api/kiosk/presets). An empty name of a built-in preset means: show the translated default name. `keys` is only sent to admins. */
+export interface KioskPreset { id: number; slug: string; name: string; config: KioskConfig; sort: number; updatedAt: string; keys?: number }
+export interface KioskPresetList { items: KioskPreset[]; defaultId: number | null }
+/** A read-only access key of a preset; the key itself is only shown once, when it is created. */
+export interface KioskKey { id: number; name: string; prefix: string; createdAt: string; createdBy: string | null; lastUsedAt: string | null; lastIp: string | null }
+/** One hour of one monitor: [checks, up, down, maintenance]; null when the hour has no checks. */
+export type HistoryCell = [number, number, number, number] | null;
+/** Hourly availability (GET /api/monitors/history, /api/public/kiosk/history): per monitor id `hours` cells, oldest first, starting at `from`. Monitors without any data are left out. */
+export interface HistoryResponse { from: string; hours: number; bucketS: number; monitors: Record<string, HistoryCell[]> }
+/** A monitor as a screen with a kiosk key receives it: only what the wall display draws. */
+export interface KioskMonitor {
+  id: number; name: string; groupId: number | null; active: boolean; status: Status; overlay: Overlay; statusSince: string | null; lastCheckAt: string | null;
+  latencyMs: number | null; errorKind: string | null; message: string | null; recent: Beat[]; uptime: { h24: number | null; d30: number | null };
+  info: Pick<ServerInfo, 'players' | 'maxPlayers'> | null;
+}
+export interface KioskIncident { id: number; title: string; status: string; severity: 'minor' | 'major' | 'critical'; startedAt: string }
+/** Everything a screen with a kiosk key draws (GET /api/public/kiosk/view, header x-kiosk-key). */
+export interface KioskView { preset: { id: number; slug: string; name: string; config: KioskConfig }; monitors: KioskMonitor[]; groups: Group[]; incidents: KioskIncident[]; serverTime: string }

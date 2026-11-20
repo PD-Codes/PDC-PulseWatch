@@ -5,6 +5,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-20
+
+### Added
+
+- Dashboard views: *Cards*, *Groups* (one block per group with its summary), *Table* (with *All* as page size), *Status wall* and *Last 24 hours* (heatmap of hourly availability). Cards, table, wall and heatmap can be split by group. The view lives in the address (`display=`, `grouped=`) and in saved views, and each device remembers its last choice.
+- Wall display presets: stored on the server and managed under *Settings > Wall display*, opened with `/kiosk?preset=<name>`, one of them the default for a plain `/kiosk`. Five presets come with the installation. Address parameters override single settings of a preset; administrators can save the current screen as a preset from the kiosk page.
+- Kiosk keys: read-only links per preset for screens without a login (`/kiosk?preset=<name>#key=pwk_...`). Only the SHA-256 of a key is stored, the link carries it after `#` so it never appears in request addresses, error texts reach such screens only when the preset turns them on, a key can be revoked at any time, and its last use (time and address) is shown. At most 10 live connections per key and 30 per client address.
+- Wall display: the five displays of the dashboard, balanced group columns, tiles that grow when there are few, an amber strip when the shown data is stale, and a waiting state before the first check results.
+- API: `GET /api/monitors/history?hours=24` (hourly availability of the visible monitors), `/api/kiosk/presets` and its keys, `/api/settings/kiosk`, and the key endpoints `/api/public/kiosk/view`, `/history` and `/stream`.
+
+### Changed
+
+- Kiosk address parameters: `show` replaces `view` and `grouped=1` replaces `layout=grouped`. Old links keep working.
+- The dashboard's grid/list switch became the view switcher; a stored choice is carried over (`grid` becomes *Cards*, `list` becomes *Table*).
+
+### Fixed
+
+- A browser that closed the connection while the live event stream (`/api/stream`) was still starting left the stream's timers and subscriptions running until the next restart. The stream now ends with the connection in every case.
+- More than ten open live streams (browser tabs and wall displays) no longer log `MaxListenersExceededWarning`.
+
+### Upgrade notes
+
+- Migration `022_kiosk.sql` adds the tables `kiosk_presets` and `kiosk_keys` and the five built-in presets.
+
 ## [0.4.0] - 2026-11-19
 
 ### Security

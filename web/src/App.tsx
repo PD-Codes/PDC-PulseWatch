@@ -5,6 +5,7 @@ import { Layout } from './components/Layout';
 import { Loading } from './components/ui';
 import { get } from './lib/api';
 import { useAuth } from './lib/auth';
+import { kioskKeyFrom, searchWithoutKey } from './lib/kioskConfig';
 import { isChunkError, reloadOnce } from './lib/reload';
 import { StreamProvider } from './lib/stream';
 import Login from './pages/Login';
@@ -45,6 +46,18 @@ function Protected({ role, children }: { role?: 'editor' | 'admin'; children?: R
   return <StreamProvider>{children ?? <Layout />}</StreamProvider>;
 }
 
+/**
+ * Wall display: with a kiosk key in the fragment (#key=pwk_...) it runs without a session and without the session's event stream.
+ * A key in the query (?key=) is accepted too, but moved into the fragment at once so it does not stay in the address sent to servers.
+ */
+function KioskRoute() {
+  const loc = useLocation();
+  const found = kioskKeyFrom(loc.hash, loc.search);
+  if (found?.inQuery) return <Navigate replace to={{ pathname: loc.pathname, search: searchWithoutKey(loc.search), hash: `key=${encodeURIComponent(found.key)}` }} />;
+  if (found) return <Kiosk kioskKey={found.key} />;
+  return <Protected><Kiosk /></Protected>;
+}
+
 /** "/" shows the status page of this domain, else the one marked as default; without either it hands over to the dashboard. */
 function Root({ hostSlug }: { hostSlug: string | null }) {
   const def = useQuery({ queryKey: ['default-page'], queryFn: () => get<{ slug: string | null }>('/api/public/default-page'), staleTime: 30_000, retry: false, enabled: !hostSlug });
@@ -72,7 +85,7 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/setup" element={<Setup />} />
         <Route path="/status/:slug" element={<PublicStatus />} />
-        <Route path="/kiosk" element={<Protected><Kiosk /></Protected>} />
+        <Route path="/kiosk" element={<KioskRoute />} />
         <Route index element={<Root hostSlug={host.data?.slug ?? null} />} />
         <Route path="/admin" element={<Navigate to="/dashboard" replace />} />
         <Route element={<Protected />}>

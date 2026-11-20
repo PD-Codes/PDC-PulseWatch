@@ -5,6 +5,9 @@ import { Button, Select } from './ui';
 
 export const PAGE_SIZES = [10, 20, 50, 100];
 export const DEFAULT_PAGE_SIZE = 20;
+/** Page size "All": everything on one page. Only lists that opt in (usePagedList `all`) offer and store it. */
+export const PAGE_ALL = -1;
+const rank = (n: number) => (n === PAGE_ALL ? Infinity : n);
 
 export interface PagerProps { page: number; pageSize: number; total: number; capped?: boolean; onPage: (p: number) => void; onPageSize: (n: number) => void; sizes?: number[] }
 
@@ -14,14 +17,15 @@ export interface PagerProps { page: number; pageSize: number; total: number; cap
  */
 export function Pager({ page, pageSize, total, capped, onPage, onPageSize, sizes = PAGE_SIZES }: PagerProps) {
   const t = useT();
-  if (total <= Math.min(sizes[0]!, pageSize)) return null;
-  const all = sizes.includes(pageSize) ? sizes : [...sizes, pageSize].sort((a, b) => a - b);
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  const from = (page - 1) * pageSize + 1, to = Math.min(total, page * pageSize);
+  if (total <= Math.min(sizes[0]!, rank(pageSize))) return null;
+  const all = sizes.includes(pageSize) ? sizes : [...sizes, pageSize].sort((a, b) => rank(a) - rank(b));
+  const size = pageSize === PAGE_ALL ? Math.max(1, total) : pageSize;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const from = (page - 1) * size + 1, to = Math.min(total, page * size);
   return (
     <nav aria-label={t('pager.label')} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-slate-100 px-4 py-2 text-xs text-slate-500 dark:border-slate-800">
       <label className="inline-flex items-center gap-1.5">{t('pager.perPage')}
-        <Select className="w-auto py-0.5 text-xs" value={pageSize} onChange={(e) => { onPageSize(Number(e.target.value)); onPage(1); }}>{all.map((n) => <option key={n} value={n}>{n}</option>)}</Select>
+        <Select className="w-auto py-0.5 text-xs" value={pageSize} onChange={(e) => { onPageSize(Number(e.target.value)); onPage(1); }}>{all.map((n) => <option key={n} value={n}>{n === PAGE_ALL ? t('dview.all') : n}</option>)}</Select>
       </label>
       <span aria-live="polite">{t('pager.range', { from, to, total: capped ? `${fmtNumber(total)}+` : total })}</span>
       <span className="inline-flex items-center gap-0.5">

@@ -1,31 +1,44 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowDown, Bookmark, CheckSquare, ChevronDown, ChevronRight, Clock, LayoutGrid, List, Pause, Play, Plus, Rocket, Search, Trash2, X } from 'lucide-react';
+import { ArrowDown, Bookmark, CheckSquare, ChevronDown, ChevronRight, Clock, Pause, Play, Plus, Rocket, Search, Trash2, X } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Badge, Button, Card, CardHeader, EmptyState, ErrorBox, Field, Input, Loading, Modal, PageHeader, Select, Skeleton, cx, useConfirm, useToast } from '../components/ui';
 import { HeartbeatBar, Sparkline, StatusBadge, StatusDot, uptimeTone, type DisplayStatus } from '../components/status';
 import { PlayersLine } from '../components/ServerInfo';
-import { Pager } from '../components/Pager';
+import { PAGE_ALL, PAGE_SIZES, Pager } from '../components/Pager';
+import { ViewSwitcher } from '../components/dash/ViewSwitcher';
+import { GroupOverview } from '../components/dash/GroupOverview';
+import { StatusWall } from '../components/dash/StatusWall';
+import { HeatmapView } from '../components/dash/HeatmapView';
+import { GroupHead, useGroupedPage, type Section } from '../components/dash/shared';
 import { SloBadge } from '../components/Slo';
 import { SnoozeBadge } from '../components/Snooze';
 import { ApiError, del, errorMessage, get, post, type Group, type MonitorItem, type Tag } from '../lib/api';
 import { BulkEditModal } from '../components/BulkEdit';
 import { tagText } from '../components/TagEditor';
 import { useAuth } from '../lib/auth';
-import { EMPTY_FILTERS, filtersActive, filtersToParams, initialMode, isProblem, matchQuery, matchStatus, parseFilters, sortMonitors, statusOf, type DashFilters, type SortKey, type StatusFilter } from '../lib/dashboardView';
+import { DISPLAY_KEY, EMPTY_FILTERS, GROUPED_KEY, LEGACY_VIEW_KEY, filtersActive, filtersToParams, isProblem, matchQuery, matchStatus, parseFilters, readStoredView, rememberView, resolveView, savedViewChoice, sortMonitors, statusOf, switchView, viewToParams, type DashFilters, type Display, type SortKey, type StatusFilter, type StoredView, type ViewChoice } from '../lib/dashboardView';
+import { byUrgency, groupSections } from '../lib/viewModel';
 import { snoozeActive, sloViolated, type MonitorX } from '../lib/monitorExtras';
 import { usePagedList } from '../lib/usePagedList';
 import { useNow } from '../lib/useNow';
 import { fmtMs, fmtPct, relTime } from '../lib/format';
 import { useT } from '../lib/i18n';
 
-interface View { id: number; name: string; filters: Partial<DashFilters>; shared: boolean; own: boolean }
+/** Saved view: the filters plus, since there are several views, display and grouped (older ones lack them). */
+interface View { id: number; name: string; filters: Partial<DashFilters> & { display?: unknown; grouped?: unknown }; shared: boolean; own: boolean }
 interface TimelineItem { id: number; ts: string; type: string; from: string | null; to: string | null; errorKind: string | null; message: string | null; monitorId: number; monitorName: string }
 
-const VIEW_KEY = 'pw.dash.view';
 const COLLAPSED_KEY = 'pw.dash.collapsed';
 const lsGet = (k: string): string | null => { try { return localStorage.getItem(k); } catch { return null; } };
 const lsSet = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } };
+/** The view this device remembers; an old grid/list choice is moved to the new key once. */
+const readView = (): StoredView => {
+  const d = lsGet(DISPLAY_KEY), legacy = d == null ? lsGet(LEGACY_VIEW_KEY) : null;
+  const v = readStoredView(d, lsGet(GROUPED_KEY), legacy);
+  if (legacy != null) { if (v.display) lsSet(DISPLAY_KEY, v.display); try { localStorage.removeItem(LEGACY_VIEW_KEY); } catch { /* storage unavailable */ } }
+  return v;
+};
 const readCollapsed = (): Set<number> => { try { const v = JSON.parse(lsGet(COLLAPSED_KEY) ?? '[]'); return new Set(Array.isArray(v) ? v.filter(Number.isInteger) : []); } catch { return new Set(); } };
 
 /** Status chips in the order of urgency; the cross-cutting sets come last. */
@@ -43,7 +56,7 @@ export default function Dashboard() {
   // filters live in the address: back/forward and shared links keep them; typing replaces the entry instead of piling up history
   const setF = useCallback((next: DashFilters) => setParams((p) => filtersToParams(next, p), { replace: true }), [setParams]);
   const patchF = (p: Partial<DashFilters>) => setF({ ...f, ...p });
-  const [stored, setStored] = useState<string | null>(() => lsGet(VIEW_KEY));
+  const [stored, setStored] = useState<StoredView>(readView);
   const [selecting, setSelecting] = useState(false);
   const [sel, setSel] = useState<Set<number>>(new Set());
   const [bulkEdit, setBulkEdit] = useState(false);
@@ -60,10 +73,18 @@ export default function Dashboard() {
   useEffect(() => { const h = () => search.current?.focus(); window.addEventListener('pw:focus-search', h); return () => window.removeEventListener('pw:focus-search', h); }, []);
 
   const list = (monitors.data ?? []) as MonitorX[];
-  const groupList = groups.data ?? [];
-  // the dense list once there are many monitors, unless the person picked a layout
-  const mode = initialMode(stored, list.length);
-  const setView = (m: 'grid' | 'list') => { setStored(m); lsSet(VIEW_KEY, m); };
+  const groupList = useMemo(() => groups.data ?? [], [groups.data]); // stable while loading, for the memos below
+  // the address wins, then what this device remembers; else the dense table once there are many monitors
+  const view = resolveView(params, stored, list.length);
+  const { display, grouped } = view;
+  const remember = (v: ViewChoice) => { const n = rememberView(stored, v); setStored(n); lsSet(DISPLAY_KEY, v.display); lsSet(GROUPED_KEY, JSON.stringify(n.grouped)); };
+  const chooseView = (v: ViewChoice) => { remember(v); setParams((p) => viewToParams(v, p), { replace: true }); };
+  const collapseMany = useCallback((ids: number[], on: boolean) => setCollapsed((c) => {
+    const n = new Set(c);
+    for (const id of ids) { if (on) n.add(id); else n.delete(id); }
+    lsSet(COLLAPSED_KEY, JSON.stringify([...n]));
+    return n;
+  }), []);
   const toggleCollapsed = useCallback((id: number) => setCollapsed((c) => {
     const n = new Set(c);
     if (n.has(id)) n.delete(id); else n.add(id);
@@ -108,6 +129,7 @@ export default function Dashboard() {
 
   /** Ordered group sections (tree order) holding their direct monitors; ungrouped monitors come first. */
   const sections = useMemo(() => {
+    if (display !== 'cards' || !grouped) return [];
     const byGroup = new Map<number | null, MonitorX[]>();
     for (const m of filtered) { const k = m.groupId != null && groupName.has(m.groupId) ? m.groupId : null; byGroup.set(k, [...(byGroup.get(k) ?? []), m]); }
     const out: { group: Group | null; depth: number; items: MonitorX[]; total: number }[] = [];
@@ -121,7 +143,11 @@ export default function Dashboard() {
     };
     walk(null, 0);
     return out;
-  }, [filtered, groupList, groupName, descendants]);
+  }, [filtered, groupList, groupName, descendants, display, grouped]);
+
+  /** Sections for the other views (tree order, ungrouped last); groups and wall put problems first by urgency when sorted by status. */
+  const viewRows = useMemo(() => ((display === 'groups' || display === 'wall') && f.sort === 'status' ? [...filtered].sort(byUrgency) : filtered), [filtered, display, f.sort]);
+  const viewSections = useMemo<Section[] | null>(() => (display === 'groups' || (grouped && display !== 'cards') ? groupSections(viewRows, groupList, { order: 'tree', ungrouped: 'last' }) : null), [viewRows, groupList, display, grouped]);
 
   const hidden = useMemo(() => { // groups collapsed along the path
     const s = new Set<number>();
@@ -161,7 +187,12 @@ export default function Dashboard() {
   if (monitors.error) return <ErrorBox error={monitors.error} />;
   if (!list.length) return (<><PageHeader title={t('nav.dashboard')} /><Onboarding editor={editor} /></>);
 
-  const applyView = (v: View) => setF({ ...EMPTY_FILTERS, ...parseFilters(filtersToParams({ ...EMPTY_FILTERS, ...v.filters })), tag: tagToId(v.filters.tag, tags.data) });
+  const applyView = (v: View) => {
+    const nf: DashFilters = { ...EMPTY_FILTERS, ...parseFilters(filtersToParams({ ...EMPTY_FILTERS, ...v.filters })), tag: tagToId(v.filters.tag, tags.data) };
+    const vc = savedViewChoice(v.filters, stored); // older saved views keep the current view
+    if (vc) remember(vc);
+    setParams((p) => { const n = filtersToParams(nf, p); return vc ? viewToParams(vc, n) : n; }, { replace: true });
+  };
   const chip = (s: Exclude<StatusFilter, ''>) => {
     if (!counts[s]) return null;
     const on = f.status === s;
@@ -175,7 +206,7 @@ export default function Dashboard() {
     );
   };
   // the problem line repeats what the list already shows on top when it is sorted by status and unfiltered
-  const showProblems = problems.length > 0 && !['problems', 'down', 'pending'].includes(f.status) && !(mode === 'list' && f.sort === 'status' && !filtersActive(f));
+  const showProblems = problems.length > 0 && !['problems', 'down', 'pending'].includes(f.status) && !(display === 'table' && !grouped && f.sort === 'status' && !filtersActive(f));
 
   return (
     <>
@@ -199,9 +230,7 @@ export default function Dashboard() {
           </Select>
         )}
         {filtersActive(f) ? <><Button size="sm" onClick={() => setSaveView(true)}><Bookmark className="h-4 w-4" />{t('dashboard.saveView')}</Button><Button size="sm" variant="ghost" onClick={() => setF({ ...EMPTY_FILTERS, sort: f.sort })}><X className="h-4 w-4" />{t('common.reset')}</Button></> : null}
-        <div className="ml-auto flex overflow-hidden rounded-lg border border-slate-300 dark:border-slate-700" role="group" aria-label={t('dashboard.layout')}>
-          {(['grid', 'list'] as const).map((m) => <button key={m} type="button" aria-pressed={mode === m} aria-label={t(`dashboard.${m}`)} title={t(`dashboard.${m}`)} onClick={() => setView(m)} className={cx('px-2.5 py-2', mode === m ? 'bg-brand-600 text-white' : 'bg-white hover:bg-slate-50 dark:bg-slate-900 dark:hover:bg-slate-800')}>{m === 'grid' ? <LayoutGrid className="h-4 w-4" /> : <List className="h-4 w-4" />}</button>)}
-        </div>
+        <ViewSwitcher display={display} grouped={grouped} onDisplay={(d: Display) => chooseView(switchView(d, stored))} onGrouped={(g) => chooseView({ display, grouped: g })} />
       </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-1.5" role="group" aria-label={t('mux.dash.statusFilter')}>
@@ -237,16 +266,20 @@ export default function Dashboard() {
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_19rem]">
         <div className="min-w-0 space-y-4">
           {filtered.length === 0 && <Card><EmptyState title={t('common.noResults')} body={t('dashboard.noMatch')} action={<Button onClick={() => setF({ ...EMPTY_FILTERS, sort: f.sort })}>{t('common.reset')}</Button>} /></Card>}
-          {filtered.length > 0 && mode === 'list' && <FlatList rows={filtered} sort={f.sort} onSort={(s) => patchF({ sort: s })} resetKey={resetKey} groupName={groupName} selecting={selecting} sel={sel} onToggle={toggle} onQuick={quickFn} />}
-          {mode === 'grid' && sections.map((s) => {
+          {filtered.length > 0 && display === 'table' && <FlatList rows={filtered} sections={viewSections} sort={f.sort} onSort={(s) => patchF({ sort: s })} resetKey={resetKey} groupName={groupName} selecting={selecting} sel={sel} onToggle={toggle} onQuick={quickFn} />}
+          {display === 'cards' && grouped && sections.map((s) => {
             if (s.group && hidden.has(s.group.id)) return null;
             return <GroupSection key={s.group?.id ?? 'none'} group={s.group} depth={s.depth} items={s.items} total={s.total} collapsed={!!s.group && collapsed.has(s.group.id)} onCollapse={toggleCollapsed} resetKey={resetKey} selecting={selecting} sel={sel} onToggle={toggle} onQuick={quickFn} />;
           })}
+          {filtered.length > 0 && display === 'cards' && !grouped && <GroupSection group={null} depth={0} items={filtered} total={filtered.length} collapsed={false} onCollapse={toggleCollapsed} pagerKey="dash.cards" resetKey={resetKey} selecting={selecting} sel={sel} onToggle={toggle} onQuick={quickFn} />}
+          {filtered.length > 0 && display === 'groups' && viewSections && <GroupOverview sections={viewSections} collapsed={collapsed} onCollapse={toggleCollapsed} onCollapseMany={collapseMany} selecting={selecting} sel={sel} onToggle={toggle} />}
+          {filtered.length > 0 && display === 'wall' && <StatusWall rows={viewRows} sections={viewSections} selecting={selecting} sel={sel} onToggle={toggle} />}
+          {filtered.length > 0 && display === 'heatmap' && <HeatmapView rows={filtered} sections={viewSections} resetKey={resetKey} selecting={selecting} sel={sel} onToggle={toggle} />}
         </div>
         <div className="min-w-0 xl:sticky xl:top-16 xl:self-start"><Timeline /></div>
       </div>
 
-      <SaveViewModal open={saveView} onClose={() => setSaveView(false)} filters={f} tags={tags.data} canShare={editor} />
+      <SaveViewModal open={saveView} onClose={() => setSaveView(false)} filters={f} view={view} tags={tags.data} canShare={editor} />
       <BulkEditModal key={bulkEdit ? 'open' : 'closed'} open={bulkEdit} onClose={() => setBulkEdit(false)} count={chosen.length} groups={groupList} tags={tags.data ?? []} onSubmit={(patch) => { bulk.mutate({ action: 'patch', patch }); setBulkEdit(false); }} />
     </>
   );
@@ -258,8 +291,10 @@ const tagToId = (tag: string | undefined, tags?: Tag[]) => (tag ? String(tags?.f
 interface ListProps { selecting: boolean; sel: Set<number>; onToggle: (id: number) => void; onQuick?: (id: number, pause: boolean) => void }
 
 /** One group of cards; pages appear only when the group holds more than one page of monitors. */
-function GroupSection({ group, depth, items, total, collapsed, onCollapse, resetKey, ...rest }: ListProps & { group: Group | null; depth: number; items: MonitorX[]; total: number; collapsed: boolean; onCollapse: (id: number) => void; resetKey: string }) {
-  const { pageRows, pagerProps, pageSize } = usePagedList(items, { key: 'dash.group', resetKey });
+function GroupSection({ group, depth, items, total, collapsed, onCollapse, resetKey, pagerKey = 'dash.group', ...rest }: ListProps & { group: Group | null; depth: number; items: MonitorX[]; total: number; collapsed: boolean; onCollapse: (id: number) => void; resetKey: string; pagerKey?: string }) {
+  const { pageRows, pagerProps, pageSize } = usePagedList(items, { key: pagerKey, resetKey, all: true });
+  // with "All" the picker stays reachable once there is more than the smallest page
+  const paged = pageSize === PAGE_ALL ? items.length > PAGE_SIZES[0]! : items.length > pageSize;
   return (
     <section style={{ marginLeft: depth * 12 }} aria-label={group?.name}>
       {group && (
@@ -270,17 +305,17 @@ function GroupSection({ group, depth, items, total, collapsed, onCollapse, reset
       {!collapsed && items.length > 0 && (
         <>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{pageRows.map((m) => <MonitorCard key={m.id} m={m} selecting={rest.selecting} selected={rest.sel.has(m.id)} onToggle={rest.onToggle} onQuick={rest.onQuick} />)}</div>
-          {items.length > pageSize && <div className="card mt-2 overflow-hidden [&>nav]:border-t-0"><Pager {...pagerProps} /></div>}
+          {paged && <div className="card mt-2 overflow-hidden [&>nav]:border-t-0"><Pager {...pagerProps} /></div>}
         </>
       )}
     </section>
   );
 }
 
-/** Dense, flat list with sortable column heads; 20 rows per page by default. */
-function FlatList({ rows, sort, onSort, resetKey, groupName, ...rest }: ListProps & { rows: MonitorX[]; sort: SortKey; onSort: (s: SortKey) => void; resetKey: string; groupName: Map<number, string> }) {
+/** Dense list with sortable column heads; 20 rows per page by default. Grouped: by group in tree order, a heading per group on every page. */
+function FlatList({ rows, sections, sort, onSort, resetKey, groupName, ...rest }: ListProps & { rows: MonitorX[]; sections: Section[] | null; sort: SortKey; onSort: (s: SortKey) => void; resetKey: string; groupName: Map<number, string> }) {
   const t = useT();
-  const { pageRows, pagerProps } = usePagedList(rows, { key: 'dash.list', resetKey });
+  const { entries, pagerProps } = useGroupedPage(rows, sections, 'dash.list', resetKey);
   const head = (k: SortKey, label: string, cls: string) => (
     <button type="button" onClick={() => onSort(k)} aria-pressed={sort === k} className={cx('inline-flex items-center gap-0.5 hover:text-slate-900 dark:hover:text-slate-100', sort === k && 'font-semibold text-slate-800 dark:text-slate-100', cls)}>
       {label}{sort === k && <ArrowDown className="h-3 w-3" aria-hidden />}
@@ -300,7 +335,8 @@ function FlatList({ rows, sort, onSort, resetKey, groupName, ...rest }: ListProp
         {rest.onQuick && <span className="w-7" />}
       </div>
       <div className="divide-y divide-slate-100 dark:divide-slate-800">
-        {pageRows.map((m) => <MonitorRow key={m.id} m={m} group={m.groupId != null ? groupName.get(m.groupId) : undefined} selecting={rest.selecting} selected={rest.sel.has(m.id)} onToggle={rest.onToggle} onQuick={rest.onQuick} />)}
+        {entries.map((e) => (e.kind === 'head' ? <GroupHead key={`h${e.section.key}`} section={e.section} continued={e.continued} />
+          : <MonitorRow key={e.item.id} m={e.item} group={!sections && e.item.groupId != null ? groupName.get(e.item.groupId) : undefined} selecting={rest.selecting} selected={rest.sel.has(e.item.id)} onToggle={rest.onToggle} onQuick={rest.onQuick} />))}
       </div>
       <Pager {...pagerProps} />
     </Card>
@@ -420,14 +456,14 @@ function Timeline() {
   );
 }
 
-function SaveViewModal({ open, onClose, filters, tags, canShare }: { open: boolean; onClose: () => void; filters: DashFilters; tags?: Tag[]; canShare: boolean }) {
+function SaveViewModal({ open, onClose, filters, view, tags, canShare }: { open: boolean; onClose: () => void; filters: DashFilters; view: ViewChoice; tags?: Tag[]; canShare: boolean }) {
   const t = useT();
   const qc = useQueryClient();
   const toast = useToast();
   const [name, setName] = useState('');
   const [shared, setShared] = useState(false);
   const m = useMutation({
-    mutationFn: () => post('/api/views', { name, shared, filters: { ...filters, tag: tags?.find((x) => String(x.id) === filters.tag)?.name ?? filters.tag } }),
+    mutationFn: () => post('/api/views', { name, shared, filters: { ...filters, tag: tags?.find((x) => String(x.id) === filters.tag)?.name ?? filters.tag, display: view.display, grouped: view.grouped } }),
     onSuccess: () => { toast(t('common.saved')); setName(''); void qc.invalidateQueries({ queryKey: ['views'] }); onClose(); }, onError: (e) => toast(errorMessage(e), 'error'),
   });
   return (

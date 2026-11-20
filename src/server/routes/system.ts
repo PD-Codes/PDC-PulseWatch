@@ -19,6 +19,7 @@ export interface SseSink {
   destroy(): void;
   readonly writableLength: number;
   readonly destroyed?: boolean;
+  readonly socket?: { readonly destroyed?: boolean } | null;
   once(event: 'drain' | 'close', fn: () => void): unknown;
   off(event: 'drain' | 'close', fn: () => void): unknown;
 }
@@ -26,7 +27,8 @@ export interface SseSink {
 /**
  * Writes to a slow SSE client without letting its buffer grow: once the socket buffer is full, events wait for 'drain'.
  * The stream is ended when more than `maxBuffered` bytes are pending or the client has not drained for `drainTimeoutMs`;
- * the browser reconnects and refetches.
+ * the browser reconnects and refetches. A client that disconnects (even before the writer exists) closes it, so `onClose`
+ * always runs once and nothing subscribed for the stream outlives the connection.
  */
 export function sseWriter(raw: SseSink, opts: { maxBuffered?: number; drainTimeoutMs?: number; onClose?: () => void } = {}) {
   const maxBuffered = opts.maxBuffered ?? 1024 * 1024, drainTimeoutMs = opts.drainTimeoutMs ?? 30_000;
@@ -35,7 +37,7 @@ export function sseWriter(raw: SseSink, opts: { maxBuffered?: number; drainTimeo
   /** `force` drops a client that stopped reading: ending gracefully would wait for its full buffer forever. */
   const close = (force = false) => {
     if (closed) return;
-    closed = true; clearTimeout(timer); pending = []; raw.off('drain', onDrain);
+    closed = true; clearTimeout(timer); pending = []; raw.off('drain', onDrain); raw.off('close', onGone);
     try { if (force) raw.destroy(); else raw.end(); } catch { /* already gone */ }
     opts.onClose?.();
   };
@@ -57,6 +59,9 @@ export function sseWriter(raw: SseSink, opts: { maxBuffered?: number; drainTimeo
     timer.unref?.();
     raw.once('drain', onDrain);
   };
+  const onGone = () => close();
+  raw.once('close', onGone);
+  if (raw.destroyed || raw.socket?.destroyed) close(true);
   return { write, close: () => close(), get closed() { return closed; } };
 }
 
@@ -132,6 +137,8 @@ export async function systemRoutes(app: FastifyInstance, deps: SystemDeps) {
     let visible = await accessibleMonitorIds(ctx, user).then((v) => (v ? new Set(v) : null));
     reply.hijack();
     const raw = reply.raw;
+    // the client may have left during the awaits above: then there is nothing to subscribe for
+    if (req.raw.destroyed || raw.destroyed || raw.socket?.destroyed) { raw.destroy(); return; }
     raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     let cleanup = () => {};
     const out = sseWriter(raw, { onClose: () => cleanup() });

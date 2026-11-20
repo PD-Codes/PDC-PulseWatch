@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { CertsTab } from '../components/CertsTab';
 import { DefaultsTab } from '../components/DefaultsTab';
 import { ReportView, type Report } from '../components/ImportReport';
+import { KioskTab } from '../components/KioskTab';
 import { KumaImport } from '../components/KumaImport';
 import { CancelButton, FormAlert } from '../components/ops-shared';
 import { Pager } from '../components/Pager';
@@ -21,7 +22,7 @@ import { useUnsavedChangesGuard } from '../lib/useUnsavedGuard';
 import { usePagedList } from '../lib/usePagedList';
 import type { FieldDef } from '../../../src/core/types';
 
-const TABS = ['network', 'defaults', 'certificates', 'incidents', 'languages', 'appearance', 'digest', 'auth', 'backup', 'about'] as const;
+const TABS = ['network', 'defaults', 'certificates', 'incidents', 'languages', 'appearance', 'kiosk', 'digest', 'auth', 'backup', 'about'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Settings() {
@@ -41,6 +42,7 @@ export default function Settings() {
       <TabPanel idPrefix="settings" id="incidents" value={tab}><IncidentsTab /></TabPanel>
       <TabPanel idPrefix="settings" id="languages" value={tab}><LanguagesTab /></TabPanel>
       <TabPanel idPrefix="settings" id="appearance" value={tab}><AppearanceTab /></TabPanel>
+      <TabPanel idPrefix="settings" id="kiosk" value={tab}><KioskTab /></TabPanel>
       <TabPanel idPrefix="settings" id="digest" value={tab}><DigestTab /></TabPanel>
       <TabPanel idPrefix="settings" id="auth" value={tab}><AuthTab /></TabPanel>
       <TabPanel idPrefix="settings" id="backup" value={tab}><BackupTab /></TabPanel>

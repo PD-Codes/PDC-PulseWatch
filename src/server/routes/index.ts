@@ -6,6 +6,7 @@ import { caCertRoutes } from './ca-certs';
 import { configRoutes } from './config';
 import { authExtRoutes } from './auth-ext';
 import { insightRoutes } from './insights';
+import { kioskRoutes } from './kiosk';
 import { incidentRoutes } from './incidents';
 import { maintenanceRoutes } from './maintenance';
 import { notificationRoutes } from './notifications';
@@ -26,5 +27,6 @@ export async function registerAllRoutes(app: FastifyInstance): Promise<void> {
   await caCertRoutes(app);
   await reportRoutes(app);
   await insightRoutes(app);
+  await kioskRoutes(app);
   if (config.demo) registerDemoRoutes(app);
 }
